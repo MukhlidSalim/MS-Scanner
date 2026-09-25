@@ -22,14 +22,14 @@ jobs:
 
     - name: Generate Gradle Wrapper
       run: |
-        mkdir temp-wrapper
-        cd temp-wrapper
+        mkdir /tmp/temp-wrapper
+        cd /tmp/temp-wrapper
         gradle wrapper --gradle-version 9.3.1
-        cd ..
-        cp -r temp-wrapper/gradlew .
-        cp -r temp-wrapper/gradlew.bat .
-        cp -r temp-wrapper/gradle/wrapper/gradle-wrapper.jar gradle/wrapper/
-        rm -rf temp-wrapper
+        cd -
+        cp -r /tmp/temp-wrapper/gradlew .
+        cp -r /tmp/temp-wrapper/gradlew.bat .
+        cp -r /tmp/temp-wrapper/gradle/wrapper/gradle-wrapper.jar gradle/wrapper/
+        rm -rf /tmp/temp-wrapper
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
