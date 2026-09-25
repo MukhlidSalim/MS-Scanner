@@ -20,22 +20,13 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Generate Gradle Wrapper
-      run: |
-        mkdir /tmp/temp-wrapper
-        cd /tmp/temp-wrapper
-        gradle wrapper --gradle-version 9.3.1
-        cd -
-        cp -r /tmp/temp-wrapper/gradlew .
-        cp -r /tmp/temp-wrapper/gradlew.bat .
-        cp -r /tmp/temp-wrapper/gradle/wrapper/gradle-wrapper.jar gradle/wrapper/
-        rm -rf /tmp/temp-wrapper
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x gradlew
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v4
+      with:
+        gradle-version: 9.3.1
 
     - name: Build Debug APK
-      run: ./gradlew assembleDebug --stacktrace
+      run: gradle assembleDebug --stacktrace
 
     - name: Upload APK as GitHub Artifact
       uses: actions/upload-artifact@v5
