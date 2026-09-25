@@ -63,6 +63,8 @@ fun HomeScreen(
     var isGridView by remember { mutableStateOf(false) }
     var isSearchActive by remember { mutableStateOf(false) }
     var showTrashDialog by remember { mutableStateOf(false) }
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedDocIds by remember { mutableStateOf(setOf<Long>()) }
     var isIdCardMode by remember { mutableStateOf(false) }
     var pendingIdCardPages by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
     
@@ -203,6 +205,13 @@ fun HomeScreen(
         modifier = modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (selectionMode) {
+                        IconButton(onClick = { selectionMode = false; selectedDocIds = emptySet() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel Selection")
+                        }
+                    }
+                },
                 title = {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
@@ -222,13 +231,22 @@ fun HomeScreen(
                             )
                         }
                         Text(
-                            text = "DocScan Pro",
+                            text = if (selectionMode) "${selectedDocIds.size} Selected" else "DocScan Pro",
                             fontWeight = FontWeight.Bold,
                             fontSize = 20.sp
                         )
                     }
                 },
                 actions = {
+                    if (selectionMode) {
+                        IconButton(onClick = {
+                            selectedDocIds.forEach { viewModel.moveToTrash(it) }
+                            selectionMode = false
+                            selectedDocIds = emptySet()
+                        }) {
+                            Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
+                        }
+                    } else {
                     IconButton(
                         onClick = { isGridView = !isGridView },
                         modifier = Modifier.testTag("toggle_view_btn")
@@ -255,6 +273,7 @@ fun HomeScreen(
                         modifier = Modifier.testTag("settings_btn")
                     ) {
                         Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.desc_settings))
+                    }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -423,7 +442,21 @@ fun HomeScreen(
                     items(uiState.documents, key = { it.id }) { doc ->
                         DocumentCard(
                             document = doc,
-                            onClick = { onNavigateToDocument(doc.id) },
+                            isSelected = selectedDocIds.contains(doc.id),
+                            onClick = { 
+                                if (selectionMode) {
+                                    selectedDocIds = if (selectedDocIds.contains(doc.id)) selectedDocIds - doc.id else selectedDocIds + doc.id
+                                    if (selectedDocIds.isEmpty()) selectionMode = false
+                                } else {
+                                    onNavigateToDocument(doc.id) 
+                                }
+                            },
+                            onLongClick = {
+                                if (!selectionMode) {
+                                    selectionMode = true
+                                    selectedDocIds = setOf(doc.id)
+                                }
+                            },
                             onToggleFavorite = { viewModel.toggleFavorite(doc.id) },
                             onDelete = { viewModel.moveToTrash(doc.id) },
                             onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
@@ -440,7 +473,21 @@ fun HomeScreen(
                     items(uiState.documents, key = { it.id }) { doc ->
                         DocumentCard(
                             document = doc,
-                            onClick = { onNavigateToDocument(doc.id) },
+                            isSelected = selectedDocIds.contains(doc.id),
+                            onClick = { 
+                                if (selectionMode) {
+                                    selectedDocIds = if (selectedDocIds.contains(doc.id)) selectedDocIds - doc.id else selectedDocIds + doc.id
+                                    if (selectedDocIds.isEmpty()) selectionMode = false
+                                } else {
+                                    onNavigateToDocument(doc.id) 
+                                }
+                            },
+                            onLongClick = {
+                                if (!selectionMode) {
+                                    selectionMode = true
+                                    selectedDocIds = setOf(doc.id)
+                                }
+                            },
                             onToggleFavorite = { viewModel.toggleFavorite(doc.id) },
                             onDelete = { viewModel.moveToTrash(doc.id) },
                             onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
