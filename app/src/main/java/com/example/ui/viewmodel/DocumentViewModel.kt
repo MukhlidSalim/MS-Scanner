@@ -257,6 +257,28 @@ class DocumentViewModel(
             val doc = repository.getDocumentById(page.documentId)
             if (doc != null) repository.updateDocument(doc.copy(pageCount = pages.size + 1))
             refreshStorageStats()
+            loadDocument(page.documentId)
+        }
+    }
+
+    fun addPagesToCurrentDocument(newPages: List<Pair<String, String>>) {
+        viewModelScope.launch {
+            val doc = _uiState.value.activeDocument ?: return@launch
+            for (pagePair in newPages) {
+                val newPage = com.example.data.model.PageEntity(
+                    documentId = doc.id,
+                    pageIndex = _uiState.value.activePages.size,
+                    rawImagePath = pagePair.first,
+                    processedImagePath = pagePair.second
+                )
+                repository.insertPage(newPage)
+                _uiState.value = _uiState.value.copy(
+                    activePages = _uiState.value.activePages + newPage
+                )
+            }
+            repository.updateDocument(doc.copy(pageCount = _uiState.value.activePages.size))
+            refreshStorageStats()
+            loadDocument(doc.id)
         }
     }
 

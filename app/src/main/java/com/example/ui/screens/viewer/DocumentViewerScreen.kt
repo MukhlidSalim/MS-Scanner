@@ -69,6 +69,54 @@ fun DocumentViewerScreen(
 
     var showPdfExportDialog by remember { mutableStateOf(false) }
     var showFilterSheet by remember { mutableStateOf(false) }
+    
+    val activity = context as? android.app.Activity
+    val coroutineScope = rememberCoroutineScope()
+    val scannerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+        contract = androidx.activity.result.contract.ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == android.app.Activity.RESULT_OK) {
+            val scanResult = com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult.fromActivityResultIntent(result.data)
+            scanResult?.pages?.let { newPages ->
+                coroutineScope.launch {
+                    val processedPages = mutableListOf<Pair<String, String>>()
+                    for (page in newPages) {
+                        val stream = context.contentResolver.openInputStream(page.imageUri)
+                        val bmp = android.graphics.BitmapFactory.decodeStream(stream)
+                        stream?.close()
+                        if (bmp != null) {
+                            val rawPath = com.example.engine.cv.ImageProcessor.saveBitmapToFile(context, bmp, "scan_raw_")
+                            val proc = com.example.engine.cv.ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
+                            val procPath = com.example.engine.cv.ImageProcessor.saveBitmapToFile(context, proc, "scan_proc_")
+                            processedPages.add(Pair(rawPath, procPath))
+                            if (bmp != proc) bmp.recycle()
+                            proc.recycle()
+                        }
+                    }
+                    if (processedPages.isNotEmpty()) {
+                        viewModel.addPagesToCurrentDocument(processedPages)
+                    }
+                }
+            }
+        }
+    }
+    
+    val launchScanner = {
+        val options = com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.Builder()
+            .setGalleryImportAllowed(true)
+            .setPageLimit(20)
+            .setResultFormats(com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+            .setScannerMode(com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+            .build()
+        activity?.let { act ->
+            com.google.mlkit.vision.documentscanner.GmsDocumentScanning.getClient(options).getStartScanIntent(act)
+                .addOnSuccessListener { intentSender ->
+                    scannerLauncher.launch(
+                        androidx.activity.result.IntentSenderRequest.Builder(intentSender).build()
+                    )
+                }
+        }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -117,6 +165,15 @@ fun DocumentViewerScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
+        },
+        floatingActionButton = {
+            androidx.compose.material3.FloatingActionButton(
+                onClick = { launchScanner() },
+                containerColor = EmeraldLight,
+                contentColor = Color.Black
+            ) {
+                Icon(Icons.Default.AddAPhoto, contentDescription = "Add Page")
+            }
         },
         bottomBar = {
             Column(

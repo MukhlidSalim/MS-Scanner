@@ -90,6 +90,38 @@ fun SettingsScreen(
                         )
                     }
                 }
+            // Language Settings
+            Text(
+                text = "Language / اللغة",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            val currentLocale = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales().toLanguageTags()
+            var isArabic by remember { mutableStateOf(currentLocale.contains("ar")) }
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column {
+                        Text(text = "App Language", fontWeight = FontWeight.SemiBold)
+                        Text(text = "Switch between English and Arabic", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(
+                        checked = isArabic,
+                        onCheckedChange = { 
+                            isArabic = it
+                            val newLocales = if (it) androidx.core.os.LocaleListCompat.forLanguageTags("ar") else androidx.core.os.LocaleListCompat.forLanguageTags("en")
+                            androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(newLocales)
+                        }
+                    )
+                }
             }
 
             // Security & App Lock

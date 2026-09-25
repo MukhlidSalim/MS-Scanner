@@ -61,6 +61,8 @@ fun HomeScreen(
     var isGridView by remember { mutableStateOf(false) }
     var isSearchActive by remember { mutableStateOf(false) }
     var showTrashDialog by remember { mutableStateOf(false) }
+    var isIdCardMode by remember { mutableStateOf(false) }
+    var pendingIdCardPages by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
     
     var updateInfo by remember { mutableStateOf<com.example.engine.updater.AppUpdater.UpdateInfo?>(null) }
     
@@ -90,6 +92,25 @@ fun HomeScreen(
         )
     }
 
+    if (pendingIdCardPages != null) {
+        com.example.ui.screens.idcard.IdCardMergerScreen(
+            frontImagePath = pendingIdCardPages!![0].second,
+            backImagePath = pendingIdCardPages!![1].second,
+            onMerged = { mergedPath ->
+                viewModel.importPagesAsDocument(listOf(Pair(pendingIdCardPages!![0].first, mergedPath))) { newDocId ->
+                    pendingIdCardPages = null
+                    isIdCardMode = false
+                    onNavigateToDocument(newDocId)
+                }
+            },
+            onCancel = {
+                pendingIdCardPages = null
+                isIdCardMode = false
+            }
+        )
+        return // Overlay
+    }
+
     val scannerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
     ) { result ->
@@ -113,8 +134,12 @@ fun HomeScreen(
                         }
                     }
                     if (processedPages.isNotEmpty()) {
-                        viewModel.importPagesAsDocument(processedPages) { newDocId ->
-                            onNavigateToDocument(newDocId)
+                        if (isIdCardMode && processedPages.size >= 2) {
+                            pendingIdCardPages = processedPages
+                        } else {
+                            viewModel.importPagesAsDocument(processedPages) { newDocId ->
+                                onNavigateToDocument(newDocId)
+                            }
                         }
                     }
                 }
@@ -155,7 +180,7 @@ fun HomeScreen(
     val launchScanner = {
         val options = GmsDocumentScannerOptions.Builder()
             .setGalleryImportAllowed(true)
-            .setPageLimit(20)
+            .setPageLimit(if (isIdCardMode) 2 else 20)
             .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG, GmsDocumentScannerOptions.RESULT_FORMAT_PDF)
             .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
             .build()
@@ -255,9 +280,24 @@ fun HomeScreen(
                     Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Import Photos")
                 }
 
+                // ID Card Scanner
+                ExtendedFloatingActionButton(
+                    onClick = { 
+                        isIdCardMode = true
+                        launchScanner() 
+                    },
+                    containerColor = CyanScan,
+                    contentColor = Color.White,
+                    icon = { Icon(Icons.Default.Badge, contentDescription = null) },
+                    text = { Text("ID Card", fontWeight = FontWeight.Bold) }
+                )
+
                 // Primary FAB: Camera Scanner
                 ExtendedFloatingActionButton(
-                    onClick = { launchScanner() },
+                    onClick = { 
+                        isIdCardMode = false
+                        launchScanner() 
+                    },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                     icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
