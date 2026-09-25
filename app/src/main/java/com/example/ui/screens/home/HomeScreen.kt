@@ -35,6 +35,7 @@ import com.example.data.model.DocumentCategory
 import com.example.data.model.DocumentEntity
 import com.example.engine.cv.ImageProcessor
 import com.example.ui.components.CategoryChipsRow
+import com.example.ui.components.FolderChipsRow
 import com.example.ui.components.DocumentCard
 import com.example.ui.theme.CyanScan
 import com.example.ui.theme.EmeraldLight
@@ -353,6 +354,15 @@ fun HomeScreen(
                     .padding(horizontal = 16.dp, vertical = 6.dp)
                     .testTag("search_text_field")
             )
+
+            // Folder Chips
+            if (uiState.folders.isNotEmpty()) {
+                FolderChipsRow(
+                    folders = uiState.folders,
+                    selectedFolder = uiState.selectedFolder,
+                    onFolderSelected = { viewModel.filterByFolder(it) }
+                )
+            }
 
             // Category Filter Chips
             CategoryChipsRow(
