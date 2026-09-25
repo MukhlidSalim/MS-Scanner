@@ -90,6 +90,8 @@ fun SettingsScreen(
                         )
                     }
                 }
+            }
+
             // Language Settings
             Text(
                 text = "Language / اللغة",
