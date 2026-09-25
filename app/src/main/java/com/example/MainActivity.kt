@@ -74,7 +74,7 @@ fun DocScanApp(
                 HomeScreen(
                     viewModel = docViewModel,
                     onNavigateToScan = {
-                        navController.navigate(Screen.CameraScan.route)
+                        // Obsolete, handled internally by ML Kit Scanner
                     },
                     onNavigateToDocument = { docId ->
                         navController.navigate(Screen.DocumentViewer.createRoute(docId))
@@ -96,8 +96,8 @@ fun DocScanApp(
                     onNavigateBack = {
                         navController.popBackStack()
                     },
-                    onNavigateToCrop = { dId, pageId ->
-                        navController.navigate(Screen.Crop.createRoute(dId, pageId))
+                    onNavigateToCrop = { _, _ ->
+                        // Obsolete, replaced by ML Kit
                     },
                     onNavigateToOcr = { dId, pageId ->
                         navController.navigate(Screen.Ocr.createRoute(dId, pageId))
