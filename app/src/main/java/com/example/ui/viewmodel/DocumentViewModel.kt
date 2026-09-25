@@ -368,7 +368,11 @@ class DocumentViewModel(
                 return@launch
             }
             
+            val docs = docIds.mapNotNull { id -> _uiState.value.documents.find { it.id == id } }
+            val pdfTitle = if (docs.size == 1) docs.first().title else if (docs.isNotEmpty()) docs.first().title + "_Shared" else "Shared_Documents"
+            
             val config = com.example.engine.pdf.PdfExportConfig(
+                title = pdfTitle,
                 pageSize = _uiState.value.defaultPdfPageSize,
                 compression = _uiState.value.defaultPdfCompression
             )
