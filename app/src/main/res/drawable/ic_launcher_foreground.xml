@@ -1,0 +1,87 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    
+    <!-- Document Body (Centered: width 40, height 50, x=34..74, y=29..79) -->
+    <path
+        android:pathData="M35,32 C35,30.34 36.34,29 38,29 L63,29 L73,39 L73,76 C73,77.66 71.66,79 70,79 L38,79 C36.34,79 35,77.66 35,76 Z"
+        android:fillColor="#F8FAFC" />
+        
+    <!-- Folded Corner -->
+    <path
+        android:pathData="M63,29 L63,39 L73,39 Z"
+        android:fillColor="#CBD5E1" />
+        
+    <!-- Document Text Lines -->
+    <path
+        android:pathData="M41,45 L58,45 M41,51 L67,51 M41,57 L63,57 M41,63 L55,63"
+        android:strokeWidth="2.5"
+        android:strokeColor="#94A3B8"
+        android:strokeLineCap="round" />
+        
+    <!-- Laser Scan Beam with Glow -->
+    <path
+        android:pathData="M27,53 L81,53">
+        <aapt:attr name="android:strokeColor">
+            <gradient
+                android:startX="27"
+                android:startY="53"
+                android:endX="81"
+                android:endY="53"
+                android:type="linear">
+                <item android:offset="0.0" android:color="#0038BDF8" />
+                <item android:offset="0.25" android:color="#FF06B6D4" />
+                <item android:offset="0.5" android:color="#FF38BDF8" />
+                <item android:offset="0.75" android:color="#FF10B981" />
+                <item android:offset="1.0" android:color="#0010B981" />
+            </gradient>
+        </aapt:attr>
+    </path>
+    
+    <!-- Laser Beam Core (Thicker glow) -->
+    <path
+        android:pathData="M28,53 L80,53"
+        android:strokeWidth="2"
+        android:strokeColor="#38BDF8"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M34,53 L74,53"
+        android:strokeWidth="1"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineCap="round" />
+
+    <!-- Corner Brackets (Targeting Reticle) -->
+    <!-- Top Left -->
+    <path
+        android:pathData="M29,37 L29,27 L39,27"
+        android:strokeWidth="3.2"
+        android:strokeColor="#10B981"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- Top Right -->
+    <path
+        android:pathData="M69,27 L79,27 L79,37"
+        android:strokeWidth="3.2"
+        android:strokeColor="#10B981"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- Bottom Left -->
+    <path
+        android:pathData="M29,71 L29,81 L39,81"
+        android:strokeWidth="3.2"
+        android:strokeColor="#10B981"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+    <!-- Bottom Right -->
+    <path
+        android:pathData="M69,81 L79,81 L79,71"
+        android:strokeWidth="3.2"
+        android:strokeColor="#10B981"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round" />
+        
+</vector>

@@ -1,0 +1,377 @@
+package com.example.ui.screens.home
+
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.ViewList
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.data.model.DocumentCategory
+import com.example.data.model.DocumentEntity
+import com.example.engine.cv.ImageProcessor
+import com.example.ui.components.CategoryChipsRow
+import com.example.ui.components.DocumentCard
+import com.example.ui.theme.CyanScan
+import com.example.ui.theme.EmeraldLight
+import com.example.ui.viewmodel.DocumentViewModel
+import kotlinx.coroutines.launch
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun HomeScreen(
+    viewModel: DocumentViewModel,
+    onNavigateToScan: () -> Unit,
+    onNavigateToDocument: (Long) -> Unit,
+    onNavigateToSettings: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val uiState by viewModel.uiState.collectAsState()
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var isGridView by remember { mutableStateOf(false) }
+    var isSearchActive by remember { mutableStateOf(false) }
+    var showTrashDialog by remember { mutableStateOf(false) }
+
+    // System Photo Picker for multi-image import
+    val photoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(20)
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            coroutineScope.launch {
+                val pages = mutableListOf<Pair<String, String>>()
+                for (uri in uris) {
+                    val stream = context.contentResolver.openInputStream(uri)
+                    val bmp = android.graphics.BitmapFactory.decodeStream(stream)
+                    stream?.close()
+                    if (bmp != null) {
+                        val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "import_raw_")
+                        val proc = ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
+                        val procPath = ImageProcessor.saveBitmapToFile(context, proc, "import_proc_")
+                        pages.add(Pair(rawPath, procPath))
+                        
+                        if (bmp != proc) bmp.recycle()
+                        proc.recycle()
+                    }
+                }
+                if (pages.isNotEmpty()) {
+                    viewModel.importPagesAsDocument(pages) { newDocId ->
+                        onNavigateToDocument(newDocId)
+                    }
+                }
+            }
+        }
+    }
+
+    Scaffold(
+        modifier = modifier.fillMaxSize(),
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(32.dp)
+                                .background(EmeraldLight, RoundedCornerShape(8.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DocumentScanner,
+                                contentDescription = null,
+                                tint = Color.Black,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Text(
+                            text = "DocScan Pro",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(
+                        onClick = { isGridView = !isGridView },
+                        modifier = Modifier.testTag("toggle_view_btn")
+                    ) {
+                        Icon(
+                            imageVector = if (isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
+                            contentDescription = "Toggle Grid/List View"
+                        )
+                    }
+                    IconButton(
+                        onClick = { showTrashDialog = true },
+                        modifier = Modifier.testTag("trash_bin_btn")
+                    ) {
+                        BadgedBox(badge = {
+                            if (uiState.trashDocuments.isNotEmpty()) {
+                                Badge { Text("${uiState.trashDocuments.size}") }
+                            }
+                        }) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = "Trash Bin")
+                        }
+                    }
+                    IconButton(
+                        onClick = onNavigateToSettings,
+                        modifier = Modifier.testTag("settings_btn")
+                    ) {
+                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.background
+                )
+            )
+        },
+        floatingActionButton = {
+            Column(
+                horizontalAlignment = Alignment.End,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+                modifier = Modifier.navigationBarsPadding()
+            ) {
+                // Secondary FAB: Import from Gallery
+                SmallFloatingActionButton(
+                    onClick = {
+                        photoPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                        )
+                    },
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.testTag("import_photos_fab")
+                ) {
+                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Import Photos")
+                }
+
+                // Primary FAB: Camera Scanner
+                ExtendedFloatingActionButton(
+                    onClick = onNavigateToScan,
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                    icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
+                    text = { Text("Scan Document", fontWeight = FontWeight.Bold) },
+                    modifier = Modifier.testTag("main_scan_fab")
+                )
+            }
+        }
+    ) { innerPadding ->
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(innerPadding)
+        ) {
+            // Search Bar
+            OutlinedTextField(
+                value = uiState.searchQuery,
+                onValueChange = { viewModel.onSearchQueryChanged(it) },
+                placeholder = { Text("Search titles, tags, or OCR text…") },
+                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
+                trailingIcon = {
+                    if (uiState.searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.onSearchQueryChanged("") }) {
+                            Icon(Icons.Default.Close, contentDescription = "Clear Search")
+                        }
+                    }
+                },
+                shape = RoundedCornerShape(16.dp),
+                singleLine = true,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 6.dp)
+                    .testTag("search_text_field")
+            )
+
+            // Category Filter Chips
+            CategoryChipsRow(
+                selectedCategory = uiState.selectedCategory,
+                onCategorySelected = { viewModel.filterByCategory(it) }
+            )
+
+            // Document Count & Quick Filter Header
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${uiState.documents.size} Documents",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            // Documents List / Grid / Empty State
+            if (uiState.documents.isEmpty()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(32.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(96.dp)
+                                .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.DocumentScanner,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(48.dp)
+                            )
+                        }
+
+                        Text(
+                            text = if (uiState.searchQuery.isNotEmpty()) "No matching documents" else "No Scanned Documents Yet",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Text(
+                            text = if (uiState.searchQuery.isNotEmpty()) {
+                                "Try searching for a different keyword or OCR term."
+                            } else {
+                                "Tap 'Scan Document' to capture your first invoice, receipt, or ID card with intelligent edge detection."
+                            },
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        )
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Button(
+                            onClick = onNavigateToScan,
+                            modifier = Modifier.testTag("empty_state_scan_btn")
+                        ) {
+                            Icon(Icons.Default.CameraAlt, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Start Scanning")
+                        }
+                    }
+                }
+            } else if (isGridView) {
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(uiState.documents, key = { it.id }) { doc ->
+                        DocumentCard(
+                            document = doc,
+                            onClick = { onNavigateToDocument(doc.id) },
+                            onToggleFavorite = { viewModel.toggleFavorite(doc.id) },
+                            onDelete = { viewModel.moveToTrash(doc.id) },
+                            onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
+                            onSharePdf = { onNavigateToDocument(doc.id) }
+                        )
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(uiState.documents, key = { it.id }) { doc ->
+                        DocumentCard(
+                            document = doc,
+                            onClick = { onNavigateToDocument(doc.id) },
+                            onToggleFavorite = { viewModel.toggleFavorite(doc.id) },
+                            onDelete = { viewModel.moveToTrash(doc.id) },
+                            onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
+                            onSharePdf = { onNavigateToDocument(doc.id) }
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Trash Bin Management Dialog
+    if (showTrashDialog) {
+        AlertDialog(
+            onDismissRequest = { showTrashDialog = false },
+            title = { Text("Trash Bin (${uiState.trashDocuments.size})") },
+            text = {
+                if (uiState.trashDocuments.isEmpty()) {
+                    Text("Trash is empty.")
+                } else {
+                    LazyColumn(
+                        modifier = Modifier.heightIn(max = 300.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        items(uiState.trashDocuments) { doc ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(doc.title, maxLines = 1, modifier = Modifier.weight(1f))
+                                Row {
+                                    IconButton(onClick = { viewModel.restoreFromTrash(doc.id) }) {
+                                        Icon(Icons.Default.Restore, contentDescription = "Restore")
+                                    }
+                                    IconButton(onClick = { viewModel.deletePermanently(doc.id) }) {
+                                        Icon(Icons.Default.DeleteForever, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                if (uiState.trashDocuments.isNotEmpty()) {
+                    TextButton(onClick = {
+                        viewModel.emptyTrash()
+                        showTrashDialog = false
+                    }) {
+                        Text("Empty Trash", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTrashDialog = false }) {
+                    Text("Close")
+                }
+            }
+        )
+    }
+}

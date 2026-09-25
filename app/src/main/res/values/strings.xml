@@ -1,0 +1,101 @@
+<resources>
+    <string name="app_name">MS Scanner</string>
+    <string name="tagline">Smart Document Scanner &amp; PDF Studio</string>
+
+    <!-- Navigation -->
+    <string name="nav_documents">Documents</string>
+    <string name="nav_scan">Scan</string>
+    <string name="nav_folders">Folders</string>
+    <string name="nav_favorites">Favorites</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Scanner Screen -->
+    <string name="scanner_mode_single">Single</string>
+    <string name="scanner_mode_batch">Batch</string>
+    <string name="scanner_mode_id_card">ID Card</string>
+    <string name="scanner_mode_receipt">Receipt</string>
+    <string name="scanner_mode_book">Book</string>
+    <string name="guide_hold_steady">Hold steady…</string>
+    <string name="guide_move_closer">Move closer to document</string>
+    <string name="guide_document_detected">Document detected</string>
+    <string name="guide_align_document">Align document within frame</string>
+    <string name="guide_auto_capturing">Capturing…</string>
+    <string name="auto_capture_on">Auto Capture ON</string>
+    <string name="auto_capture_off">Auto Capture OFF</string>
+    <string name="flash_auto">Flash Auto</string>
+    <string name="flash_on">Flash ON</string>
+    <string name="flash_off">Flash OFF</string>
+    <string name="grid_toggle">Toggle Grid</string>
+
+    <!-- Crop & Perspective -->
+    <string name="crop_title">Crop &amp; Perspective</string>
+    <string name="crop_auto_detect">Auto Detect</string>
+    <string name="crop_reset">Full Image</string>
+    <string name="crop_rotate_left">Rotate Left</string>
+    <string name="crop_rotate_right">Rotate Right</string>
+    <string name="crop_instruction">Drag corners with magnifier for pixel-perfect alignment</string>
+
+    <!-- Filters -->
+    <string name="filter_original">Original</string>
+    <string name="filter_magic">Magic Color</string>
+    <string name="filter_document">Clean Doc</string>
+    <string name="filter_bw">B &amp; W</string>
+    <string name="filter_grayscale">Grayscale</string>
+    <string name="filter_vibrant">Vibrant</string>
+
+    <!-- Quality Analysis -->
+    <string name="quality_good">Excellent Quality (Sharp &amp; Clear)</string>
+    <string name="quality_fair">Good Quality</string>
+    <string name="quality_blur_warning">Warning: Image appears blurry</string>
+    <string name="quality_dark_warning">Warning: Low illumination or shadow</string>
+
+    <!-- Document Viewer & Actions -->
+    <string name="action_retake">Retake</string>
+    <string name="action_crop">Crop</string>
+    <string name="action_filter">Filters</string>
+    <string name="action_ocr">OCR Text</string>
+    <string name="action_annotate">Annotate</string>
+    <string name="action_sign">Signature</string>
+    <string name="action_redact">Redact</string>
+    <string name="action_share">Share</string>
+    <string name="action_export_pdf">Export PDF</string>
+    <string name="action_save">Save</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_rename">Rename</string>
+
+    <!-- Document Details -->
+    <string name="search_hint">Search in titles, tags, or OCR content…</string>
+    <string name="all_documents">All Documents</string>
+    <string name="recent_scans">Recent Scans</string>
+    <string name="pages_count">%1$d pages</string>
+    <string name="page_n">Page %1$d</string>
+
+    <!-- OCR & AI Intelligence -->
+    <string name="ocr_extracting">Extracting text &amp; analyzing document…</string>
+    <string name="ocr_copy_all">Copy Text</string>
+    <string name="ocr_share_text">Share Text</string>
+    <string name="ocr_ai_intelligence">Smart Document AI</string>
+    <string name="ai_classify">Classify Document</string>
+
+    <!-- PDF Settings -->
+    <string name="pdf_settings_title">PDF Export Settings</string>
+    <string name="page_size_a4">A4 (Standard)</string>
+    <string name="page_size_letter">US Letter</string>
+    <string name="page_size_fit">Fit Image</string>
+    <string name="compression_max">Maximum Quality (Uncompressed)</string>
+    <string name="compression_high">High Quality (Balanced)</string>
+    <string name="compression_medium">Medium (Small File)</string>
+    <string name="compression_low">Low (Fast Email)</string>
+
+    <!-- Privacy & Security -->
+    <string name="privacy_title">Privacy &amp; Security</string>
+    <string name="privacy_offline_notice">100% Offline-First. All your documents stay strictly on your device.</string>
+    <string name="app_lock">App PIN Lock</string>
+    <string name="pin_prompt">Enter 4-digit PIN</string>
+    <string name="pin_set">Set new PIN</string>
+
+    <!-- Storage -->
+    <string name="storage_manager">Storage Management</string>
+    <string name="clear_cache">Clear Cache</string>
+    <string name="empty_trash">Empty Trash</string>
+</resources>
