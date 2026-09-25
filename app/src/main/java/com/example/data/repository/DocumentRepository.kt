@@ -25,6 +25,19 @@ class DocumentRepository(
     private val documentDao: DocumentDao
 ) {
 
+    
+    suspend fun getAllDocumentsSync(): List<DocumentEntity> = withContext(Dispatchers.IO) {
+        documentDao.getAllDocumentsSync()
+    }
+    
+    suspend fun getPagesForDocumentSync(docId: Long): List<PageEntity> = withContext(Dispatchers.IO) {
+        documentDao.getPagesForDocumentSync(docId)
+    }
+    
+    suspend fun insertDocumentForRestore(doc: DocumentEntity): Long = withContext(Dispatchers.IO) {
+        documentDao.insertDocument(doc)
+    }
+
     fun getAllDocuments(): Flow<List<DocumentEntity>> = documentDao.getAllActiveDocuments()
     fun getFavoriteDocuments(): Flow<List<DocumentEntity>> = documentDao.getFavoriteDocuments()
     fun getTrashDocuments(): Flow<List<DocumentEntity>> = documentDao.getTrashDocuments()

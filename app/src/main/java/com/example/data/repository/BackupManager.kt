@@ -2,7 +2,7 @@ package com.example.data.repository
 
 import android.content.Context
 import android.net.Uri
-import com.example.data.db.DocumentDao
+
 import com.example.data.model.DocumentEntity
 import com.example.data.model.PageEntity
 import kotlinx.coroutines.Dispatchers
@@ -18,11 +18,11 @@ import java.util.zip.ZipOutputStream
 
 class BackupManager(
     private val context: Context,
-    private val documentDao: DocumentDao
+    private val repository: DocumentRepository
 ) {
     suspend fun createBackup(outputUri: Uri): Result<Int> = withContext(Dispatchers.IO) {
         try {
-            val docs = documentDao.getAllDocumentsSync()
+            val docs = repository.getAllDocumentsSync()
             var docCount = 0
             
             context.contentResolver.openOutputStream(outputUri)?.use { outStream ->
@@ -40,7 +40,7 @@ class BackupManager(
                     
                     // 2. Documents
                     for (doc in docs) {
-                        val pages = documentDao.getPagesForDocumentSync(doc.id)
+                        val pages = repository.getPagesForDocumentSync(doc.id)
                         val docDir = "documents/doc_${doc.id}/"
                         
                         val docMeta = JSONObject().apply {
@@ -138,7 +138,7 @@ class BackupManager(
                             val meta = JSONObject(metaFile.readText())
                             val title = meta.getString("title") + " (Restored)"
                             
-                            val newDocId = documentDao.insertDocument(
+                            val newDocId = repository.insertDocumentForRestore(
                                 DocumentEntity(
                                     title = title,
                                     folderName = meta.getString("folderName"),
@@ -165,7 +165,7 @@ class BackupManager(
                                 
                                 if (i == 0) firstThumb = newProcPath.absolutePath
                                 
-                                documentDao.insertPage(
+                                repository.insertPage(
                                     PageEntity(
                                         documentId = newDocId,
                                         pageIndex = i,

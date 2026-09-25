@@ -52,7 +52,8 @@ data class DocumentUiState(
     val themeMode: String = "System",
     val defaultPdfPageSize: com.example.data.model.PageSizePreset = com.example.data.model.PageSizePreset.A4,
     val defaultPdfCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH,
-    val sortMode: SortMode = SortMode.NEWEST
+    val sortMode: SortMode = SortMode.NEWEST,
+    val isLoading: Boolean = false
 )
 
 class DocumentViewModel(
@@ -98,7 +99,7 @@ class DocumentViewModel(
                     filtered = filtered.filter { it.folderName == filter.folder }
                 }
                 if (filter.category.name != "UNCATEGORIZED") {
-                    filtered = filtered.filter { it.category == filter.category }
+                    filtered = filtered.filter { it.category == filter.category.name }
                 }
                 if (filter.query.isNotBlank()) {
                     filtered = filtered.filter { it.title.contains(filter.query, ignoreCase = true) }
@@ -432,7 +433,7 @@ class DocumentViewModel(
             var filtered: android.graphics.Bitmap? = null
             try {
                 rawBmp = ImageProcessor.loadBitmapFromFile(page.rawImagePath) ?: return@launch
-                val quad = com.example.data.model.DocumentQuad.fromJson(page.cropQuadJson)
+                val quad = DocumentQuad.fromJson(page.cropQuadJson)
                 warped = ImageProcessor.warpPerspective(rawBmp, quad)
                 rotated = ImageProcessor.rotateBitmap(warped, page.rotationDegrees)
                 filtered = ImageProcessor.applyFilter(rotated, filter)
@@ -746,7 +747,7 @@ class DocumentViewModel(
     }
 
     
-    private val backupManager = BackupManager(context, repository.documentDao)
+    private val backupManager = BackupManager(context, repository)
     
     private val _backupEvent = MutableSharedFlow<String>()
     val backupEvent = _backupEvent.asSharedFlow()
