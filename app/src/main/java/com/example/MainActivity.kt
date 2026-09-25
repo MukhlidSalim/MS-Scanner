@@ -21,15 +21,12 @@ import com.example.data.repository.DocumentRepository
 import com.example.ui.components.PinLockScreen
 import com.example.ui.navigation.Screen
 import com.example.ui.screens.annotate.AnnotationScreen
-import com.example.ui.screens.camera.CameraScanScreen
-import com.example.ui.screens.crop.CropPerspectiveScreen
 import com.example.ui.screens.home.HomeScreen
 import com.example.ui.screens.ocr.OcrScreen
 import com.example.ui.screens.settings.SettingsScreen
 import com.example.ui.screens.viewer.DocumentViewerScreen
 import com.example.ui.theme.DocScanTheme
 import com.example.ui.viewmodel.DocumentViewModel
-import com.example.ui.viewmodel.ScanViewModel
 
 class MainActivity : ComponentActivity() {
 
@@ -42,13 +39,11 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val docViewModel = remember { DocumentViewModel(applicationContext, repository) }
-            val scanViewModel = remember { ScanViewModel(applicationContext, repository) }
 
             DocScanTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     DocScanApp(
-                        docViewModel = docViewModel,
-                        scanViewModel = scanViewModel
+                        docViewModel = docViewModel
                     )
                 }
             }
@@ -58,8 +53,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun DocScanApp(
-    docViewModel: DocumentViewModel,
-    scanViewModel: ScanViewModel
+    docViewModel: DocumentViewModel
 ) {
     val navController = rememberNavController()
     val docUiState by docViewModel.uiState.collectAsState()
