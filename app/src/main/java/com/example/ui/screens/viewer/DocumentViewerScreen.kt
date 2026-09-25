@@ -182,6 +182,7 @@ fun DocumentViewerScreen(
                             }
                         )
                     }
+                    }
                 },
                 navigationIcon = {
                     if (selectionMode) {

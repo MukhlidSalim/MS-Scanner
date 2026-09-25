@@ -518,6 +518,7 @@ fun HomeScreen(
                             onDelete = { viewModel.moveToTrash(doc.id) },
                             onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
                             onSharePdf = { onNavigateToDocument(doc.id) },
+                            onSaveToGallery = { viewModel.saveDocumentToGallery(context, doc.id) },
                             onMoveToFolder = { docToMove = doc.id }
                         )
                     }
@@ -550,6 +551,7 @@ fun HomeScreen(
                             onDelete = { viewModel.moveToTrash(doc.id) },
                             onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
                             onSharePdf = { onNavigateToDocument(doc.id) },
+                            onSaveToGallery = { viewModel.saveDocumentToGallery(context, doc.id) },
                             onMoveToFolder = { docToMove = doc.id }
                         )
                     }

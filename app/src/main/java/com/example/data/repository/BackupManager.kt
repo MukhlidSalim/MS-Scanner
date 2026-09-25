@@ -159,13 +159,11 @@ class BackupManager(
                                 
                                 val newRawPath = File(context.filesDir, "restored_${System.currentTimeMillis()}_$rawName")
                                 val newProcPath = File(context.filesDir, "restored_${System.currentTimeMillis()}_$procName")
-                                val newThumbPath = if (thumbName.isNotEmpty()) File(context.filesDir, "restored_${System.currentTimeMillis()}_$thumbName") else null
                                 
                                 File(docFolder, "pages/$rawName").copyTo(newRawPath)
                                 File(docFolder, "pages/$procName").copyTo(newProcPath)
-                                newThumbPath?.let { File(docFolder, "pages/$thumbName").copyTo(it) }
                                 
-                                if (i == 0) firstThumb = newThumbPath?.absolutePath ?: newProcPath.absolutePath
+                                if (i == 0) firstThumb = newProcPath.absolutePath
                                 
                                 documentDao.insertPage(
                                     PageEntity(

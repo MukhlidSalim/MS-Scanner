@@ -4,6 +4,7 @@ import androidx.compose.ui.res.stringResource
 import com.example.R
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll

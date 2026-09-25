@@ -14,7 +14,6 @@ import com.example.data.repository.DocumentRepository
 import com.example.data.repository.StorageStats
 import com.example.engine.annotation.*
 import com.example.engine.cv.DocumentQuad
-import android.content.Context
 import android.widget.Toast
 import com.example.R
 import com.example.engine.cv.ImageProcessor
@@ -90,8 +89,23 @@ class DocumentViewModel(
 
     private fun setupDocumentStream() {
         viewModelScope.launch {
-            repository.getAllDocuments().collectLatest { docs ->
-                _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
+            kotlinx.coroutines.flow.combine(
+                repository.getAllDocuments(),
+                filterTrigger
+            ) { docs, filter ->
+                var filtered = docs
+                if (filter.folder != "ALL") {
+                    filtered = filtered.filter { it.folderName == filter.folder }
+                }
+                if (filter.category.name != "UNCATEGORIZED") {
+                    filtered = filtered.filter { it.category == filter.category }
+                }
+                if (filter.query.isNotBlank()) {
+                    filtered = filtered.filter { it.title.contains(filter.query, ignoreCase = true) }
+                }
+                applySorting(filtered, filter.sort)
+            }.collectLatest { sortedAndFiltered ->
+                _uiState.update { it.copy(documents = sortedAndFiltered) }
             }
         }
         viewModelScope.launch {
@@ -238,17 +252,6 @@ class DocumentViewModel(
             }
         }
     }
-            viewModelScope.launch {
-                val page = pages[index]
-                val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 500)
-                if (bmp != null) {
-                    val report = ImageProcessor.analyzeQuality(bmp)
-                    _uiState.update { it.copy(currentQualityReport = report) }
-                    bmp.recycle()
-                }
-            }
-        }
-    }
 
     fun toggleFavorite(docId: Long) {
         viewModelScope.launch {
@@ -327,11 +330,6 @@ class DocumentViewModel(
             // Refresh from DB
             val dbPages = repository.getPagesList(doc.id)
             _uiState.update { it.copy(activePages = dbPages) }
-        }
-    }
-            repository.updateDocument(doc.copy(pageCount = _uiState.value.activePages.size))
-            refreshStorageStats()
-            loadDocument(doc.id)
         }
     }
 
