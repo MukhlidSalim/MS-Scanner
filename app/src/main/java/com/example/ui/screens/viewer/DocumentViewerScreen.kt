@@ -129,7 +129,7 @@ fun DocumentViewerScreen(
             TopAppBar(
                 title = {
                     if (selectionMode) {
-                        Text("${selectedPageIds.size} Selected", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        Text(stringResource(R.string.txt_selected_count, selectedPageIds.size), fontWeight = FontWeight.Bold, fontSize = 20.sp)
                     } else {
                         var showRenameDialog by remember { mutableStateOf(false) }
                         var renameInput by remember { mutableStateOf(doc?.title ?: "") }
@@ -139,14 +139,14 @@ fun DocumentViewerScreen(
                             showRenameDialog = true 
                         }) {
                             Text(
-                                text = doc?.title ?: "Document",
+                                text = doc?.title ?: stringResource(R.string.nav_documents),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 maxLines = 1
                             )
                             if (pages.isNotEmpty()) {
                                 Text(
-                                    text = "Page ${pagerState.currentPage + 1} of ${pages.size}",
+                                    text = stringResource(R.string.txt_page_of, pagerState.currentPage + 1, pages.size),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -182,7 +182,7 @@ fun DocumentViewerScreen(
                 navigationIcon = {
                     if (selectionMode) {
                         IconButton(onClick = { selectionMode = false; selectedPageIds = emptySet() }) {
-                            Icon(Icons.Default.Close, contentDescription = "Cancel Selection")
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.txt_cancel_selection))
                         }
                     } else {
                         IconButton(onClick = onNavigateBack) {
@@ -444,7 +444,7 @@ fun DocumentViewerScreen(
                     ) {
                         AsyncImage(
                             model = File(pageItem.processedImagePath),
-                            contentDescription = "Page ${index + 1}",
+                            contentDescription = stringResource(R.string.page_n, index + 1),
                             contentScale = ContentScale.Fit,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -470,7 +470,7 @@ fun DocumentViewerScreen(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
-                    text = "Document Filters",
+                    text = stringResource(R.string.txt_document_filters),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
@@ -503,8 +503,16 @@ fun DocumentViewerScreen(
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
                                 horizontalAlignment = Alignment.CenterHorizontally
                             ) {
+                                val filterName = when (filter) {
+                                    FilterType.ORIGINAL -> stringResource(R.string.filter_original)
+                                    FilterType.MAGIC -> stringResource(R.string.filter_magic)
+                                    FilterType.DOCUMENT -> stringResource(R.string.filter_document)
+                                    FilterType.BLACK_WHITE -> stringResource(R.string.filter_bw)
+                                    FilterType.GRAYSCALE -> stringResource(R.string.filter_grayscale)
+                                    FilterType.VIBRANT -> stringResource(R.string.filter_vibrant)
+                                }
                                 Text(
-                                    text = filter.name.replace("_", " "),
+                                    text = filterName,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.SemiBold
                                 )

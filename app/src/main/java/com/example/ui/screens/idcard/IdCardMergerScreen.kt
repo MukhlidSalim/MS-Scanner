@@ -65,7 +65,7 @@ fun IdCardMergerScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.txt_merge_id_card)) },
                 navigationIcon = {
-                    IconButton(onClick = onCancel) { Icon(Icons.Default.Close, "Cancel") }
+                    IconButton(onClick = onCancel) { Icon(Icons.Default.Close, stringResource(R.string.txt_cancel)) }
                 },
                 actions = {
                     IconButton(onClick = {
@@ -101,7 +101,7 @@ fun IdCardMergerScreen(
                         }
                     }) {
                         if (isSaving) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
-                        else Icon(Icons.Default.Check, "Save Merged")
+                        else Icon(Icons.Default.Check, stringResource(R.string.txt_save))
                     }
                 }
             )
@@ -154,7 +154,7 @@ fun IdCardMergerScreen(
             }
             
             Text(
-                "Pinch to zoom, drag to move",
+                stringResource(R.string.txt_pinch_to_zoom__drag_to_mov),
                 modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
                 color = Color.DarkGray
             )

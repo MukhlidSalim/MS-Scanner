@@ -215,4 +215,20 @@
     <string name="txt_storage_management">Storage Management</string>
     <string name="txt_scans_storage_mb">Scans Storage</string>
     <string name="txt_cache_mb">Cache</string>
+
+    <string name="txt_sort">Sort</string>
+    <string name="txt_sort_newest">Newest First</string>
+    <string name="txt_sort_oldest">Oldest First</string>
+    <string name="txt_sort_name_az">Name A-Z</string>
+    <string name="txt_sort_name_za">Name Z-A</string>
+    <string name="txt_sort_size">Largest First</string>
+    <string name="txt_sort_pages">Most Pages</string>
+    <string name="txt_new_folder">New Folder</string>
+    <string name="txt_create_folder">Create Folder</string>
+    <string name="txt_folder_name">Folder Name</string>
+    <string name="txt_cancel">Cancel</string>
+    <string name="txt_create">Create</string>
+    <string name="txt_move_to_folder">Move to Folder</string>
+    <string name="txt_select_folder">Select Folder</string>
+    <string name="txt_version_available">Version %1$s is available!\n\n%2$s</string>
 </resources>

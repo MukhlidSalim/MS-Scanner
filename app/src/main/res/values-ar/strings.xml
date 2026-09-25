@@ -215,4 +215,20 @@
     <string name="txt_storage_management">إدارة التخزين</string>
     <string name="txt_scans_storage_mb">مساحة تخزين المسوحات</string>
     <string name="txt_cache_mb">الذاكرة المؤقتة</string>
+
+    <string name="txt_sort">ترتيب</string>
+    <string name="txt_sort_newest">الأحدث أولاً</string>
+    <string name="txt_sort_oldest">الأقدم أولاً</string>
+    <string name="txt_sort_name_az">الاسم أ-ي</string>
+    <string name="txt_sort_name_za">الاسم ي-أ</string>
+    <string name="txt_sort_size">الأكبر حجماً</string>
+    <string name="txt_sort_pages">الأكثر صفحات</string>
+    <string name="txt_new_folder">مجلد جديد</string>
+    <string name="txt_create_folder">إنشاء مجلد</string>
+    <string name="txt_folder_name">اسم المجلد</string>
+    <string name="txt_cancel">إلغاء</string>
+    <string name="txt_create">إنشاء</string>
+    <string name="txt_move_to_folder">نقل إلى مجلد</string>
+    <string name="txt_select_folder">اختر المجلد</string>
+    <string name="txt_version_available">الإصدار %1$s متاح!\n\n%2$s</string>
 </resources>

@@ -10,6 +10,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.example.R
+import androidx.compose.material.icons.filled.Add
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -17,6 +20,7 @@ fun FolderChipsRow(
     folders: List<String>,
     selectedFolder: String,
     onFolderSelected: (String) -> Unit,
+    onCreateFolderClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     Row(
@@ -42,5 +46,12 @@ fun FolderChipsRow(
                 }
             )
         }
+
+        InputChip(
+            selected = false,
+            onClick = onCreateFolderClick,
+            label = { Text(stringResource(R.string.txt_new_folder)) },
+            leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp)) }
+        )
     }
 }

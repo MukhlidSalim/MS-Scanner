@@ -68,6 +68,12 @@ fun HomeScreen(
     var selectedDocIds by remember { mutableStateOf(setOf<Long>()) }
     var isIdCardMode by remember { mutableStateOf(false) }
     var pendingIdCardPages by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
+
+    var showCreateFolderDialog by remember { mutableStateOf(false) }
+    var newFolderName by remember { mutableStateOf("") }
+    var docToMove by remember { mutableStateOf<Long?>(null) }
+    var showSortMenu by remember { mutableStateOf(false) }
+
     
     var updateInfo by remember { mutableStateOf<com.example.engine.updater.AppUpdater.UpdateInfo?>(null) }
     
@@ -82,7 +88,7 @@ fun HomeScreen(
         AlertDialog(
             onDismissRequest = { updateInfo = null },
             title = { Text(stringResource(R.string.txt_update_available)) },
-            text = { Text("Version ${updateInfo?.version} is available!\n\n${updateInfo?.releaseNotes}") },
+            text = { Text(stringResource(R.string.txt_version_available, updateInfo?.version ?: "", updateInfo?.releaseNotes ?: "")) },
             confirmButton = {
                 Button(onClick = {
                     com.example.engine.updater.AppUpdater.downloadAndInstall(context, updateInfo!!.downloadUrl)
@@ -248,6 +254,41 @@ fun HomeScreen(
                             Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.txt_delete_selected), tint = MaterialTheme.colorScheme.error)
                         }
                     } else {
+
+                    Box {
+                        IconButton(onClick = { showSortMenu = true }) {
+                            Icon(Icons.Default.Sort, contentDescription = stringResource(R.string.txt_sort))
+                        }
+                        DropdownMenu(
+                            expanded = showSortMenu,
+                            onDismissRequest = { showSortMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_sort_newest)) },
+                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.NEWEST); showSortMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_sort_oldest)) },
+                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.OLDEST); showSortMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_sort_name_az)) },
+                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.NAME_AZ); showSortMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_sort_name_za)) },
+                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.NAME_ZA); showSortMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_sort_size)) },
+                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.SIZE_LARGEST); showSortMenu = false }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_sort_pages)) },
+                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.PAGE_COUNT); showSortMenu = false }
+                            )
+                        }
+                    }
                     IconButton(
                         onClick = { isGridView = !isGridView },
                         modifier = Modifier.testTag("toggle_view_btn")
@@ -356,13 +397,12 @@ fun HomeScreen(
             )
 
             // Folder Chips
-            if (uiState.folders.isNotEmpty()) {
-                FolderChipsRow(
-                    folders = uiState.folders,
-                    selectedFolder = uiState.selectedFolder,
-                    onFolderSelected = { viewModel.filterByFolder(it) }
-                )
-            }
+            FolderChipsRow(
+                folders = uiState.folders,
+                selectedFolder = uiState.selectedFolder,
+                onFolderSelected = { viewModel.filterByFolder(it) },
+                onCreateFolderClick = { showCreateFolderDialog = true }
+            )
 
             // Category Filter Chips
             CategoryChipsRow(
@@ -470,7 +510,8 @@ fun HomeScreen(
                             onToggleFavorite = { viewModel.toggleFavorite(doc.id) },
                             onDelete = { viewModel.moveToTrash(doc.id) },
                             onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
-                            onSharePdf = { onNavigateToDocument(doc.id) }
+                            onSharePdf = { onNavigateToDocument(doc.id) },
+                            onMoveToFolder = { docToMove = doc.id }
                         )
                     }
                 }
@@ -501,12 +542,72 @@ fun HomeScreen(
                             onToggleFavorite = { viewModel.toggleFavorite(doc.id) },
                             onDelete = { viewModel.moveToTrash(doc.id) },
                             onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
-                            onSharePdf = { onNavigateToDocument(doc.id) }
+                            onSharePdf = { onNavigateToDocument(doc.id) },
+                            onMoveToFolder = { docToMove = doc.id }
                         )
                     }
                 }
             }
         }
+    }
+
+
+    if (showCreateFolderDialog) {
+        AlertDialog(
+            onDismissRequest = { showCreateFolderDialog = false },
+            title = { Text(stringResource(R.string.txt_create_folder)) },
+            text = {
+                OutlinedTextField(
+                    value = newFolderName,
+                    onValueChange = { newFolderName = it },
+                    label = { Text(stringResource(R.string.txt_folder_name)) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (newFolderName.isNotBlank()) {
+                        viewModel.filterByFolder(newFolderName.trim())
+                    }
+                    showCreateFolderDialog = false
+                    newFolderName = ""
+                }) {
+                    Text(stringResource(R.string.txt_create))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCreateFolderDialog = false }) {
+                    Text(stringResource(R.string.txt_cancel))
+                }
+            }
+        )
+    }
+
+    if (docToMove != null) {
+        AlertDialog(
+            onDismissRequest = { docToMove = null },
+            title = { Text(stringResource(R.string.txt_select_folder)) },
+            text = {
+                LazyColumn {
+                    items(uiState.folders) { folder ->
+                        TextButton(
+                            onClick = {
+                                viewModel.changeDocumentFolder(docToMove!!, folder)
+                                docToMove = null
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(folder, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { docToMove = null }) { Text(stringResource(R.string.txt_cancel)) }
+            }
+        )
     }
 
     // Trash Bin Management Dialog

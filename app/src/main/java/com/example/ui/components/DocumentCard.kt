@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.StarBorder
+import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -40,6 +41,7 @@ fun DocumentCard(
     onDelete: () -> Unit,
     onRename: (String) -> Unit,
     onSharePdf: () -> Unit,
+    onMoveToFolder: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var showMenu by remember { mutableStateOf(false) }
@@ -188,6 +190,15 @@ fun DocumentCard(
                                 showMenu = false
                                 renameInput = document.title
                                 showRenameDialog = true
+                            }
+                        )
+
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.txt_move_to_folder)) },
+                            leadingIcon = { Icon(Icons.Outlined.Folder, null) },
+                            onClick = {
+                                showMenu = false
+                                onMoveToFolder()
                             }
                         )
                         DropdownMenuItem(
