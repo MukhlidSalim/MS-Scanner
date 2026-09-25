@@ -91,19 +91,6 @@ fun DocScanApp(
                 )
             }
 
-            composable(Screen.CameraScan.route) {
-                CameraScanScreen(
-                    viewModel = scanViewModel,
-                    onNavigateBack = {
-                        navController.popBackStack()
-                    },
-                    onDocumentCreated = { docId ->
-                        navController.popBackStack()
-                        navController.navigate(Screen.DocumentViewer.createRoute(docId))
-                    }
-                )
-            }
-
             composable(
                 route = Screen.DocumentViewer.route,
                 arguments = listOf(navArgument("docId") { type = NavType.LongType })
@@ -127,24 +114,7 @@ fun DocScanApp(
                 )
             }
 
-            composable(
-                route = Screen.Crop.route,
-                arguments = listOf(
-                    navArgument("docId") { type = NavType.LongType },
-                    navArgument("pageId") { type = NavType.LongType }
-                )
-            ) { backStackEntry ->
-                val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
-                val pageId = backStackEntry.arguments?.getLong("pageId") ?: 0L
-                CropPerspectiveScreen(
-                    docId = docId,
-                    pageId = pageId,
-                    viewModel = docViewModel,
-                    onNavigateBack = {
-                        navController.popBackStack()
-                    }
-                )
-            }
+
 
             composable(
                 route = Screen.Ocr.route,

@@ -161,18 +161,28 @@ fun DocumentViewerScreen(
                 ) {
                     val activePage = pages.getOrNull(pagerState.currentPage)
 
-                    // Crop & Perspective
+                    // Duplicate
                     IconButton(
-                        onClick = {
-                            if (activePage != null) {
-                                onNavigateToCrop(docId, activePage.id)
-                            }
-                        },
-                        modifier = Modifier.testTag("action_crop_btn")
+                        onClick = { viewModel.duplicateActivePage() },
+                        modifier = Modifier.testTag("action_duplicate_btn")
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.Crop, contentDescription = "Crop")
-                            Text("Crop", fontSize = 10.sp)
+                            Icon(Icons.Default.FileCopy, contentDescription = "Duplicate")
+                            Text("Copy", fontSize = 10.sp)
+                        }
+                    }
+
+                    // Move Left (Reorder)
+                    IconButton(
+                        onClick = {
+                            val curr = pagerState.currentPage
+                            if (curr > 0) viewModel.reorderPages(curr, curr - 1)
+                        },
+                        modifier = Modifier.testTag("action_reorder_left_btn")
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.ArrowBackIosNew, contentDescription = "Move Left", modifier = Modifier.size(20.dp))
+                            Text("Move", fontSize = 10.sp)
                         }
                     }
 
