@@ -97,8 +97,15 @@ fun HomeScreen(
                         }
                     }
                     if (processedPages.isNotEmpty()) {
-                        viewModel.importPagesAsDocument(processedPages) { newDocId ->
-                            onNavigateToDocument(newDocId)
+                        if (isIdCardMode && processedPages.size >= 2) {
+                            val collagePath = ImageProcessor.createIdCardCollage(context, processedPages[0].second, processedPages[1].second, "idcard_proc_")
+                            viewModel.importPagesAsDocument(listOf(Pair(processedPages[0].first, collagePath))) { newDocId ->
+                                onNavigateToDocument(newDocId)
+                            }
+                        } else {
+                            viewModel.importPagesAsDocument(processedPages) { newDocId ->
+                                onNavigateToDocument(newDocId)
+                            }
                         }
                     }
                 }
@@ -134,10 +141,16 @@ fun HomeScreen(
         }
     }
 
-    val launchScanner = {
+    val launchScanner: (Int) -> Unit = { limit ->
         val activity = context as? Activity
         if (activity != null) {
-            GmsDocumentScanning.getClient(options).getStartScanIntent(activity)
+            val dynOptions = GmsDocumentScannerOptions.Builder()
+                .setGalleryImportAllowed(true)
+                .setPageLimit(limit)
+                .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+                .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+                .build()
+            GmsDocumentScanning.getClient(dynOptions).getStartScanIntent(activity)
                 .addOnSuccessListener { intentSender ->
                     scannerLauncher.launch(
                         androidx.activity.result.IntentSenderRequest.Builder(intentSender).build()
@@ -284,7 +297,7 @@ fun HomeScreen(
                         }
                     }
                     FloatingActionButton(
-                        onClick = { launchScanner() },
+                        onClick = { showCameraSheet = true },
                         containerColor = CyanScan,
                         contentColor = Color.White
                     ) {
@@ -337,7 +350,8 @@ fun HomeScreen(
                             FolderGridItem(
                                 folderName = folder,
                                 documentCount = uiState.documents.count { it.folderName == folder },
-                                onClick = { viewModel.filterByFolder(folder) }
+                                onClick = { viewModel.filterByFolder(folder) },
+                                onRenameClick = { renameFolderTarget = folder; newFolderRename = folder }
                             )
                         }
                     }
@@ -396,6 +410,61 @@ fun HomeScreen(
             },
             dismissButton = {
                 TextButton(onClick = { docToMove = null }) { Text(stringResource(R.string.txt_cancel)) }
+            }
+        )
+    }
+
+    
+    if (showCameraSheet) {
+        ModalBottomSheet(onDismissRequest = { showCameraSheet = false }) {
+            Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
+                Text(stringResource(R.string.txt_scan_doc), fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(bottom = 16.dp))
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.txt_scan_doc)) },
+                    leadingContent = { Icon(Icons.Default.DocumentScanner, contentDescription = null) },
+                    modifier = Modifier.clickable {
+                        isIdCardMode = false
+                        showCameraSheet = false
+                        launchScanner(20)
+                    }
+                )
+                ListItem(
+                    headlineContent = { Text(stringResource(R.string.txt_scan_id_card)) },
+                    leadingContent = { Icon(Icons.Default.Badge, contentDescription = null) },
+                    modifier = Modifier.clickable {
+                        isIdCardMode = true
+                        showCameraSheet = false
+                        launchScanner(2) // Limit 2 for front/back
+                    }
+                )
+                Spacer(modifier = Modifier.height(32.dp))
+            }
+        }
+    }
+
+    
+    if (renameFolderTarget != null) {
+        AlertDialog(
+            onDismissRequest = { renameFolderTarget = null },
+            title = { Text(stringResource(R.string.txt_rename_folder)) },
+            text = {
+                OutlinedTextField(
+                    value = newFolderRename,
+                    onValueChange = { newFolderRename = it },
+                    label = { Text(stringResource(R.string.txt_new_folder_name)) },
+                    singleLine = true
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (newFolderRename.isNotBlank()) {
+                        viewModel.renameFolder(renameFolderTarget!!, newFolderRename)
+                    }
+                    renameFolderTarget = null
+                }) { Text(stringResource(R.string.txt_save)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { renameFolderTarget = null }) { Text(stringResource(R.string.txt_cancel)) }
             }
         )
     }
@@ -507,8 +576,10 @@ fun DocumentGridItem(
 fun FolderGridItem(
     folderName: String,
     documentCount: Int,
-    onClick: () -> Unit
+    onClick: () -> Unit,
+    onRenameClick: () -> Unit
 ) {
+    var expanded by remember { mutableStateOf(false) }
     Card(
         onClick = onClick,
         modifier = Modifier
@@ -525,12 +596,28 @@ fun FolderGridItem(
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Icon(
-                Icons.Outlined.Folder,
-                contentDescription = null,
-                modifier = Modifier.size(48.dp),
-                tint = CyanScan
-            )
+            Box(modifier = Modifier.fillMaxWidth()) {
+                Icon(
+                    Icons.Outlined.Folder,
+                    contentDescription = null,
+                    modifier = Modifier.size(48.dp).align(Alignment.Center),
+                    tint = CyanScan
+                )
+                Box(modifier = Modifier.align(Alignment.TopEnd)) {
+                    IconButton(onClick = { expanded = true }, modifier = Modifier.size(24.dp)) {
+                        Icon(Icons.Default.MoreVert, contentDescription = null, tint = Color.Gray)
+                    }
+                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.txt_rename_folder)) },
+                            onClick = {
+                                expanded = false
+                                onRenameClick()
+                            }
+                        )
+                    }
+                }
+            }
             Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = folderName,

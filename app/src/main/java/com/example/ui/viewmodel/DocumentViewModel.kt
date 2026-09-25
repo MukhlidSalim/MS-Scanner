@@ -395,6 +395,28 @@ class DocumentViewModel(
         }
     }
 
+        fun updateActivePageProcessedImage(newPath: String) {
+        val pages = _uiState.value.activePages
+        val idx = _uiState.value.selectedPageIndex
+        if (idx in pages.indices) {
+            val page = pages[idx]
+            viewModelScope.launch {
+                val updatedPage = page.copy(processedImagePath = newPath)
+                repository.updatePage(updatedPage)
+                val newList = pages.toMutableList()
+                newList[idx] = updatedPage
+                _uiState.update { it.copy(activePages = newList) }
+                
+                if (idx == 0) {
+                    val doc = repository.getDocumentById(page.documentId)
+                    if (doc != null) {
+                        repository.updateDocument(doc.copy(thumbnailPath = newPath))
+                    }
+                }
+            }
+        }
+    }
+
     fun deleteActivePage() {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex

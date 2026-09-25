@@ -255,4 +255,4 @@
     <string name="txt_restore_success">Restore completed successfully</string>
     <string name="txt_backup_failed">Backup failed</string>
     <string name="txt_restore_failed">Restore failed</string>
-</resources>
+<string name="txt_scan_doc">Scan Document</string><string name="txt_scan_id_card">Scan ID Card / Passport</string><string name="txt_new_folder_name">New Folder Name</string></resources>
