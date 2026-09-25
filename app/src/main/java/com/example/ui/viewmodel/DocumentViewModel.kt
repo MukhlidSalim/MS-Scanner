@@ -495,10 +495,14 @@ class DocumentViewModel(
     /**
      * Exports current active document to PDF
      */
-    fun exportDocumentToPdf(config: PdfExportConfig, onComplete: (File) -> Unit) {
+    fun exportDocumentToPdf(config: PdfExportConfig, selectedPageIds: Set<Long>? = null, onComplete: (File) -> Unit) {
         viewModelScope.launch {
             _uiState.update { it.copy(isExportingPdf = true) }
-            val pages = _uiState.value.activePages
+            val pages = if (selectedPageIds != null && selectedPageIds.isNotEmpty()) {
+                _uiState.value.activePages.filter { selectedPageIds.contains(it.id) }
+            } else {
+                _uiState.value.activePages
+            }
             val pairs = pages.map { Pair(it.processedImagePath, it.ocrText) }
 
             val pdfFile = PdfEngine.generatePdf(context, pairs, config)

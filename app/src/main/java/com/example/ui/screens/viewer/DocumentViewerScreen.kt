@@ -63,6 +63,8 @@ fun DocumentViewerScreen(
     }
 
     val pagerState = rememberPagerState(pageCount = { pages.size })
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedPageIds by remember { mutableStateOf(setOf<Long>()) }
 
     LaunchedEffect(pagerState.currentPage) {
         if (pages.isNotEmpty() && pagerState.currentPage in pages.indices) {
@@ -126,27 +128,31 @@ fun DocumentViewerScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    var showRenameDialog by remember { mutableStateOf(false) }
-                    var renameInput by remember { mutableStateOf(doc?.title ?: "") }
+                    if (selectionMode) {
+                        Text("${selectedPageIds.size} Selected", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                    } else {
+                        var showRenameDialog by remember { mutableStateOf(false) }
+                        var renameInput by remember { mutableStateOf(doc?.title ?: "") }
 
-                    Column(modifier = Modifier.clickable { 
-                        renameInput = doc?.title ?: ""
-                        showRenameDialog = true 
-                    }) {
-                        Text(
-                            text = doc?.title ?: "Document",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1
-                        )
-                        if (pages.isNotEmpty()) {
+                        Column(modifier = Modifier.clickable { 
+                            renameInput = doc?.title ?: ""
+                            showRenameDialog = true 
+                        }) {
                             Text(
-                                text = "Page ${pagerState.currentPage + 1} of ${pages.size}",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = doc?.title ?: "Document",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1
                             )
+                            if (pages.isNotEmpty()) {
+                                Text(
+                                    text = "Page ${pagerState.currentPage + 1} of ${pages.size}",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
                         }
-                    }
+                    
 
                     if (showRenameDialog) {
                         AlertDialog(
@@ -174,8 +180,14 @@ fun DocumentViewerScreen(
                     }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.desc_back))
+                    if (selectionMode) {
+                        IconButton(onClick = { selectionMode = false; selectedPageIds = emptySet() }) {
+                            Icon(Icons.Default.Close, contentDescription = "Cancel Selection")
+                        }
+                    } else {
+                        IconButton(onClick = onNavigateBack) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.desc_back))
+                        }
                     }
                 },
                 actions = {
@@ -225,18 +237,23 @@ fun DocumentViewerScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         itemsIndexed(pages) { index, p ->
-                            val isSelected = index == pagerState.currentPage
+                            val isCurrentPage = index == pagerState.currentPage
+                            val isPageSelected = selectedPageIds.contains(p.id)
                             Box(
                                 modifier = Modifier
                                     .size(44.dp, 60.dp)
                                     .clip(RoundedCornerShape(6.dp))
                                     .border(
-                                        width = if (isSelected) 2.5.dp else 1.dp,
-                                        color = if (isSelected) EmeraldLight else MaterialTheme.colorScheme.outline,
+                                        width = if (isCurrentPage) 2.5.dp else 1.dp,
+                                        color = if (isCurrentPage) EmeraldLight else MaterialTheme.colorScheme.outline,
                                         shape = RoundedCornerShape(6.dp)
                                     )
-                                    .clickable {
-                                        // Scroll to selected page
+                                    .clickable { 
+                                        if (selectionMode) {
+                                            selectedPageIds = if (isPageSelected) selectedPageIds - p.id else selectedPageIds + p.id
+                                        } else {
+                                            coroutineScope.launch { pagerState.animateScrollToPage(index) } 
+                                        }
                                     }
                             ) {
                                 AsyncImage(
@@ -245,6 +262,21 @@ fun DocumentViewerScreen(
                                     contentScale = ContentScale.Crop,
                                     modifier = Modifier.fillMaxSize()
                                 )
+                                if (selectionMode) {
+                                    Box(
+                                        modifier = Modifier
+                                            .padding(4.dp)
+                                            .size(16.dp)
+                                            .align(Alignment.TopEnd)
+                                            .clip(CircleShape)
+                                            .background(if (isPageSelected) EmeraldLight else Color.Black.copy(alpha = 0.4f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        if (isPageSelected) {
+                                            Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(12.dp))
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -543,8 +575,12 @@ fun DocumentViewerScreen(
                             compression = selectedCompression,
                             includeSearchableText = includeOcr
                         )
-                        viewModel.exportDocumentToPdf(config) { generatedPdf ->
+                        viewModel.exportDocumentToPdf(config, if (selectionMode) selectedPageIds else null) { generatedPdf ->
                             showPdfExportDialog = false
+                            if (selectionMode) {
+                                selectionMode = false
+                                selectedPageIds = emptySet()
+                            }
                             shareFile(context, generatedPdf, "application/pdf")
                         }
                     },
