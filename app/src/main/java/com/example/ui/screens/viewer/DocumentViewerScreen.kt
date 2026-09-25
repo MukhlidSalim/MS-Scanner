@@ -73,7 +73,10 @@ fun DocumentViewerScreen(
     }
 
     var showPdfExportDialog by remember { mutableStateOf(false) }
+
     var showFilterSheet by remember { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
+
     
     val activity = context as? android.app.Activity
     val coroutineScope = rememberCoroutineScope()
@@ -208,6 +211,41 @@ fun DocumentViewerScreen(
                     }) {
                         Icon(Icons.Default.Share, contentDescription = stringResource(R.string.desc_share_page))
                     }
+                    Box {
+                        IconButton(onClick = { showOverflowMenu = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.txt_options))
+                        }
+                        DropdownMenu(
+                            expanded = showOverflowMenu,
+                            onDismissRequest = { showOverflowMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_save_to_gallery)) },
+                                leadingIcon = { Icon(Icons.Default.Save, null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    viewModel.saveDocumentToGallery(context, docId)
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_print)) },
+                                leadingIcon = { Icon(Icons.Default.Print, null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    val activePage = pages.getOrNull(pagerState.currentPage)
+                                    if (activePage != null) {
+                                        val printHelper = androidx.print.PrintHelper(context)
+                                        printHelper.scaleMode = androidx.print.PrintHelper.SCALE_MODE_FIT
+                                        val bitmap = android.graphics.BitmapFactory.decodeFile(activePage.processedImagePath)
+                                        if (bitmap != null) {
+                                            printHelper.printBitmap("DocScan Page", bitmap)
+                                        }
+                                    }
+                                }
+                            )
+                        }
+                    }
+
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
@@ -520,6 +558,19 @@ fun DocumentViewerScreen(
                         }
                     }
                 }
+                if (pages.size > 1) {
+                    Button(
+                        onClick = {
+                            val activeFilterStr = pages.getOrNull(pagerState.currentPage)?.filterType ?: FilterType.MAGIC.name
+                            val activeFilter = try { FilterType.valueOf(activeFilterStr) } catch(e: Exception) { FilterType.MAGIC }
+                            viewModel.applyFilterToAllPages(context, activeFilter)
+                            showFilterSheet = false
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(stringResource(R.string.txt_apply_to_all_pages))
+                    }
+                }
                 Spacer(modifier = Modifier.height(16.dp))
             }
         }
@@ -540,10 +591,16 @@ fun DocumentViewerScreen(
                     Text(stringResource(R.string.txt_page_format), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         PageSizePreset.values().forEach { size ->
+                            val sizeName = when (size) {
+                                PageSizePreset.A4 -> stringResource(R.string.page_size_a4)
+                                PageSizePreset.LETTER -> stringResource(R.string.page_size_letter)
+                                PageSizePreset.FIT_ORIGINAL -> stringResource(R.string.page_size_fit)
+                                PageSizePreset.LEGAL -> stringResource(R.string.page_size_legal)
+                            }
                             FilterChip(
                                 selected = size == selectedSize,
                                 onClick = { selectedSize = size },
-                                label = { Text(size.name) }
+                                label = { Text(sizeName) }
                             )
                         }
                     }

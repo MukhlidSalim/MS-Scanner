@@ -107,15 +107,45 @@ fun IdCardMergerScreen(
             )
         }
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .background(Color.LightGray),
-            contentAlignment = Alignment.Center
+                .background(Color.LightGray)
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(
+                    selected = false,
+                    onClick = {
+                        frontOffset = Offset(50f, 100f)
+                        frontScale = 1f
+                        backOffset = Offset(50f, 600f)
+                        backScale = 1f
+                    },
+                    label = { Text(stringResource(R.string.txt_top_bottom)) }
+                )
+                FilterChip(
+                    selected = false,
+                    onClick = {
+                        frontOffset = Offset(50f, 300f)
+                        frontScale = 0.8f
+                        backOffset = Offset(650f, 300f)
+                        backScale = 0.8f
+                    },
+                    label = { Text(stringResource(R.string.txt_side_by_side)) }
+                )
+            }
+            
+            Spacer(modifier = Modifier.weight(1f))
+            
             // A4 Canvas representation
             Box(
+                modifier = Modifier.align(Alignment.CenterHorizontally)
+            ) {
+                Box(
                 modifier = Modifier
                     .size(width = 300.dp, height = 424.dp) // A4 ratio
                     .background(Color.White)
@@ -153,9 +183,11 @@ fun IdCardMergerScreen(
                 }
             }
             
+            Spacer(modifier = Modifier.weight(1f))
+            
             Text(
                 stringResource(R.string.txt_pinch_to_zoom__drag_to_mov),
-                modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                modifier = Modifier.align(Alignment.CenterHorizontally).padding(16.dp),
                 color = Color.DarkGray
             )
         }

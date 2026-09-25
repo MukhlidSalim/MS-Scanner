@@ -47,6 +47,7 @@ object PdfEngine {
                 val (pageWidth, pageHeight) = when (config.pageSize) {
                     PageSizePreset.A4 -> Pair(595, 842)
                     PageSizePreset.LETTER -> Pair(612, 792)
+                    PageSizePreset.LEGAL -> Pair(612, 1008)
                     PageSizePreset.FIT_ORIGINAL -> {
                         val maxPt = 800
                         val aspect = originalBitmap.width.toFloat() / originalBitmap.height.toFloat()

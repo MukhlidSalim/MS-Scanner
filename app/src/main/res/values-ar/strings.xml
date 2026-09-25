@@ -231,4 +231,12 @@
     <string name="txt_move_to_folder">نقل إلى مجلد</string>
     <string name="txt_select_folder">اختر المجلد</string>
     <string name="txt_version_available">الإصدار %1$s متاح!\n\n%2$s</string>
+    <string name="txt_save_to_gallery">حفظ في المعرض</string>
+    <string name="txt_saved_to_gallery">تم الحفظ في المعرض!</string>
+    <string name="txt_save_failed">فشل الحفظ</string>
+    <string name="page_size_legal">قانوني (US Legal)</string>
+    <string name="txt_top_bottom">أعلى / أسفل</string>
+    <string name="txt_side_by_side">جنباً إلى جنب</string>
+    <string name="txt_print">طباعة</string>
+    <string name="txt_apply_to_all_pages">تطبيق على كل الصفحات</string>
 </resources>

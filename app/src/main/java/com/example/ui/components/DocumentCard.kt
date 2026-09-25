@@ -41,6 +41,7 @@ fun DocumentCard(
     onDelete: () -> Unit,
     onRename: (String) -> Unit,
     onSharePdf: () -> Unit,
+    onSaveToGallery: () -> Unit,
     onMoveToFolder: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -175,6 +176,14 @@ fun DocumentCard(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false }
                     ) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.txt_save_to_gallery)) },
+                            leadingIcon = { Icon(Icons.Default.Save, null) },
+                            onClick = {
+                                showMenu = false
+                                onSaveToGallery()
+                            }
+                        )
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.txt_share_pdf)) },
                             leadingIcon = { Icon(Icons.Default.Share, null) },

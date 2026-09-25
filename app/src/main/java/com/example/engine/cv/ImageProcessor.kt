@@ -1,6 +1,9 @@
 package com.example.engine.cv
 
 import android.content.Context
+import android.content.ContentValues
+import android.provider.MediaStore
+import android.os.Environment
 import android.graphics.*
 import com.example.data.model.FilterType
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +25,34 @@ data class QualityReport(
 )
 
 object ImageProcessor {
+    suspend fun saveToGallery(context: Context, imageFile: File): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val bitmap = BitmapFactory.decodeFile(imageFile.absolutePath) ?: return@withContext false
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.DISPLAY_NAME, "MS_Scanner_${System.currentTimeMillis()}.jpg")
+                put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/MS Scanner")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
+            }
+            
+            val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            if (uri != null) {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    bitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
+                }
+                values.clear()
+                values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                context.contentResolver.update(uri, values, null, null)
+                true
+            } else {
+                false
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
 
     suspend fun saveBitmapToFile(context: Context, bitmap: Bitmap, prefix: String = "scan_"): String = withContext(Dispatchers.IO) {
         val dir = File(context.filesDir, "scans").apply { if (!exists()) mkdirs() }

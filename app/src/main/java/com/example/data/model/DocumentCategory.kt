@@ -23,7 +23,8 @@ enum class FilterType {
 enum class PageSizePreset {
     A4,
     LETTER,
-    FIT_ORIGINAL
+    FIT_ORIGINAL,
+    LEGAL
 }
 
 enum class CompressionPreset(val qualityPercent: Int) {

@@ -170,10 +170,16 @@ fun SettingsScreen(
                         Text(text = stringResource(R.string.txt_page_size), fontWeight = FontWeight.SemiBold)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             PageSizePreset.values().forEach { size ->
+                                val sizeName = when (size) {
+                                    PageSizePreset.A4 -> stringResource(R.string.page_size_a4)
+                                    PageSizePreset.LETTER -> stringResource(R.string.page_size_letter)
+                                    PageSizePreset.FIT_ORIGINAL -> stringResource(R.string.page_size_fit)
+                                    PageSizePreset.LEGAL -> stringResource(R.string.page_size_legal)
+                                }
                                 FilterChip(
                                     selected = uiState.defaultPdfPageSize == size,
                                     onClick = { viewModel.setDefaultPdfPageSize(size) },
-                                    label = { Text(size.name) }
+                                    label = { Text(sizeName) }
                                 )
                             }
                         }
@@ -182,10 +188,16 @@ fun SettingsScreen(
                         Text(text = stringResource(R.string.txt_compression_quality), fontWeight = FontWeight.SemiBold)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             CompressionPreset.values().forEach { comp ->
+                                val compName = when (comp) {
+                                    CompressionPreset.MAXIMUM -> stringResource(R.string.compression_max)
+                                    CompressionPreset.HIGH -> stringResource(R.string.compression_high)
+                                    CompressionPreset.MEDIUM -> stringResource(R.string.compression_medium)
+                                    CompressionPreset.LOW -> stringResource(R.string.compression_low)
+                                }
                                 FilterChip(
                                     selected = uiState.defaultPdfCompression == comp,
                                     onClick = { viewModel.setDefaultPdfCompression(comp) },
-                                    label = { Text(comp.name) }
+                                    label = { Text(compName) }
                                 )
                             }
                         }

@@ -9,6 +9,9 @@ import com.example.data.repository.DocumentRepository
 import com.example.data.repository.StorageStats
 import com.example.engine.annotation.*
 import com.example.engine.cv.DocumentQuad
+import android.content.Context
+import android.widget.Toast
+import com.example.R
 import com.example.engine.cv.ImageProcessor
 import com.example.engine.cv.QualityReport
 import com.example.engine.ocr.DocumentAiEngine
@@ -123,8 +126,10 @@ class DocumentViewModel(
 
     fun importPagesAsDocument(pages: List<Pair<String, String>>, onComplete: (Long) -> Unit) {
         viewModelScope.launch {
+            val folder = if (_uiState.value.selectedFolder == "ALL") "Default" else _uiState.value.selectedFolder
             val docId = repository.createDocumentWithPages(
                 title = "Imported Doc",
+                folderName = folder,
                 pages = pages
             )
             refreshStorageStats()
@@ -356,6 +361,35 @@ class DocumentViewModel(
     /**
      * Applies filter to page and saves processed file
      */
+
+    fun applyFilterToAllPages(context: Context, filter: FilterType) {
+        viewModelScope.launch {
+            try {
+                val docId = _uiState.value.documentId ?: return@launch
+                val pages = repository.getPagesList(docId)
+                if (pages.isEmpty()) return@launch
+
+                val updatedPages = pages.map { page ->
+                    val rawBitmap = ImageProcessor.loadBitmapFromFile(page.rawImagePath) ?: return@map page
+                    val rotatedRaw = ImageProcessor.rotateBitmap(rawBitmap, page.rotationDegrees.toFloat())
+                    val filtered = ImageProcessor.applyFilter(rotatedRaw, filter)
+                    val newProcessedPath = ImageProcessor.saveBitmapToFile(context, filtered, "proc_all_")
+                    
+                    val oldFile = java.io.File(page.processedImagePath)
+                    if (oldFile.exists() && oldFile.absolutePath != page.rawImagePath) {
+                        oldFile.delete()
+                    }
+                    
+                    page.copy(filterType = filter.name, processedImagePath = newProcessedPath)
+                }
+
+                repository.updatePages(updatedPages)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     fun applyFilterToActivePage(filter: FilterType) {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
@@ -548,6 +582,58 @@ class DocumentViewModel(
         viewModelScope.launch {
             val path = AnnotationEngine.saveSignatureBitmap(context, bitmap)
             repository.saveSignature(title, path)
+        }
+    }
+
+    
+    fun saveDocumentToGallery(context: Context, docId: Long) {
+        viewModelScope.launch {
+            try {
+                val pages = repository.getPagesList(docId)
+                if (pages.isEmpty()) return@launch
+                
+                var successCount = 0
+                pages.forEach { page ->
+                    val file = java.io.File(page.processedImagePath)
+                    if (file.exists()) {
+                        val success = ImageProcessor.saveToGallery(context, file)
+                        if (success) successCount++
+                    }
+                }
+                
+                withContext(Dispatchers.Main) {
+                    if (successCount > 0) {
+                        Toast.makeText(context, context.getString(R.string.txt_saved_to_gallery), Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, context.getString(R.string.txt_save_failed), Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+    
+    fun saveActivePageToGallery(context: Context) {
+        viewModelScope.launch {
+            try {
+                val activePage = _uiState.value.activePages.getOrNull(_uiState.value.selectedPageIndex)
+                if (activePage != null) {
+                    val file = java.io.File(activePage.processedImagePath)
+                    if (file.exists()) {
+                        val success = ImageProcessor.saveToGallery(context, file)
+                        withContext(Dispatchers.Main) {
+                            if (success) {
+                                Toast.makeText(context, context.getString(R.string.txt_saved_to_gallery), Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, context.getString(R.string.txt_save_failed), Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
