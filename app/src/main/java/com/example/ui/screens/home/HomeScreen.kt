@@ -209,7 +209,7 @@ fun HomeScreen(
                 navigationIcon = {
                     if (selectionMode) {
                         IconButton(onClick = { selectionMode = false; selectedDocIds = emptySet() }) {
-                            Icon(Icons.Default.Close, contentDescription = "Cancel Selection")
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.txt_cancel_selection))
                         }
                     }
                 },
@@ -232,7 +232,7 @@ fun HomeScreen(
                             )
                         }
                         Text(
-                            text = if (selectionMode) "${selectedDocIds.size} Selected" else "DocScan Pro",
+                            text = if (selectionMode) stringResource(R.string.txt_selected_count, selectedDocIds.size) else stringResource(R.string.app_name),
                             fontWeight = FontWeight.Bold,
                             fontSize = 20.sp
                         )
@@ -245,7 +245,7 @@ fun HomeScreen(
                             selectionMode = false
                             selectedDocIds = emptySet()
                         }) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete Selected", tint = MaterialTheme.colorScheme.error)
+                            Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.txt_delete_selected), tint = MaterialTheme.colorScheme.error)
                         }
                     } else {
                     IconButton(
@@ -379,7 +379,7 @@ fun HomeScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "${uiState.documents.size} Documents",
+                    text = stringResource(R.string.txt_documents_count, uiState.documents.size),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = FontWeight.Medium
@@ -413,7 +413,7 @@ fun HomeScreen(
                         }
 
                         Text(
-                            text = if (uiState.searchQuery.isNotEmpty()) "No matching documents" else "No Scanned Documents Yet",
+                            text = if (uiState.searchQuery.isNotEmpty()) stringResource(R.string.txt_no_matching) else stringResource(R.string.txt_no_documents),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -513,7 +513,7 @@ fun HomeScreen(
     if (showTrashDialog) {
         AlertDialog(
             onDismissRequest = { showTrashDialog = false },
-            title = { Text("Trash Bin (${uiState.trashDocuments.size})") },
+            title = { Text(stringResource(R.string.txt_trash_bin, uiState.trashDocuments.size)) },
             text = {
                 if (uiState.trashDocuments.isEmpty()) {
                     Text(stringResource(R.string.txt_trash_is_empty))

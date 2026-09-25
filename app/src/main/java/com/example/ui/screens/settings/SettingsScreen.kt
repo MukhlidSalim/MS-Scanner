@@ -83,12 +83,12 @@ fun SettingsScreen(
                     )
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            text = "100% Offline-First Architecture",
+                            text = stringResource(R.string.txt_offline_architecture),
                             fontWeight = FontWeight.Bold,
                             fontSize = 15.sp
                         )
                         Text(
-                            text = "All scans, documents, signatures, and OCR processing remain strictly on your device. Zero external cloud leaks.",
+                            text = stringResource(R.string.txt_offline_desc),
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -98,7 +98,7 @@ fun SettingsScreen(
 
             // Language Settings
             Text(
-                text = "Language / اللغة",
+                text = stringResource(R.string.txt_language),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -116,8 +116,8 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Column {
-                        Text(text = "App Language", fontWeight = FontWeight.SemiBold)
-                        Text(text = "Switch between English and Arabic", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(text = stringResource(R.string.txt_app_language), fontWeight = FontWeight.SemiBold)
+                        Text(text = stringResource(R.string.txt_switch_lang_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(
                         checked = isArabic,
@@ -132,7 +132,7 @@ fun SettingsScreen(
 
             // Appearance Settings
             Text(
-                text = "Appearance",
+                text = stringResource(R.string.txt_appearance),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -141,13 +141,14 @@ fun SettingsScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(text = "App Theme", fontWeight = FontWeight.SemiBold)
+                    Text(text = stringResource(R.string.txt_app_theme), fontWeight = FontWeight.SemiBold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("System", "Light", "Dark").forEach { theme ->
+                        val themeOptions = listOf("System" to stringResource(R.string.txt_system), "Light" to stringResource(R.string.txt_light), "Dark" to stringResource(R.string.txt_dark))
+                        themeOptions.forEach { (themeId, themeLabel) ->
                             FilterChip(
-                                selected = uiState.themeMode == theme,
-                                onClick = { viewModel.setThemeMode(theme) },
-                                label = { Text(theme) }
+                                selected = uiState.themeMode == themeId,
+                                onClick = { viewModel.setThemeMode(themeId) },
+                                label = { Text(themeLabel) }
                             )
                         }
                     }
@@ -156,7 +157,7 @@ fun SettingsScreen(
 
             // PDF Defaults
             Text(
-                text = "Default PDF Export Settings",
+                text = stringResource(R.string.txt_default_pdf_settings),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -166,7 +167,7 @@ fun SettingsScreen(
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(text = "Page Size", fontWeight = FontWeight.SemiBold)
+                        Text(text = stringResource(R.string.txt_page_size), fontWeight = FontWeight.SemiBold)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             PageSizePreset.values().forEach { size ->
                                 FilterChip(
@@ -178,7 +179,7 @@ fun SettingsScreen(
                         }
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(text = "Compression & Quality", fontWeight = FontWeight.SemiBold)
+                        Text(text = stringResource(R.string.txt_compression_quality), fontWeight = FontWeight.SemiBold)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             CompressionPreset.values().forEach { comp ->
                                 FilterChip(
@@ -194,7 +195,7 @@ fun SettingsScreen(
 
             // Cloud Sync & Auto-save (Dummy as per requirements)
             Text(
-                text = "Cloud Sync & Backup",
+                text = stringResource(R.string.txt_cloud_sync),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -205,22 +206,22 @@ fun SettingsScreen(
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column {
-                            Text(text = "Auto-save to Gallery", fontWeight = FontWeight.SemiBold)
-                            Text(text = "Save a copy of scanned pages to photos", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(text = stringResource(R.string.txt_auto_save_gallery), fontWeight = FontWeight.SemiBold)
+                            Text(text = stringResource(R.string.txt_auto_save_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Switch(checked = false, onCheckedChange = {
-                            Toast.makeText(context, "Coming soon", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.txt_coming_soon), Toast.LENGTH_SHORT).show()
                         })
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column {
-                            Text(text = "Google Drive Sync", fontWeight = FontWeight.SemiBold)
-                            Text(text = "Securely backup your documents", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(text = stringResource(R.string.txt_gdrive_sync), fontWeight = FontWeight.SemiBold)
+                            Text(text = stringResource(R.string.txt_gdrive_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                         Button(onClick = {
-                            Toast.makeText(context, "Coming soon", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.txt_coming_soon), Toast.LENGTH_SHORT).show()
                         }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)) {
-                            Text("Connect")
+                            Text(stringResource(R.string.txt_connect))
                         }
                     }
                 }
@@ -228,7 +229,7 @@ fun SettingsScreen(
 
             // Security & App Lock
             Text(
-                text = "Security & PIN Lock",
+                text = stringResource(R.string.txt_security_pin),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -246,7 +247,7 @@ fun SettingsScreen(
                         Column {
                             Text(stringResource(R.string.txt_app_pin_protection), fontWeight = FontWeight.SemiBold)
                             Text(
-                                text = if (uiState.hasPinConfigured) "PIN configured and active" else "No PIN configured",
+                                text = if (uiState.hasPinConfigured) stringResource(R.string.txt_pin_configured) else stringResource(R.string.txt_no_pin),
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -256,7 +257,7 @@ fun SettingsScreen(
                             onClick = { showPinDialog = true },
                             modifier = Modifier.testTag("set_pin_btn")
                         ) {
-                            Text(if (uiState.hasPinConfigured) "Change PIN" else "Set PIN")
+                            Text(if (uiState.hasPinConfigured) stringResource(R.string.txt_change_pin) else stringResource(R.string.txt_set_pin))
                         }
                     }
 
@@ -264,7 +265,7 @@ fun SettingsScreen(
                         OutlinedButton(
                             onClick = {
                                 viewModel.setPin("")
-                                Toast.makeText(context, "PIN disabled", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.txt_pin_disabled), Toast.LENGTH_SHORT).show()
                             },
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                         ) {
@@ -276,7 +277,7 @@ fun SettingsScreen(
 
             // Legal & Info
             Text(
-                text = "Legal",
+                text = stringResource(R.string.txt_legal),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -295,14 +296,14 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(text = "Privacy Policy", fontWeight = FontWeight.SemiBold)
+                    Text(text = stringResource(R.string.txt_privacy_policy), fontWeight = FontWeight.SemiBold)
                     Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                 }
             }
 
             // Storage Management
             Text(
-                text = "Storage Management",
+                text = stringResource(R.string.txt_storage_management),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -360,7 +361,7 @@ fun SettingsScreen(
                         OutlinedButton(
                             onClick = {
                                 viewModel.clearCache()
-                                Toast.makeText(context, "Temporary cache cleared!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.txt_cache_cleared), Toast.LENGTH_SHORT).show()
                             },
                             modifier = Modifier.weight(1f).testTag("clear_cache_btn")
                         ) {
@@ -372,7 +373,7 @@ fun SettingsScreen(
                         OutlinedButton(
                             onClick = {
                                 viewModel.emptyTrash()
-                                Toast.makeText(context, "Trash emptied!", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.txt_trash_emptied), Toast.LENGTH_SHORT).show()
                             },
                             modifier = Modifier.weight(1f).testTag("empty_trash_btn")
                         ) {
@@ -386,7 +387,7 @@ fun SettingsScreen(
 
             // About
             Text(
-                text = "About DocScan Pro",
+                text = stringResource(R.string.txt_about),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -401,7 +402,7 @@ fun SettingsScreen(
                 ) {
                     Text(stringResource(R.string.txt_docscan_pro_v1_0), fontWeight = FontWeight.Bold)
                     Text(
-                        "Professional Document Scanner with Intelligent Boundary Detection, 4-Corner Homography Perspective Correction, Deep OCR AI, and Searchable Multi-Page PDF Studio.",
+                        stringResource(R.string.txt_professional_document_scan),
                         fontSize = 12.sp,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -429,9 +430,9 @@ fun SettingsScreen(
                         if (pinInput.length == 4) {
                             viewModel.setPin(pinInput)
                             showPinDialog = false
-                            Toast.makeText(context, "PIN set successfully!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.txt_pin_set_success), Toast.LENGTH_SHORT).show()
                         } else {
-                            Toast.makeText(context, "PIN must be exactly 4 digits", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.txt_pin_4_digits), Toast.LENGTH_SHORT).show()
                         }
                     }
                 ) {

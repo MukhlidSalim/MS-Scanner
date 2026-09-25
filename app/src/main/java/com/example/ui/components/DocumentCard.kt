@@ -78,7 +78,7 @@ fun DocumentCard(
                 if (document.thumbnailPath.isNotBlank() && File(document.thumbnailPath).exists()) {
                     AsyncImage(
                         model = File(document.thumbnailPath),
-                        contentDescription = "Document Thumbnail",
+                        contentDescription = stringResource(R.string.txt_document_thumbnail),
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
                     )
@@ -153,7 +153,7 @@ fun DocumentCard(
                 ) {
                     Icon(
                         imageVector = if (document.isFavorite) Icons.Default.Star else Icons.Outlined.StarBorder,
-                        contentDescription = "Favorite",
+                        contentDescription = stringResource(R.string.txt_favorite),
                         tint = if (document.isFavorite) Color(0xFFFBBF24) else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
@@ -165,7 +165,7 @@ fun DocumentCard(
                     ) {
                         Icon(
                             imageVector = Icons.Default.MoreVert,
-                            contentDescription = "Options"
+                            contentDescription = stringResource(R.string.txt_options)
                         )
                     }
 
@@ -174,7 +174,7 @@ fun DocumentCard(
                         onDismissRequest = { showMenu = false }
                     ) {
                         DropdownMenuItem(
-                            text = { Text("Share PDF") },
+                            text = { Text(stringResource(R.string.txt_share_pdf)) },
                             leadingIcon = { Icon(Icons.Default.Share, null) },
                             onClick = {
                                 showMenu = false
@@ -182,7 +182,7 @@ fun DocumentCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Rename") },
+                            text = { Text(stringResource(R.string.txt_rename)) },
                             leadingIcon = { Icon(Icons.Default.Edit, null) },
                             onClick = {
                                 showMenu = false
@@ -191,7 +191,7 @@ fun DocumentCard(
                             }
                         )
                         DropdownMenuItem(
-                            text = { Text("Move to Trash", color = MaterialTheme.colorScheme.error) },
+                            text = { Text(stringResource(R.string.txt_move_to_trash), color = MaterialTheme.colorScheme.error) },
                             leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
                             onClick = {
                                 showMenu = false
@@ -207,12 +207,12 @@ fun DocumentCard(
     if (showRenameDialog) {
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
-            title = { Text("Rename Document") },
+            title = { Text(stringResource(R.string.txt_rename_document)) },
             text = {
                 OutlinedTextField(
                     value = renameInput,
                     onValueChange = { renameInput = it },
-                    label = { Text("Document Title") },
+                    label = { Text(stringResource(R.string.txt_document_title)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("rename_input_field")
                 )
@@ -226,12 +226,12 @@ fun DocumentCard(
                         showRenameDialog = false
                     }
                 ) {
-                    Text("Save")
+                    Text(stringResource(R.string.txt_save))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showRenameDialog = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.txt_cancel))
                 }
             }
         )

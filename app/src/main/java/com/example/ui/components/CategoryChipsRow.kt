@@ -24,10 +24,12 @@ fun CategoryChipsRow(
     ) {
         DocumentCategory.values().forEach { cat ->
             val isSelected = cat == selectedCategory
+            val isArabic = java.util.Locale.getDefault().language == "ar"
+            val displayName = if (isArabic) cat.displayNameAr else cat.displayNameEn
             FilterChip(
                 selected = isSelected,
                 onClick = { onCategorySelected(cat) },
-                label = { Text(cat.displayNameEn) },
+                label = { Text(displayName) },
                 colors = FilterChipDefaults.filterChipColors(
                     selectedContainerColor = MaterialTheme.colorScheme.primary,
                     selectedLabelColor = MaterialTheme.colorScheme.onPrimary

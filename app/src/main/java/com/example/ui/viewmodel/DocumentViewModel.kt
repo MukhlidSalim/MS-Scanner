@@ -44,7 +44,8 @@ data class DocumentUiState(
     val hasPinConfigured: Boolean = false,
     val themeMode: String = "System",
     val defaultPdfPageSize: com.example.data.model.PageSizePreset = com.example.data.model.PageSizePreset.A4,
-    val defaultPdfCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH
+    val defaultPdfCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH,
+    val sortMode: SortMode = SortMode.NEWEST
 )
 
 class DocumentViewModel(
@@ -72,7 +73,7 @@ class DocumentViewModel(
     private fun loadAllDocuments() {
         viewModelScope.launch {
             repository.getAllDocuments().collectLatest { docs ->
-                _uiState.update { it.copy(documents = docs) }
+                _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
             }
         }
         viewModelScope.launch {
@@ -136,11 +137,11 @@ class DocumentViewModel(
         viewModelScope.launch {
             if (query.isBlank()) {
                 repository.getAllDocuments().first().let { docs ->
-                    _uiState.update { it.copy(documents = docs) }
+                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
                 }
             } else {
                 repository.searchDocuments(query).collectLatest { searchResults ->
-                    _uiState.update { it.copy(documents = searchResults) }
+                    _uiState.update { state -> state.copy(documents = applySorting(searchResults, state.sortMode)) }
                 }
             }
         }
@@ -151,14 +152,31 @@ class DocumentViewModel(
         viewModelScope.launch {
             if (folder == "ALL") {
                 repository.getAllDocuments().collectLatest { docs ->
-                    _uiState.update { it.copy(documents = docs) }
+                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
                 }
             } else {
                 repository.getDocumentsByFolder(folder).collectLatest { docs ->
-                    _uiState.update { it.copy(documents = docs) }
+                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
                 }
             }
         }
+    }
+
+    private fun applySorting(docs: List<DocumentEntity>, mode: SortMode): List<DocumentEntity> {
+        return when (mode) {
+            SortMode.NEWEST -> docs.sortedByDescending { it.updatedAt }
+            SortMode.OLDEST -> docs.sortedBy { it.updatedAt }
+            SortMode.NAME_AZ -> docs.sortedBy { it.title.lowercase() }
+            SortMode.NAME_ZA -> docs.sortedByDescending { it.title.lowercase() }
+            SortMode.SIZE_LARGEST -> docs.sortedByDescending { it.pageCount }
+            SortMode.PAGE_COUNT -> docs.sortedByDescending { it.pageCount }
+        }
+    }
+
+    fun setSortMode(mode: SortMode) {
+        _uiState.update { it.copy(sortMode = mode) }
+        val sorted = applySorting(_uiState.value.documents, mode)
+        _uiState.update { state -> state.copy(documents = applySorting(sorted, state.sortMode)) }
     }
 
     fun filterByCategory(cat: DocumentCategory) {
@@ -166,11 +184,11 @@ class DocumentViewModel(
         viewModelScope.launch {
             if (cat == DocumentCategory.ALL) {
                 repository.getAllDocuments().collectLatest { docs ->
-                    _uiState.update { it.copy(documents = docs) }
+                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
                 }
             } else {
                 repository.getDocumentsByCategory(cat.name).collectLatest { docs ->
-                    _uiState.update { it.copy(documents = docs) }
+                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
                 }
             }
         }
