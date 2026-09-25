@@ -243,6 +243,34 @@ fun DocumentViewerScreen(
                                     }
                                 }
                             )
+                            if (pagerState.currentPage > 0) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.txt_move_left)) },
+                                    leadingIcon = { Icon(Icons.Default.ArrowBack, null) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        val activePage = pages.getOrNull(pagerState.currentPage)
+                                        if (activePage != null) {
+                                            viewModel.movePageLeft(activePage.id)
+                                            coroutineScope.launch { pagerState.animateScrollToPage(pagerState.currentPage - 1) }
+                                        }
+                                    }
+                                )
+                            }
+                            if (pagerState.currentPage < pages.size - 1) {
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.txt_move_right)) },
+                                    leadingIcon = { Icon(Icons.Default.ArrowForward, null) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        val activePage = pages.getOrNull(pagerState.currentPage)
+                                        if (activePage != null) {
+                                            viewModel.movePageRight(activePage.id)
+                                            coroutineScope.launch { pagerState.animateScrollToPage(pagerState.currentPage + 1) }
+                                        }
+                                    }
+                                )
+                            }
                         }
                     }
 

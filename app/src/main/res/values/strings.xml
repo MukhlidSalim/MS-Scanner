@@ -239,4 +239,9 @@
     <string name="txt_side_by_side">Side by Side</string>
     <string name="txt_print">Print</string>
     <string name="txt_apply_to_all_pages">Apply to all pages</string>
+    <string name="txt_rename_folder">Rename Folder</string>
+    <string name="txt_delete_folder">Delete Folder</string>
+    <string name="txt_eraser">Eraser</string>
+    <string name="txt_move_left">Move Page Left</string>
+    <string name="txt_move_right">Move Page Right</string>
 </resources>

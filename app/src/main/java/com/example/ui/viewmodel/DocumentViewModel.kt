@@ -152,6 +152,25 @@ class DocumentViewModel(
         }
     }
 
+    
+    fun renameFolder(oldName: String, newName: String) {
+        viewModelScope.launch {
+            repository.renameFolder(oldName, newName)
+            if (_uiState.value.selectedFolder == oldName) {
+                filterByFolder(newName)
+            }
+        }
+    }
+
+    fun deleteFolder(folderName: String) {
+        viewModelScope.launch {
+            repository.deleteFolder(folderName)
+            if (_uiState.value.selectedFolder == folderName) {
+                filterByFolder("ALL")
+            }
+        }
+    }
+
     fun filterByFolder(folder: String) {
         _uiState.update { it.copy(selectedFolder = folder) }
         viewModelScope.launch {
@@ -647,6 +666,31 @@ class DocumentViewModel(
         viewModelScope.launch {
             repository.clearCache()
             refreshStorageStats()
+        }
+    }
+
+    
+    fun movePageLeft(pageId: Long) {
+        val docId = _uiState.value.documentId ?: return
+        val pages = _uiState.value.activePages.toMutableList()
+        val index = pages.indexOfFirst { it.id == pageId }
+        if (index > 0) {
+            java.util.Collections.swap(pages, index, index - 1)
+            viewModelScope.launch {
+                repository.reorderPages(docId, pages)
+            }
+        }
+    }
+    
+    fun movePageRight(pageId: Long) {
+        val docId = _uiState.value.documentId ?: return
+        val pages = _uiState.value.activePages.toMutableList()
+        val index = pages.indexOfFirst { it.id == pageId }
+        if (index >= 0 && index < pages.size - 1) {
+            java.util.Collections.swap(pages, index, index + 1)
+            viewModelScope.launch {
+                repository.reorderPages(docId, pages)
+            }
         }
     }
 

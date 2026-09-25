@@ -401,7 +401,9 @@ fun HomeScreen(
                 folders = uiState.folders,
                 selectedFolder = uiState.selectedFolder,
                 onFolderSelected = { viewModel.filterByFolder(it) },
-                onCreateFolderClick = { showCreateFolderDialog = true }
+                onCreateFolderClick = { showCreateFolderDialog = true },
+                onRenameFolder = { oldName, newName -> viewModel.renameFolder(oldName, newName) },
+                onDeleteFolder = { folderName -> viewModel.deleteFolder(folderName) }
             )
 
             // Category Filter Chips

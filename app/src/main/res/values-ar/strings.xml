@@ -239,4 +239,9 @@
     <string name="txt_side_by_side">جنباً إلى جنب</string>
     <string name="txt_print">طباعة</string>
     <string name="txt_apply_to_all_pages">تطبيق على كل الصفحات</string>
+    <string name="txt_rename_folder">إعادة تسمية المجلد</string>
+    <string name="txt_delete_folder">حذف المجلد</string>
+    <string name="txt_eraser">الممحاة</string>
+    <string name="txt_move_left">نقل الصفحة لليسار</string>
+    <string name="txt_move_right">نقل الصفحة لليمين</string>
 </resources>

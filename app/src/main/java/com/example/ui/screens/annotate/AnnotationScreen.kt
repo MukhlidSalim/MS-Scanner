@@ -41,7 +41,8 @@ enum class AnnotateTool {
     PEN,
     HIGHLIGHTER,
     REDACT,
-    SIGNATURE
+    SIGNATURE,
+    ERASER
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -153,6 +154,12 @@ fun AnnotationScreen(
                             label = { Text(stringResource(R.string.txt_signature)) },
                             leadingIcon = { Icon(Icons.Default.Gesture, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
+                        FilterChip(
+                            selected = activeTool == AnnotateTool.ERASER,
+                            onClick = { activeTool = AnnotateTool.ERASER },
+                            label = { Text(stringResource(R.string.txt_eraser)) },
+                            leadingIcon = { Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        )
                     }
 
                     // Pen Colors Bar
@@ -242,13 +249,14 @@ fun AnnotationScreen(
                                         redactEnd = null
                                     } else {
                                         if (currentPoints.size > 1) {
-                                            val color = if (activeTool == AnnotateTool.HIGHLIGHTER) Color(0xFFFFEB3B).toArgb() else penColor.toArgb()
+                                            val color = if (activeTool == AnnotateTool.HIGHLIGHTER) Color(0xFFFFEB3B).toArgb() else if (activeTool == AnnotateTool.ERASER) Color.White.toArgb() else penColor.toArgb()
                                             paths.add(
                                                 DrawPath(
                                                     points = currentPoints.toList(),
                                                     color = color,
-                                                    strokeWidth = if (activeTool == AnnotateTool.HIGHLIGHTER) 14f else 3.5f,
-                                                    isHighlighter = activeTool == AnnotateTool.HIGHLIGHTER
+                                                    strokeWidth = if (activeTool == AnnotateTool.HIGHLIGHTER) 14f else if (activeTool == AnnotateTool.ERASER) 20f else 3.5f,
+                                                    isHighlighter = activeTool == AnnotateTool.HIGHLIGHTER,
+                                                    isEraser = activeTool == AnnotateTool.ERASER
                                                 )
                                             )
                                         }

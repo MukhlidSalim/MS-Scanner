@@ -42,6 +42,13 @@ interface DocumentDao {
     @Query("SELECT DISTINCT folderName FROM documents WHERE isTrash = 0")
     fun getAllFolders(): Flow<List<String>>
 
+    @Query("UPDATE documents SET folderName = :newName WHERE folderName = :oldName")
+    suspend fun renameFolder(oldName: String, newName: String)
+
+    @Query("UPDATE documents SET folderName = 'ALL' WHERE folderName = :folderName")
+    suspend fun deleteFolder(folderName: String)
+
+
     @Query("SELECT * FROM documents WHERE id = :id LIMIT 1")
     suspend fun getDocumentById(id: Long): DocumentEntity?
 

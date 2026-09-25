@@ -15,7 +15,8 @@ data class DrawPath(
     val points: List<StrokePoint>,
     val color: Int,
     val strokeWidth: Float,
-    val isHighlighter: Boolean = false
+    val isHighlighter: Boolean = false,
+    val isEraser: Boolean = false
 )
 
 data class RedactionRect(
@@ -68,6 +69,9 @@ object AnnotationEngine {
                 strokeJoin = Paint.Join.ROUND
                 if (dp.isHighlighter) {
                     alpha = 110 // translucent for highlighting text underneath
+                }
+                if (dp.isEraser) {
+                    color = Color.WHITE
                 }
             }
             val path = Path()
