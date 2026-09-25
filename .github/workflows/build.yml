@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout Source Code
@@ -34,3 +36,12 @@ jobs:
         name: DocScan-Pro-Debug-APK
         path: app/build/outputs/apk/debug/app-debug.apk
         retention-days: 7
+
+    - name: Create Rolling Release
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: "v1.0.${{ github.run_number }}"
+        name: "DocScan Pro Update (Build ${{ github.run_number }})"
+        files: app/build/outputs/apk/debug/app-debug.apk
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

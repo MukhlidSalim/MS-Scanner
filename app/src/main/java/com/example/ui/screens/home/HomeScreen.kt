@@ -61,6 +61,34 @@ fun HomeScreen(
     var isGridView by remember { mutableStateOf(false) }
     var isSearchActive by remember { mutableStateOf(false) }
     var showTrashDialog by remember { mutableStateOf(false) }
+    
+    var updateInfo by remember { mutableStateOf<com.example.engine.updater.AppUpdater.UpdateInfo?>(null) }
+    
+    LaunchedEffect(Unit) {
+        val info = com.example.engine.updater.AppUpdater.checkForUpdate()
+        if (info != null) {
+            updateInfo = info
+        }
+    }
+    
+    if (updateInfo != null) {
+        AlertDialog(
+            onDismissRequest = { updateInfo = null },
+            title = { Text("Update Available") },
+            text = { Text("Version ${updateInfo?.version} is available!\n\n${updateInfo?.releaseNotes}") },
+            confirmButton = {
+                Button(onClick = {
+                    com.example.engine.updater.AppUpdater.downloadAndInstall(context, updateInfo!!.downloadUrl)
+                    updateInfo = null
+                }) {
+                    Text("Update Now")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { updateInfo = null }) { Text("Later") }
+            }
+        )
+    }
 
     val scannerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
