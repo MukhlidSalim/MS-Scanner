@@ -226,7 +226,6 @@
     <string name="txt_new_folder">New Folder</string>
     <string name="txt_create_folder">Create Folder</string>
     <string name="txt_folder_name">Folder Name</string>
-    <string name="txt_cancel">Cancel</string>
     <string name="txt_create">Create</string>
     <string name="txt_move_to_folder">Move to Folder</string>
     <string name="txt_select_folder">Select Folder</string>
@@ -244,4 +243,16 @@
     <string name="txt_eraser">Eraser</string>
     <string name="txt_move_left">Move Page Left</string>
     <string name="txt_move_right">Move Page Right</string>
+
+    <string name="txt_backup_restore">Backup &amp; Restore</string>
+    <string name="txt_create_backup">Create Backup (ZIP)</string>
+    <string name="txt_create_backup_desc">Export your documents to a safe location</string>
+    <string name="txt_restore_backup">Restore Backup</string>
+    <string name="txt_restore_backup_desc">Import documents from a ZIP file</string>
+    <string name="txt_creating_backup">Creating backup...</string>
+    <string name="txt_restoring_backup">Restoring backup...</string>
+    <string name="txt_backup_success">Backup created successfully</string>
+    <string name="txt_restore_success">Restore completed successfully</string>
+    <string name="txt_backup_failed">Backup failed</string>
+    <string name="txt_restore_failed">Restore failed</string>
 </resources>

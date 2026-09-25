@@ -96,6 +96,19 @@ class DocumentRepository(
         pageId
     }
 
+    
+    suspend fun renameFolder(oldName: String, newName: String) = withContext(Dispatchers.IO) {
+        documentDao.renameFolder(oldName, newName)
+    }
+
+    suspend fun deleteFolder(folderName: String) = withContext(Dispatchers.IO) {
+        documentDao.deleteFolder(folderName)
+    }
+
+    suspend fun updatePages(pages: List<PageEntity>) = withContext(Dispatchers.IO) {
+        documentDao.updatePages(pages)
+    }
+
     suspend fun updatePage(page: PageEntity) = withContext(Dispatchers.IO) {
         documentDao.updatePage(page)
         val doc = documentDao.getDocumentById(page.documentId)
@@ -196,17 +209,23 @@ class DocumentRepository(
         documentDao.deleteSignature(id)
     }
 
-    suspend fun getStorageStats(): StorageStats = withContext(Dispatchers.IO) {
-        val scansDir = File(context.filesDir, "scans")
+        suspend fun getStorageStats(): StorageStats = withContext(Dispatchers.IO) {
+        val scansDir = java.io.File(context.filesDir, "scans")
         val cacheDir = context.cacheDir
         val scansSize = getFolderSize(scansDir)
         val cacheSize = getFolderSize(cacheDir)
+        
+        val allDocs = documentDao.getAllDocumentsSync()
+        val totalDocs = allDocs.size
+        val totalPages = allDocs.sumOf { it.pageCount }
+        val trashCount = allDocs.count { it.isTrash }
+        
         StorageStats(
-            totalDocumentsCount = 0,
-            totalPagesCount = 0,
+            totalDocumentsCount = totalDocs,
+            totalPagesCount = totalPages,
             scansSizeBytes = scansSize,
             cacheSizeBytes = cacheSize,
-            trashCount = 0
+            trashCount = trashCount
         )
     }
 

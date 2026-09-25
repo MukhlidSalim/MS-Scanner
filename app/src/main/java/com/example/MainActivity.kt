@@ -29,6 +29,10 @@ import com.example.ui.theme.DocScanTheme
 import com.example.ui.viewmodel.DocumentViewModel
 
 import androidx.appcompat.app.AppCompatActivity
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.runtime.DisposableEffect
 
 class MainActivity : AppCompatActivity() {
 
@@ -66,6 +70,19 @@ fun DocScanApp(
 ) {
     val navController = rememberNavController()
     val docUiState by docViewModel.uiState.collectAsState()
+    
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                docViewModel.lockApp()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     if (docUiState.isAppLocked) {
         PinLockScreen(

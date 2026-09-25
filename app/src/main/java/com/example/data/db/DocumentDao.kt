@@ -8,6 +8,12 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface DocumentDao {
+    @Query("SELECT * FROM documents ORDER BY createdAt DESC")
+    fun getAllDocumentsSync(): List<DocumentEntity>
+
+    @Query("SELECT * FROM pages WHERE documentId = :docId ORDER BY pageIndex ASC")
+    fun getPagesForDocumentSync(docId: Long): List<PageEntity>
+
 
     @Query("SELECT * FROM documents WHERE isTrash = 0 ORDER BY updatedAt DESC")
     fun getAllActiveDocuments(): Flow<List<DocumentEntity>>
@@ -43,9 +49,10 @@ interface DocumentDao {
     fun getAllFolders(): Flow<List<String>>
 
     @Query("UPDATE documents SET folderName = :newName WHERE folderName = :oldName")
+    @Query("UPDATE documents SET folderName = :newName WHERE folderName = :oldName")
     suspend fun renameFolder(oldName: String, newName: String)
 
-    @Query("UPDATE documents SET folderName = 'ALL' WHERE folderName = :folderName")
+        @Query("UPDATE documents SET folderName = 'Default' WHERE folderName = :folderName")
     suspend fun deleteFolder(folderName: String)
 
 
@@ -93,6 +100,7 @@ interface DocumentDao {
     @Update
     suspend fun updatePage(page: PageEntity)
 
+    @Update
     @Update
     suspend fun updatePages(pages: List<PageEntity>)
 

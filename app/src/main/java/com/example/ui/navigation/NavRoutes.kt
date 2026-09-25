@@ -11,6 +11,5 @@ sealed class Screen(val route: String) {
     object Annotate : Screen("annotate/{docId}/{pageId}") {
         fun createRoute(docId: Long, pageId: Long) = "annotate/$docId/$pageId"
     }
-    object SignatureStudio : Screen("signature_studio")
     object Settings : Screen("settings")
 }

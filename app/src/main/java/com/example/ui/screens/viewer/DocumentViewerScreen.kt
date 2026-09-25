@@ -64,6 +64,7 @@ fun DocumentViewerScreen(
 
     val pagerState = rememberPagerState(pageCount = { pages.size })
     var selectionMode by remember { mutableStateOf(false) }
+    var showReorderScreen by remember { mutableStateOf(false) }
     var selectedPageIds by remember { mutableStateOf(setOf<Long>()) }
 
     LaunchedEffect(pagerState.currentPage) {

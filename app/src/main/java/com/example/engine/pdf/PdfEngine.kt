@@ -90,22 +90,6 @@ object PdfEngine {
                 val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
                 canvas.drawBitmap(renderBitmap, null, drawRect, paint)
 
-                // Searchable text layer (invisible text on canvas for searchability in PDF readers)
-                if (config.includeSearchableText && ocrText.isNotBlank()) {
-                    val textPaint = Paint().apply {
-                        color = Color.TRANSPARENT
-                        textSize = 8f
-                    }
-                    val lines = ocrText.lines().take(40)
-                    var textY = 20f
-                    for (line in lines) {
-                        if (line.isNotBlank()) {
-                            canvas.drawText(line.take(80), 20f, textY, textPaint)
-                            textY += 12f
-                        }
-                    }
-                }
-
                 pdfDocument.finishPage(page)
                 
                 // Free memory

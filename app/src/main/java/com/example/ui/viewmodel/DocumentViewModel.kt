@@ -4,6 +4,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.repository.BackupManager
+import android.net.Uri
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+
 import com.example.data.model.*
 import com.example.data.repository.DocumentRepository
 import com.example.data.repository.StorageStats
@@ -66,14 +71,24 @@ class DocumentViewModel(
     ))
     val uiState: StateFlow<DocumentUiState> = _uiState.asStateFlow()
 
+    
+    private data class FilterState(
+        val folder: String = "ALL",
+        val category: DocumentCategory = DocumentCategory.ALL,
+        val query: String = "",
+        val sort: SortMode = SortMode.NEWEST
+    )
+    private val filterTrigger = MutableStateFlow(FilterState())
+    private val qualityCache = mutableMapOf<Long, QualityReport>()
+
     init {
-        loadAllDocuments()
+        setupDocumentStream()
         loadFolders()
         loadSignatures()
         refreshStorageStats()
     }
 
-    private fun loadAllDocuments() {
+    private fun setupDocumentStream() {
         viewModelScope.launch {
             repository.getAllDocuments().collectLatest { docs ->
                 _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
@@ -107,20 +122,10 @@ class DocumentViewModel(
         }
     }
 
-    fun refreshStorageStats() {
+        fun refreshStorageStats() {
         viewModelScope.launch {
             val stats = repository.getStorageStats()
-            val totalDocs = _uiState.value.documents.size
-            val totalPages = _uiState.value.documents.sumOf { it.pageCount }
-            _uiState.update {
-                it.copy(
-                    storageStats = stats.copy(
-                        totalDocumentsCount = totalDocs,
-                        totalPagesCount = totalPages,
-                        trashCount = it.trashDocuments.size
-                    )
-                )
-            }
+            _uiState.update { it.copy(storageStats = stats) }
         }
     }
 
@@ -139,6 +144,8 @@ class DocumentViewModel(
 
     fun onSearchQueryChanged(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
+        filterTrigger.value = filterTrigger.value.copy(query = query)
+    }
         viewModelScope.launch {
             if (query.isBlank()) {
                 repository.getAllDocuments().first().let { docs ->
@@ -173,6 +180,8 @@ class DocumentViewModel(
 
     fun filterByFolder(folder: String) {
         _uiState.update { it.copy(selectedFolder = folder) }
+        filterTrigger.value = filterTrigger.value.copy(folder = folder)
+    }
         viewModelScope.launch {
             if (folder == "ALL") {
                 repository.getAllDocuments().collectLatest { docs ->
@@ -192,19 +201,23 @@ class DocumentViewModel(
             SortMode.OLDEST -> docs.sortedBy { it.updatedAt }
             SortMode.NAME_AZ -> docs.sortedBy { it.title.lowercase() }
             SortMode.NAME_ZA -> docs.sortedByDescending { it.title.lowercase() }
-            SortMode.SIZE_LARGEST -> docs.sortedByDescending { it.pageCount }
+            SortMode.SIZE_LARGEST -> docs.sortedByDescending { it.sizeBytes }
             SortMode.PAGE_COUNT -> docs.sortedByDescending { it.pageCount }
         }
     }
 
     fun setSortMode(mode: SortMode) {
         _uiState.update { it.copy(sortMode = mode) }
+        filterTrigger.value = filterTrigger.value.copy(sort = mode)
+    }
         val sorted = applySorting(_uiState.value.documents, mode)
         _uiState.update { state -> state.copy(documents = applySorting(sorted, state.sortMode)) }
     }
 
     fun filterByCategory(cat: DocumentCategory) {
         _uiState.update { it.copy(selectedCategory = cat) }
+        filterTrigger.value = filterTrigger.value.copy(category = cat)
+    }
         viewModelScope.launch {
             if (cat == DocumentCategory.ALL) {
                 repository.getAllDocuments().collectLatest { docs ->
@@ -227,21 +240,43 @@ class DocumentViewModel(
                 _uiState.update { it.copy(activePages = pages) }
                 // Evaluate quality for first page
                 val firstPage = pages.firstOrNull()
-                if (firstPage != null) {
-                    val bmp = ImageProcessor.loadBitmapFromFile(firstPage.processedImagePath, 500)
-                    if (bmp != null) {
-                        val report = ImageProcessor.analyzeQuality(bmp)
-                        _uiState.update { it.copy(currentQualityReport = report) }
+                                if (firstPage != null) {
+                    if (qualityCache.containsKey(firstPage.id)) {
+                        _uiState.update { it.copy(currentQualityReport = qualityCache[firstPage.id]) }
+                    } else {
+                        val bmp = ImageProcessor.loadBitmapFromFile(firstPage.processedImagePath, 500)
+                        if (bmp != null) {
+                            val report = ImageProcessor.analyzeQuality(bmp)
+                            qualityCache[firstPage.id] = report
+                            _uiState.update { it.copy(currentQualityReport = report) }
+                            bmp.recycle()
+                        }
                     }
                 }
             }
         }
     }
 
-    fun selectPageIndex(index: Int) {
+        fun selectPageIndex(index: Int) {
         val pages = _uiState.value.activePages
         if (index in pages.indices) {
             _uiState.update { it.copy(selectedPageIndex = index) }
+            viewModelScope.launch {
+                val page = pages[index]
+                if (qualityCache.containsKey(page.id)) {
+                    _uiState.update { it.copy(currentQualityReport = qualityCache[page.id]) }
+                } else {
+                    val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 500)
+                    if (bmp != null) {
+                        val report = ImageProcessor.analyzeQuality(bmp)
+                        qualityCache[page.id] = report
+                        _uiState.update { it.copy(currentQualityReport = report) }
+                        bmp.recycle()
+                    }
+                }
+            }
+        }
+    }
             viewModelScope.launch {
                 val page = pages[index]
                 val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 500)
@@ -316,18 +351,23 @@ class DocumentViewModel(
     fun addPagesToCurrentDocument(newPages: List<Pair<String, String>>) {
         viewModelScope.launch {
             val doc = _uiState.value.activeDocument ?: return@launch
+            var pageCount = doc.pageCount
             for (pagePair in newPages) {
                 val newPage = com.example.data.model.PageEntity(
                     documentId = doc.id,
-                    pageIndex = _uiState.value.activePages.size,
+                    pageIndex = pageCount,
                     rawImagePath = pagePair.first,
                     processedImagePath = pagePair.second
                 )
                 repository.insertPage(newPage)
-                _uiState.value = _uiState.value.copy(
-                    activePages = _uiState.value.activePages + newPage
-                )
+                pageCount++
             }
+            repository.updateDocument(doc.copy(pageCount = pageCount))
+            // Refresh from DB
+            val dbPages = repository.getPagesList(doc.id)
+            _uiState.update { it.copy(activePages = dbPages) }
+        }
+    }
             repository.updateDocument(doc.copy(pageCount = _uiState.value.activePages.size))
             refreshStorageStats()
             loadDocument(doc.id)
@@ -381,22 +421,33 @@ class DocumentViewModel(
      * Applies filter to page and saves processed file
      */
 
-    fun applyFilterToAllPages(context: Context, filter: FilterType) {
+        fun applyFilterToAllPages(context: Context, filter: FilterType) {
         viewModelScope.launch {
             try {
-                val docId = _uiState.value.documentId ?: return@launch
+                val docId = _uiState.value.activeDocument?.id ?: return@launch
                 val pages = repository.getPagesList(docId)
                 if (pages.isEmpty()) return@launch
 
                 val updatedPages = pages.map { page ->
-                    val rawBitmap = ImageProcessor.loadBitmapFromFile(page.rawImagePath) ?: return@map page
-                    val rotatedRaw = ImageProcessor.rotateBitmap(rawBitmap, page.rotationDegrees.toFloat())
-                    val filtered = ImageProcessor.applyFilter(rotatedRaw, filter)
-                    val newProcessedPath = ImageProcessor.saveBitmapToFile(context, filtered, "proc_all_")
+                    var rawBitmap: android.graphics.Bitmap? = null
+                    var rotatedRaw: android.graphics.Bitmap? = null
+                    var filtered: android.graphics.Bitmap? = null
+                    var newProcessedPath: String = page.processedImagePath
                     
-                    val oldFile = java.io.File(page.processedImagePath)
-                    if (oldFile.exists() && oldFile.absolutePath != page.rawImagePath) {
-                        oldFile.delete()
+                    try {
+                        rawBitmap = ImageProcessor.loadBitmapFromFile(page.rawImagePath) ?: return@map page
+                        rotatedRaw = ImageProcessor.rotateBitmap(rawBitmap, page.rotationDegrees)
+                        filtered = ImageProcessor.applyFilter(rotatedRaw, filter)
+                        newProcessedPath = ImageProcessor.saveBitmapToFile(context, filtered, "proc_all_")
+                        
+                        val oldFile = java.io.File(page.processedImagePath)
+                        if (oldFile.exists() && oldFile.absolutePath != page.rawImagePath) {
+                            oldFile.delete()
+                        }
+                    } finally {
+                        if (rawBitmap != rotatedRaw) rawBitmap?.recycle()
+                        if (rotatedRaw != filtered) rotatedRaw?.recycle()
+                        filtered?.recycle()
                     }
                     
                     page.copy(filterType = filter.name, processedImagePath = newProcessedPath)
@@ -409,31 +460,37 @@ class DocumentViewModel(
         }
     }
 
-    fun applyFilterToActivePage(filter: FilterType) {
+        fun applyFilterToActivePage(filter: FilterType) {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
         if (idx !in pages.indices) return
 
         val page = pages[idx]
         viewModelScope.launch {
-            val rawBmp = ImageProcessor.loadBitmapFromFile(page.rawImagePath) ?: return@launch
-            val quad = DocumentQuad.fromJson(page.cropQuadJson)
-            val warped = ImageProcessor.warpPerspective(rawBmp, quad)
-            val rotated = ImageProcessor.rotateBitmap(warped, page.rotationDegrees)
-            val filtered = ImageProcessor.applyFilter(rotated, filter)
-            val newProcessedPath = ImageProcessor.saveBitmapToFile(context, filtered, "flt_")
-            
-            // Free memory
-            if (rawBmp != warped) rawBmp.recycle()
-            if (warped != rotated) warped.recycle()
-            if (rotated != filtered) rotated.recycle()
-            filtered.recycle()
-
-            val updated = page.copy(
-                processedImagePath = newProcessedPath,
-                filterType = filter.name
-            )
-            repository.updatePage(updated)
+            var rawBmp: android.graphics.Bitmap? = null
+            var warped: android.graphics.Bitmap? = null
+            var rotated: android.graphics.Bitmap? = null
+            var filtered: android.graphics.Bitmap? = null
+            try {
+                rawBmp = ImageProcessor.loadBitmapFromFile(page.rawImagePath) ?: return@launch
+                val quad = com.example.data.model.DocumentQuad.fromJson(page.cropQuadJson)
+                warped = ImageProcessor.warpPerspective(rawBmp, quad)
+                rotated = ImageProcessor.rotateBitmap(warped, page.rotationDegrees)
+                filtered = ImageProcessor.applyFilter(rotated, filter)
+                val newProcessedPath = ImageProcessor.saveBitmapToFile(context, filtered, "flt_")
+                
+                qualityCache.remove(page.id)
+                val updated = page.copy(
+                    processedImagePath = newProcessedPath,
+                    filterType = filter.name
+                )
+                repository.updatePage(updated)
+            } finally {
+                if (rawBmp != warped) rawBmp?.recycle()
+                if (warped != rotated) warped?.recycle()
+                if (rotated != filtered) rotated?.recycle()
+                filtered?.recycle()
+            }
         }
     }
 
@@ -462,6 +519,7 @@ class DocumentViewModel(
             if (rotated != filtered) rotated.recycle()
             filtered.recycle()
 
+            qualityCache.remove(page.id)
             val updated = page.copy(
                 processedImagePath = newPath,
                 rotationDegrees = newRotation
@@ -489,6 +547,7 @@ class DocumentViewModel(
             if (rotated != filtered) rotated.recycle()
             filtered.recycle()
 
+            qualityCache.remove(page.id)
             val updated = page.copy(
                 cropQuadJson = quad.toJson(),
                 processedImagePath = newPath
@@ -525,7 +584,8 @@ class DocumentViewModel(
                 }
 
                 // Save OCR to page
-                val updated = page.copy(
+                qualityCache.remove(page.id)
+            val updated = page.copy(
                     ocrText = result.fullText
                 )
                 repository.updatePage(updated)
@@ -552,7 +612,10 @@ class DocumentViewModel(
     fun saveAnnotations(
         paths: List<DrawPath>,
         redactions: List<RedactionRect>,
-        signatures: List<PlacedSignature>
+        signatures: List<PlacedSignature>,
+        placedTexts: List<com.example.engine.annotation.PlacedText> = emptyList(),
+        brightness: Float = 0f,
+        contrast: Float = 1f
     ) {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
@@ -561,13 +624,14 @@ class DocumentViewModel(
 
         viewModelScope.launch {
             val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath) ?: return@launch
-            val burned = AnnotationEngine.burnAnnotationsIntoBitmap(bmp, paths, redactions, signatures)
+            val burned = AnnotationEngine.burnAnnotationsIntoBitmap(bmp, paths, redactions, signatures, placedTexts, brightness, contrast)
             val newPath = ImageProcessor.saveBitmapToFile(context, burned, "ann_")
 
             // Free memory
             if (bmp != burned) bmp.recycle()
             burned.recycle()
 
+            qualityCache.remove(page.id)
             val updated = page.copy(processedImagePath = newPath)
             repository.updatePage(updated)
         }
@@ -671,7 +735,7 @@ class DocumentViewModel(
 
     
     fun movePageLeft(pageId: Long) {
-        val docId = _uiState.value.documentId ?: return
+        val docId = _uiState.value.activeDocument?.id ?: return
         val pages = _uiState.value.activePages.toMutableList()
         val index = pages.indexOfFirst { it.id == pageId }
         if (index > 0) {
@@ -682,8 +746,16 @@ class DocumentViewModel(
         }
     }
     
+    
+    fun reorderPages(newOrder: List<com.example.data.model.PageEntity>) {
+        val docId = _uiState.value.activeDocument?.id ?: return
+        viewModelScope.launch {
+            repository.reorderPages(docId, newOrder)
+        }
+    }
+
     fun movePageRight(pageId: Long) {
-        val docId = _uiState.value.documentId ?: return
+        val docId = _uiState.value.activeDocument?.id ?: return
         val pages = _uiState.value.activePages.toMutableList()
         val index = pages.indexOfFirst { it.id == pageId }
         if (index >= 0 && index < pages.size - 1) {
@@ -712,6 +784,39 @@ class DocumentViewModel(
     fun setDefaultPdfCompression(comp: com.example.data.model.CompressionPreset) {
         prefs.pdfCompression = comp
         _uiState.update { it.copy(defaultPdfCompression = comp) }
+    }
+
+    
+    private val backupManager = BackupManager(context, repository.documentDao)
+    
+    private val _backupEvent = MutableSharedFlow<String>()
+    val backupEvent = _backupEvent.asSharedFlow()
+
+    fun createBackup(uri: Uri) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            val result = backupManager.createBackup(uri)
+            _uiState.update { it.copy(isLoading = false) }
+            if (result.isSuccess) {
+                _backupEvent.emit("Backup created successfully")
+            } else {
+                _backupEvent.emit("Backup failed: ${result.exceptionOrNull()?.message}")
+            }
+        }
+    }
+
+    fun restoreBackup(uri: Uri) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            val result = backupManager.restoreBackup(uri)
+            _uiState.update { it.copy(isLoading = false) }
+            if (result.isSuccess) {
+                _backupEvent.emit("Restore completed successfully. Restored ${result.getOrNull()} documents.")
+                setupDocumentStream()
+            } else {
+                _backupEvent.emit("Restore failed: ${result.exceptionOrNull()?.message}")
+            }
+        }
     }
 
     fun verifyPin(pin: String): Boolean {

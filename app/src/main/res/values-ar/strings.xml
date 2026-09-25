@@ -226,7 +226,6 @@
     <string name="txt_new_folder">مجلد جديد</string>
     <string name="txt_create_folder">إنشاء مجلد</string>
     <string name="txt_folder_name">اسم المجلد</string>
-    <string name="txt_cancel">إلغاء</string>
     <string name="txt_create">إنشاء</string>
     <string name="txt_move_to_folder">نقل إلى مجلد</string>
     <string name="txt_select_folder">اختر المجلد</string>
@@ -244,4 +243,16 @@
     <string name="txt_eraser">الممحاة</string>
     <string name="txt_move_left">نقل الصفحة لليسار</string>
     <string name="txt_move_right">نقل الصفحة لليمين</string>
+
+    <string name="txt_backup_restore">Backup &amp; Restore</string>
+    <string name="txt_create_backup">Create Backup (ZIP)</string>
+    <string name="txt_create_backup_desc">Export your documents to a safe location</string>
+    <string name="txt_restore_backup">Restore Backup</string>
+    <string name="txt_restore_backup_desc">Import documents from a ZIP file</string>
+    <string name="txt_creating_backup">Creating backup...</string>
+    <string name="txt_restoring_backup">Restoring backup...</string>
+    <string name="txt_backup_success">Backup created successfully</string>
+    <string name="txt_restore_success">Restore completed successfully</string>
+    <string name="txt_backup_failed">Backup failed</string>
+    <string name="txt_restore_failed">Restore failed</string>
 </resources>

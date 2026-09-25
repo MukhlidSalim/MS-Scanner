@@ -18,6 +18,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import com.example.engine.annotation.PlacedText
+import androidx.compose.ui.graphics.ColorMatrix
+import androidx.compose.ui.graphics.ColorMatrixColorFilter
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -42,7 +45,10 @@ enum class AnnotateTool {
     HIGHLIGHTER,
     REDACT,
     SIGNATURE,
-    ERASER
+    ERASER,
+    TEXT,
+    BRIGHTNESS,
+    CONTRAST
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -67,6 +73,11 @@ fun AnnotationScreen(
     }
 
     var activeTool by remember { mutableStateOf(AnnotateTool.PEN) }
+        var brightness by remember { mutableStateOf(0f) }
+    var contrast by remember { mutableStateOf(1f) }
+    val placedTexts = remember { mutableStateListOf<PlacedText>() }
+    var showTextDialog by remember { mutableStateOf(false) }
+    var tempTextInput by remember { mutableStateOf("") }
     var penColor by remember { mutableStateOf(Color.Black) }
     val paths = remember { mutableStateListOf<DrawPath>() }
     val currentPoints = remember { mutableStateListOf<StrokePoint>() }
@@ -100,7 +111,7 @@ fun AnnotationScreen(
 
                     TextButton(
                         onClick = {
-                            viewModel.saveAnnotations(paths, redactions, placedSignatures)
+                            viewModel.saveAnnotations(paths, redactions, placedSignatures, placedTexts.toList(), brightness, contrast)
                             onNavigateBack()
                         },
                         modifier = Modifier.testTag("save_annotation_btn")
@@ -120,7 +131,22 @@ fun AnnotationScreen(
                 tonalElevation = 4.dp
             ) {
                 Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    
+                    // Sliders for Brightness/Contrast
+                    if (activeTool == AnnotateTool.BRIGHTNESS) {
+                        Column {
+                            Text("Brightness", style = MaterialTheme.typography.labelSmall)
+                            Slider(value = brightness, onValueChange = { brightness = it }, valueRange = -100f..100f)
+                        }
+                    } else if (activeTool == AnnotateTool.CONTRAST) {
+                        Column {
+                            Text("Contrast", style = MaterialTheme.typography.labelSmall)
+                            Slider(value = contrast, onValueChange = { contrast = it }, valueRange = 0.5f..2.0f)
+                        }
+                    }
+
                     // Tool Selection Row
+
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceAround,
@@ -318,6 +344,19 @@ fun AnnotationScreen(
                             )
                         }
 
+                        
+                        // 4.5 Draw Placed Texts
+                        for (pt in placedTexts) {
+                            drawContext.canvas.nativeCanvas.apply {
+                                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                    textAlign = android.graphics.Paint.Align.CENTER
+                                    color = pt.color
+                                    textSize = pt.textSize * (renderW / 1080f)
+                                }
+                                drawText(pt.text, offsetX + pt.x * renderW, offsetY + pt.y * renderH, paint)
+                            }
+                        }
+
                         // 5. Draw Redaction Rectangles (Blackout)
                         for (r in redactions) {
                             val rx = offsetX + r.left * renderW
@@ -356,6 +395,30 @@ fun AnnotationScreen(
     }
 
     // Signature Pad Modal Dialog
+
+    if (showTextDialog) {
+        AlertDialog(
+            onDismissRequest = { showTextDialog = false },
+            title = { Text("Add Text") },
+            text = {
+                OutlinedTextField(
+                    value = tempTextInput,
+                    onValueChange = { tempTextInput = it },
+                    label = { Text("Enter text") }
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    if (tempTextInput.isNotBlank()) {
+                        placedTexts.add(PlacedText(text = tempTextInput, x = 0.5f, y = 0.5f, color = android.graphics.Color.RED))
+                        tempTextInput = ""
+                    }
+                    showTextDialog = false
+                }) { Text("Add") }
+            }
+        )
+    }
+
     if (showSignatureDialog) {
         val signaturePoints = remember { mutableStateListOf<StrokePoint>() }
         AlertDialog(

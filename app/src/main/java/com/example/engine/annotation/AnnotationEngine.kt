@@ -33,6 +33,15 @@ data class PlacedSignature(
     val scale: Float = 0.35f // relative to page width
 )
 
+
+data class PlacedText(
+    val text: String,
+    val x: Float, // 0f..1f normalized
+    val y: Float, // 0f..1f normalized
+    val color: Int = android.graphics.Color.BLACK,
+    val textSize: Float = 48f
+)
+
 object AnnotationEngine {
 
     suspend fun saveSignatureBitmap(context: Context, signatureBitmap: Bitmap): String = withContext(Dispatchers.IO) {
@@ -51,12 +60,27 @@ object AnnotationEngine {
         baseBitmap: Bitmap,
         paths: List<DrawPath>,
         redactions: List<RedactionRect>,
-        placedSignatures: List<PlacedSignature>
+        placedSignatures: List<PlacedSignature>,
+        placedTexts: List<PlacedText> = emptyList(),
+        brightness: Float = 0f,
+        contrast: Float = 1f
     ): Bitmap {
-        val output = baseBitmap.copy(Bitmap.Config.ARGB_8888, true)
+        val output = Bitmap.createBitmap(baseBitmap.width, baseBitmap.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
         val w = output.width.toFloat()
         val h = output.height.toFloat()
+
+        val cm = android.graphics.ColorMatrix()
+        val scale = contrast
+        val translate = (-0.5f * scale + 0.5f) * 255f + (brightness * 255f / 100f) // normalized brightness to 0-255
+        val array = FloatArray(20)
+        array[0] = scale; array[4] = translate
+        array[6] = scale; array[9] = translate
+        array[12] = scale; array[14] = translate
+        array[18] = 1f
+        cm.set(array)
+        val paintBase = Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
+        canvas.drawBitmap(baseBitmap, 0f, 0f, paintBase)
 
         // 1. Draw pen and highlighter strokes
         for (dp in paths) {
@@ -108,6 +132,16 @@ object AnnotationEngine {
             canvas.drawRect(rectF, redactPaint)
         }
 
+
+        // 4. Draw placed texts
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = Paint.Align.CENTER
+        }
+        for (pt in placedTexts) {
+            textPaint.color = pt.color
+            textPaint.textSize = pt.textSize * (w / 1080f) // scale with image width
+            canvas.drawText(pt.text, pt.x * w, pt.y * h, textPaint)
+        }
         return output
     }
 }

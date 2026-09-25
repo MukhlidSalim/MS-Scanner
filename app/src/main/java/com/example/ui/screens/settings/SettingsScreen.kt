@@ -19,6 +19,13 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlinx.coroutines.flow.collectLatest
+
 import com.example.ui.theme.CyanScan
 import com.example.ui.theme.EmeraldLight
 import com.example.ui.viewmodel.DocumentViewModel
@@ -205,9 +212,12 @@ fun SettingsScreen(
                 }
             }
 
-            // Cloud Sync & Auto-save (Dummy as per requirements)
+
+
+
+            // Backup & Restore
             Text(
-                text = stringResource(R.string.txt_cloud_sync),
+                text = stringResource(R.string.txt_backup_restore),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -216,24 +226,44 @@ fun SettingsScreen(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column {
-                            Text(text = stringResource(R.string.txt_auto_save_gallery), fontWeight = FontWeight.SemiBold)
-                            Text(text = stringResource(R.string.txt_auto_save_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+                        uri?.let { viewModel.createBackup(it) }
+                    }
+                    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                        uri?.let { viewModel.restoreBackup(it) }
+                    }
+                    
+                    LaunchedEffect(Unit) {
+                        viewModel.backupEvent.collectLatest { msg ->
+                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                         }
-                        Switch(checked = false, onCheckedChange = {
-                            Toast.makeText(context, context.getString(R.string.txt_coming_soon), Toast.LENGTH_SHORT).show()
-                        })
+                    }
+                    
+                    if (uiState.isLoading) {
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+                    }
+                    
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = stringResource(R.string.txt_create_backup), fontWeight = FontWeight.SemiBold)
+                            Text(text = stringResource(R.string.txt_create_backup_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Button(onClick = { 
+                            val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
+                            backupLauncher.launch("MS_Scanner_Backup_$dateStr.zip")
+                        }) {
+                            Text("Backup")
+                        }
                     }
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column {
-                            Text(text = stringResource(R.string.txt_gdrive_sync), fontWeight = FontWeight.SemiBold)
-                            Text(text = stringResource(R.string.txt_gdrive_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = stringResource(R.string.txt_restore_backup), fontWeight = FontWeight.SemiBold)
+                            Text(text = stringResource(R.string.txt_restore_backup_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Button(onClick = {
-                            Toast.makeText(context, context.getString(R.string.txt_coming_soon), Toast.LENGTH_SHORT).show()
-                        }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)) {
-                            Text(stringResource(R.string.txt_connect))
+                        Button(onClick = { restoreLauncher.launch(arrayOf("application/zip")) },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer)
+                        ) {
+                            Text("Restore")
                         }
                     }
                 }

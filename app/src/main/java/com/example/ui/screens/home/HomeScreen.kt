@@ -108,7 +108,12 @@ fun HomeScreen(
             frontImagePath = pendingIdCardPages!![0].second,
             backImagePath = pendingIdCardPages!![1].second,
             onMerged = { mergedPath ->
-                viewModel.importPagesAsDocument(listOf(Pair(pendingIdCardPages!![0].first, mergedPath))) { newDocId ->
+                val pagesToSave = listOf(
+                    pendingIdCardPages!![0],
+                    pendingIdCardPages!![1],
+                    Pair(mergedPath, mergedPath)
+                )
+                viewModel.importPagesAsDocument(pagesToSave) { newDocId ->
                     pendingIdCardPages = null
                     isIdCardMode = false
                     onNavigateToDocument(newDocId)

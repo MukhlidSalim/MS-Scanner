@@ -18,7 +18,8 @@ data class DocumentEntity(
     val thumbnailPath: String = "",
     val suggestedTitle: String = "",
     val tagsCsv: String = "",
-    val fileSizeFormatted: String = ""
+    val fileSizeFormatted: String = "",
+    val sizeBytes: Long = 0L
 )
 
 @Entity(tableName = "pages")
