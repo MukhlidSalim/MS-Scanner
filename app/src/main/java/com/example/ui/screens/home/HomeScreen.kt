@@ -41,7 +41,7 @@ import com.example.engine.cv.ImageProcessor
 import com.example.ui.theme.CyanScan
 import com.example.ui.viewmodel.DocumentViewModel
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanningOptions
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import kotlinx.coroutines.launch
 import java.io.File
@@ -68,11 +68,11 @@ fun HomeScreen(
     var showSearch by remember { mutableStateOf(false) }
     
     // Scanner Options
-    val options = GmsDocumentScanningOptions.Builder()
+    val options = GmsDocumentScannerOptions.Builder()
         .setGalleryImportAllowed(true)
         .setPageLimit(20)
-        .setResultFormats(GmsDocumentScanningOptions.RESULT_FORMAT_JPEG)
-        .setScannerMode(GmsDocumentScanningOptions.SCANNER_MODE_FULL)
+        .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+        .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
         .build()
 
     val scannerLauncher = rememberLauncherForActivityResult(
@@ -191,7 +191,7 @@ fun HomeScreen(
                             Icon(Icons.Default.DriveFileMove, contentDescription = "Move")
                         }
                         IconButton(onClick = {
-                            selectedDocIds.forEach { viewModel.sharePdf(context, it) }
+                            viewModel.shareDocumentsAsPdf(context, selectedDocIds.toList())
                             selectionMode = false
                             selectedDocIds = emptySet()
                         }) {
@@ -316,7 +316,7 @@ fun HomeScreen(
             if (uiState.documents.isEmpty() && folders.isEmpty() && uiState.searchQuery.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Icon(Icons.Outlined.GridView, contentDescription = null, modifier = Modifier.size(64.dp), tint = Color.Gray)
+                        Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(64.dp), tint = Color.Gray)
                         Spacer(modifier = Modifier.height(16.dp))
                         Text(stringResource(R.string.txt_no_documents), fontSize = 18.sp, fontWeight = FontWeight.Medium)
                         Text(stringResource(R.string.txt_no_documents_body), color = Color.Gray)
