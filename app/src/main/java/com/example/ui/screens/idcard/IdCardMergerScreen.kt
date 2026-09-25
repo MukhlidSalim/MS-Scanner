@@ -1,5 +1,7 @@
 package com.example.ui.screens.idcard
 
+import androidx.compose.ui.res.stringResource
+import com.example.R
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -61,7 +63,7 @@ fun IdCardMergerScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Merge ID Card") },
+                title = { Text(stringResource(R.string.txt_merge_id_card)) },
                 navigationIcon = {
                     IconButton(onClick = onCancel) { Icon(Icons.Default.Close, "Cancel") }
                 },
@@ -121,7 +123,7 @@ fun IdCardMergerScreen(
                 if (frontBitmap != null) {
                     androidx.compose.foundation.Image(
                         bitmap = frontBitmap!!.asImageBitmap(),
-                        contentDescription = "Front",
+                        contentDescription = stringResource(R.string.desc_front),
                         modifier = Modifier
                             .offset { IntOffset(frontOffset.x.roundToInt(), frontOffset.y.roundToInt()) }
                             .graphicsLayer(scaleX = frontScale, scaleY = frontScale)
@@ -137,7 +139,7 @@ fun IdCardMergerScreen(
                 if (backBitmap != null) {
                     androidx.compose.foundation.Image(
                         bitmap = backBitmap!!.asImageBitmap(),
-                        contentDescription = "Back",
+                        contentDescription = stringResource(R.string.desc_back),
                         modifier = Modifier
                             .offset { IntOffset(backOffset.x.roundToInt(), backOffset.y.roundToInt()) }
                             .graphicsLayer(scaleX = backScale, scaleY = backScale)

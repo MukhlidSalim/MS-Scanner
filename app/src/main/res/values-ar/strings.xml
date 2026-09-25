@@ -1,15 +1,12 @@
+<?xml version='1.0' encoding='utf-8'?>
 <resources>
     <string name="app_name">MS Scanner</string>
     <string name="tagline">ماسح ضوئي ذكي واستوديو PDF متكامل</string>
-
-    <!-- Navigation -->
     <string name="nav_documents">المستندات</string>
     <string name="nav_scan">مسح ضوئي</string>
     <string name="nav_folders">المجلدات</string>
     <string name="nav_favorites">المفضلة</string>
     <string name="nav_settings">الإعدادات</string>
-
-    <!-- Scanner Screen -->
     <string name="scanner_mode_single">صفحة واحدة</string>
     <string name="scanner_mode_batch">دفعة صفحات</string>
     <string name="scanner_mode_id_card">بطاقة هوية</string>
@@ -26,30 +23,22 @@
     <string name="flash_on">تشغيل الفلاش</string>
     <string name="flash_off">إيقاف الفلاش</string>
     <string name="grid_toggle">إظهار الشبكة</string>
-
-    <!-- Crop & Perspective -->
     <string name="crop_title">القص وضبط المنظور</string>
     <string name="crop_auto_detect">اكتشاف تلقائي</string>
     <string name="crop_reset">كامل الصورة</string>
     <string name="crop_rotate_left">تدوير لليسار</string>
     <string name="crop_rotate_right">تدوير لليمين</string>
     <string name="crop_instruction">اسحب الزوايا بدقة بواسطة العدسة المكبرة</string>
-
-    <!-- Filters -->
     <string name="filter_original">الأصلية</string>
     <string name="filter_magic">ألوان سحرية</string>
     <string name="filter_document">مستند نقي</string>
     <string name="filter_bw">أبيض وأسود</string>
     <string name="filter_grayscale">تدرج رمادي</string>
     <string name="filter_vibrant">حيوية معززة</string>
-
-    <!-- Quality Analysis -->
     <string name="quality_good">جودة ممتازة (واضحة ونقية)</string>
     <string name="quality_fair">جودة مقبولة</string>
     <string name="quality_blur_warning">تنبيه: الصورة قد تكون ضبابية أو مهتزة</string>
     <string name="quality_dark_warning">تنبيه: إضاءة منخفضة أو وجود ظلال</string>
-
-    <!-- Document Viewer & Actions -->
     <string name="action_retake">إعادة تصوير</string>
     <string name="action_crop">قص وضبط</string>
     <string name="action_filter">فلاتر</string>
@@ -62,22 +51,16 @@
     <string name="action_save">حفظ</string>
     <string name="action_delete">حذف</string>
     <string name="action_rename">إعادة تسمية</string>
-
-    <!-- Document Details -->
     <string name="search_hint">ابحث في العناوين أو الوسوم أو نصوص OCR…</string>
     <string name="all_documents">جميع المستندات</string>
     <string name="recent_scans">أحدث المسوحات</string>
     <string name="pages_count">%1$d صفحات</string>
     <string name="page_n">صفحة %1$d</string>
-
-    <!-- OCR & AI Intelligence -->
     <string name="ocr_extracting">جاري تحليل المستند واستخراج النصوص بدقة…</string>
     <string name="ocr_copy_all">نسخ النص بالكامل</string>
     <string name="ocr_share_text">مشاركة النص</string>
     <string name="ocr_ai_intelligence">تحليل الذكاء الاصطناعي للمستند</string>
     <string name="ai_classify">تصنيف تلقائي للمستند</string>
-
-    <!-- PDF Settings -->
     <string name="pdf_settings_title">إعدادات تصدير PDF</string>
     <string name="page_size_a4">A4 (قياسي)</string>
     <string name="page_size_letter">US Letter (أمريكي)</string>
@@ -86,16 +69,91 @@
     <string name="compression_high">جودة عالية (متوازن)</string>
     <string name="compression_medium">متوسط (حجم ملف صغير)</string>
     <string name="compression_low">منخفض (سريع للمراسلة)</string>
-
-    <!-- Privacy & Security -->
     <string name="privacy_title">الخصوصية والأمان</string>
     <string name="privacy_offline_notice">أوفلاين 100%. مستنداتك وبياناتك محفوظة محلياً بالكامل على هاتفك دون مشاركة خارج جهازك.</string>
     <string name="app_lock">قفل التطبيق برمز PIN</string>
     <string name="pin_prompt">أدخل رمز PIN المكون من 4 أرقام</string>
     <string name="pin_set">تعيين رمز PIN جديد</string>
-
-    <!-- Storage -->
     <string name="storage_manager">إدارة سعة التخزين</string>
     <string name="clear_cache">تنظيف الذاكرة المؤقتة</string>
     <string name="empty_trash">إفراغ سلة المحذوفات</string>
+    <string name="txt_sign___annotate">[AR] Sign &amp; Annotate</string>
+    <string name="txt_save">[AR] Save</string>
+    <string name="txt_pen">[AR] Pen</string>
+    <string name="txt_highlight">[AR] Highlight</string>
+    <string name="txt_redact">[AR] Redact</string>
+    <string name="txt_signature">[AR] Signature</string>
+    <string name="txt_draw_electronic_signature">[AR] Draw Electronic Signature</string>
+    <string name="txt_sign_inside_the_box_below">[AR] Sign inside the box below:</string>
+    <string name="txt_clear_signature">[AR] Clear Signature</string>
+    <string name="txt_place_signature">[AR] Place Signature</string>
+    <string name="txt_cancel">[AR] Cancel</string>
+    <string name="desc_back">[AR] Back</string>
+    <string name="desc_undo">[AR] Undo</string>
+    <string name="txt_update_available">[AR] Update Available</string>
+    <string name="txt_update_now">[AR] Update Now</string>
+    <string name="txt_later">[AR] Later</string>
+    <string name="txt_id_card">[AR] ID Card</string>
+    <string name="txt_scan_document">[AR] Scan Document</string>
+    <string name="txt_search_titles__tags__or_oc">[AR] Search titles, tags, or OCR text…</string>
+    <string name="txt_start_scanning">[AR] Start Scanning</string>
+    <string name="txt_trash_is_empty">[AR] Trash is empty.</string>
+    <string name="txt_empty_trash">[AR] Empty Trash</string>
+    <string name="txt_close">[AR] Close</string>
+    <string name="desc_toggle_grid_list_view">[AR] Toggle Grid/List View</string>
+    <string name="desc_trash_bin">[AR] Trash Bin</string>
+    <string name="desc_settings">[AR] Settings</string>
+    <string name="desc_import_photos">[AR] Import Photos</string>
+    <string name="desc_clear_search">[AR] Clear Search</string>
+    <string name="desc_restore">[AR] Restore</string>
+    <string name="desc_delete">[AR] Delete</string>
+    <string name="txt_merge_id_card">[AR] Merge ID Card</string>
+    <string name="txt_pinch_to_zoom__drag_to_mov">[AR] Pinch to zoom, drag to move</string>
+    <string name="desc_front">[AR] Front</string>
+    <string name="txt_ocr___document_ai">[AR] OCR &amp; Document AI</string>
+    <string name="txt_structured_ai_data">[AR] Structured AI Data</string>
+    <string name="txt_full_ocr_text">[AR] Full OCR Text</string>
+    <string name="txt_apply_title_to_document">[AR] Apply Title to Document</string>
+    <string name="txt_copy_all">[AR] Copy All</string>
+    <string name="txt_share">[AR] Share</string>
+    <string name="txt_analysis_failed__please_tr">[AR] Analysis failed. Please try again.</string>
+    <string name="txt_retry_analysis">[AR] Retry Analysis</string>
+    <string name="txt_docscan_ocr">[AR] DocScan OCR</string>
+    <string name="desc_re_analyze">[AR] Re-analyze</string>
+    <string name="desc_copy">[AR] Copy</string>
+    <string name="txt_settings___privacy">[AR] Settings &amp; Privacy</string>
+    <string name="txt_app_pin_protection">[AR] App PIN Protection</string>
+    <string name="txt_disable_pin_lock">[AR] Disable PIN Lock</string>
+    <string name="txt_total_scanned_documents">[AR] Total Scanned Documents</string>
+    <string name="txt_total_pages">[AR] Total Pages</string>
+    <string name="txt_document_scans_storage">[AR] Document Scans Storage</string>
+    <string name="txt_export___temp_cache">[AR] Export / Temp Cache</string>
+    <string name="txt_clear_cache">[AR] Clear Cache</string>
+    <string name="txt_docscan_pro_v1_0">[AR] DocScan Pro v1.0</string>
+    <string name="txt_professional_document_scan">[AR] Professional Document Scanner with Intelligent Boundary Detection, 4-Corner Homography Perspective Correction, Deep OCR AI, and Searchable Multi-Page PDF Studio.</string>
+    <string name="txt_configure_4_digit_pin">[AR] Configure 4-Digit PIN</string>
+    <string name="txt_enter_4_digits">[AR] Enter 4 digits</string>
+    <string name="txt_save_pin">[AR] Save PIN</string>
+    <string name="txt_copy">[AR] Copy</string>
+    <string name="txt_move">[AR] Move</string>
+    <string name="txt_filter">[AR] Filter</string>
+    <string name="txt_ocr">[AR] OCR</string>
+    <string name="txt_sign">[AR] Sign</string>
+    <string name="txt_rotate">[AR] Rotate</string>
+    <string name="txt_delete">[AR] Delete</string>
+    <string name="txt_export_document_as_pdf">[AR] Export Document as PDF</string>
+    <string name="txt_page_format">[AR] Page Format</string>
+    <string name="txt_quality___compression">[AR] Quality &amp; Compression</string>
+    <string name="txt_searchable_ocr_text_layer">[AR] Searchable OCR Text Layer</string>
+    <string name="txt_export___share">[AR] Export &amp; Share</string>
+    <string name="desc_export_pdf">[AR] Export PDF</string>
+    <string name="desc_share_all_jpegs">[AR] Share All JPEGs</string>
+    <string name="desc_share_page">[AR] Share Page</string>
+    <string name="desc_add_page">[AR] Add Page</string>
+    <string name="desc_duplicate">[AR] Duplicate</string>
+    <string name="desc_move_left">[AR] Move Left</string>
+    <string name="desc_filters">[AR] Filters</string>
+    <string name="desc_ocr">[AR] OCR</string>
+    <string name="desc_sign___annotate">[AR] Sign &amp; Annotate</string>
+    <string name="desc_rotate">[AR] Rotate</string>
 </resources>

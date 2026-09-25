@@ -28,7 +28,9 @@ import com.example.ui.screens.viewer.DocumentViewerScreen
 import com.example.ui.theme.DocScanTheme
 import com.example.ui.viewmodel.DocumentViewModel
 
-class MainActivity : ComponentActivity() {
+import androidx.appcompat.app.AppCompatActivity
+
+class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

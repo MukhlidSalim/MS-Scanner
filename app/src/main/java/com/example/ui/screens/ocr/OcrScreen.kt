@@ -1,5 +1,7 @@
 package com.example.ui.screens.ocr
 
+import androidx.compose.ui.res.stringResource
+import com.example.R
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -48,10 +50,10 @@ fun OcrScreen(
         modifier = modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
-                title = { Text("OCR & Document AI", fontWeight = FontWeight.Bold) },
+                title = { Text(stringResource(R.string.txt_ocr___document_ai), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.desc_back))
                     }
                 },
                 actions = {
@@ -59,7 +61,7 @@ fun OcrScreen(
                         onClick = { viewModel.runOcrOnActivePage(useDeepAi = true) },
                         modifier = Modifier.testTag("ocr_retry_btn")
                     ) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Re-analyze")
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.desc_re_analyze))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -75,12 +77,12 @@ fun OcrScreen(
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    text = { Text("Structured AI Data") }
+                    text = { Text(stringResource(R.string.txt_structured_ai_data)) }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text("Full OCR Text") }
+                    text = { Text(stringResource(R.string.txt_full_ocr_text)) }
                 )
             }
 
@@ -151,7 +153,7 @@ fun OcrScreen(
                                     },
                                     modifier = Modifier.testTag("apply_suggested_title_btn")
                                 ) {
-                                    Text("Apply Title to Document")
+                                    Text(stringResource(R.string.txt_apply_title_to_document))
                                 }
                             }
                         }
@@ -193,7 +195,7 @@ fun OcrScreen(
                                             copyToClipboard(context, field.value)
                                             Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                                         }) {
-                                            Icon(Icons.Default.ContentCopy, contentDescription = "Copy")
+                                            Icon(Icons.Default.ContentCopy, contentDescription = stringResource(R.string.desc_copy))
                                         }
                                     }
                                 }
@@ -225,7 +227,7 @@ fun OcrScreen(
                             }) {
                                 Icon(Icons.Default.ContentCopy, contentDescription = null)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Copy All")
+                                Text(stringResource(R.string.txt_copy_all))
                             }
 
                             TextButton(onClick = {
@@ -237,7 +239,7 @@ fun OcrScreen(
                             }) {
                                 Icon(Icons.Default.Share, contentDescription = null)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("Share")
+                                Text(stringResource(R.string.txt_share))
                             }
                         }
 
@@ -270,9 +272,9 @@ fun OcrScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Icon(Icons.Default.ErrorOutline, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.error)
-                        Text("Analysis failed. Please try again.")
+                        Text(stringResource(R.string.txt_analysis_failed__please_tr))
                         Button(onClick = { viewModel.runOcrOnActivePage(useDeepAi = true) }) {
-                            Text("Retry Analysis")
+                            Text(stringResource(R.string.txt_retry_analysis))
                         }
                     }
                 }
@@ -283,6 +285,6 @@ fun OcrScreen(
 
 private fun copyToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    val clip = ClipData.newPlainText("DocScan OCR", text)
+    val clip = ClipData.newPlainText(stringResource(R.string.txt_docscan_ocr), text)
     clipboard.setPrimaryClip(clip)
 }

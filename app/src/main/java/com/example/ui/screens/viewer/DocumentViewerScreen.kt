@@ -1,5 +1,7 @@
 package com.example.ui.screens.viewer
 
+import androidx.compose.ui.res.stringResource
+import com.example.R
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -142,26 +144,26 @@ fun DocumentViewerScreen(
                 },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.desc_back))
                     }
                 },
                 actions = {
                     IconButton(onClick = { showPdfExportDialog = true }, modifier = Modifier.testTag("export_pdf_top_btn")) {
-                        Icon(Icons.Default.PictureAsPdf, contentDescription = "Export PDF", tint = EmeraldLight)
+                        Icon(Icons.Default.PictureAsPdf, contentDescription = stringResource(R.string.desc_export_pdf), tint = EmeraldLight)
                     }
                     if (pages.size > 1) {
                         IconButton(onClick = {
                             val allFiles = pages.map { File(it.processedImagePath) }
                             shareMultipleFiles(context, allFiles)
                         }) {
-                            Icon(Icons.Default.Collections, contentDescription = "Share All JPEGs")
+                            Icon(Icons.Default.Collections, contentDescription = stringResource(R.string.desc_share_all_jpegs))
                         }
                     }
                     IconButton(onClick = {
                         val activePage = pages.getOrNull(pagerState.currentPage) ?: return@IconButton
                         shareFile(context, File(activePage.processedImagePath))
                     }) {
-                        Icon(Icons.Default.Share, contentDescription = "Share Page")
+                        Icon(Icons.Default.Share, contentDescription = stringResource(R.string.desc_share_page))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -173,7 +175,7 @@ fun DocumentViewerScreen(
                 containerColor = EmeraldLight,
                 contentColor = Color.Black
             ) {
-                Icon(Icons.Default.AddAPhoto, contentDescription = "Add Page")
+                Icon(Icons.Default.AddAPhoto, contentDescription = stringResource(R.string.desc_add_page))
             }
         },
         bottomBar = {
@@ -233,8 +235,8 @@ fun DocumentViewerScreen(
                         modifier = Modifier.testTag("action_duplicate_btn")
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.FileCopy, contentDescription = "Duplicate")
-                            Text("Copy", fontSize = 10.sp)
+                            Icon(Icons.Default.FileCopy, contentDescription = stringResource(R.string.desc_duplicate))
+                            Text(stringResource(R.string.txt_copy), fontSize = 10.sp)
                         }
                     }
 
@@ -247,8 +249,8 @@ fun DocumentViewerScreen(
                         modifier = Modifier.testTag("action_reorder_left_btn")
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.ArrowBackIosNew, contentDescription = "Move Left", modifier = Modifier.size(20.dp))
-                            Text("Move", fontSize = 10.sp)
+                            Icon(Icons.Default.ArrowBackIosNew, contentDescription = stringResource(R.string.desc_move_left), modifier = Modifier.size(20.dp))
+                            Text(stringResource(R.string.txt_move), fontSize = 10.sp)
                         }
                     }
 
@@ -258,8 +260,8 @@ fun DocumentViewerScreen(
                         modifier = Modifier.testTag("action_filter_btn")
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.ColorLens, contentDescription = "Filters", tint = CyanScan)
-                            Text("Filter", fontSize = 10.sp)
+                            Icon(Icons.Default.ColorLens, contentDescription = stringResource(R.string.desc_filters), tint = CyanScan)
+                            Text(stringResource(R.string.txt_filter), fontSize = 10.sp)
                         }
                     }
 
@@ -273,8 +275,8 @@ fun DocumentViewerScreen(
                         modifier = Modifier.testTag("action_ocr_btn")
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.TextFields, contentDescription = "OCR", tint = EmeraldLight)
-                            Text("OCR", fontSize = 10.sp)
+                            Icon(Icons.Default.TextFields, contentDescription = stringResource(R.string.desc_ocr), tint = EmeraldLight)
+                            Text(stringResource(R.string.txt_ocr), fontSize = 10.sp)
                         }
                     }
 
@@ -288,8 +290,8 @@ fun DocumentViewerScreen(
                         modifier = Modifier.testTag("action_annotate_btn")
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.Draw, contentDescription = "Sign & Annotate")
-                            Text("Sign", fontSize = 10.sp)
+                            Icon(Icons.Default.Draw, contentDescription = stringResource(R.string.desc_sign___annotate))
+                            Text(stringResource(R.string.txt_sign), fontSize = 10.sp)
                         }
                     }
 
@@ -299,8 +301,8 @@ fun DocumentViewerScreen(
                         modifier = Modifier.testTag("action_rotate_btn")
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.RotateRight, contentDescription = "Rotate")
-                            Text("Rotate", fontSize = 10.sp)
+                            Icon(Icons.Default.RotateRight, contentDescription = stringResource(R.string.desc_rotate))
+                            Text(stringResource(R.string.txt_rotate), fontSize = 10.sp)
                         }
                     }
 
@@ -315,8 +317,8 @@ fun DocumentViewerScreen(
                         modifier = Modifier.testTag("action_delete_btn")
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = "Delete", tint = Color(0xFFEF4444))
-                            Text("Delete", fontSize = 10.sp, color = Color(0xFFEF4444))
+                            Icon(Icons.Default.DeleteOutline, contentDescription = stringResource(R.string.desc_delete), tint = Color(0xFFEF4444))
+                            Text(stringResource(R.string.txt_delete), fontSize = 10.sp, color = Color(0xFFEF4444))
                         }
                     }
                 }
@@ -460,10 +462,10 @@ fun DocumentViewerScreen(
 
         AlertDialog(
             onDismissRequest = { showPdfExportDialog = false },
-            title = { Text("Export Document as PDF") },
+            title = { Text(stringResource(R.string.txt_export_document_as_pdf)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    Text("Page Format", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(stringResource(R.string.txt_page_format), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         PageSizePreset.values().forEach { size ->
                             FilterChip(
@@ -474,7 +476,7 @@ fun DocumentViewerScreen(
                         }
                     }
 
-                    Text("Quality & Compression", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    Text(stringResource(R.string.txt_quality___compression), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Row(
                         modifier = Modifier.horizontalScroll(rememberScrollState()),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -493,7 +495,7 @@ fun DocumentViewerScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Searchable OCR Text Layer", fontSize = 13.sp)
+                        Text(stringResource(R.string.txt_searchable_ocr_text_layer), fontSize = 13.sp)
                         Switch(
                             checked = includeOcr,
                             onCheckedChange = { includeOcr = it }
@@ -520,13 +522,13 @@ fun DocumentViewerScreen(
                     if (uiState.isExportingPdf) {
                         CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
                     } else {
-                        Text("Export & Share")
+                        Text(stringResource(R.string.txt_export___share))
                     }
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showPdfExportDialog = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.txt_cancel))
                 }
             }
         )

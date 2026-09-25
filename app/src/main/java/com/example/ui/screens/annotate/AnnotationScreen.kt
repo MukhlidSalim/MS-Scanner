@@ -1,5 +1,7 @@
 package com.example.ui.screens.annotate
 
+import androidx.compose.ui.res.stringResource
+import com.example.R
 import android.graphics.Bitmap
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -78,10 +80,10 @@ fun AnnotationScreen(
         modifier = modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
-                title = { Text("Sign & Annotate", fontWeight = FontWeight.Bold) },
+                title = { Text(stringResource(R.string.txt_sign___annotate), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.desc_back))
                     }
                 },
                 actions = {
@@ -92,7 +94,7 @@ fun AnnotationScreen(
                         },
                         enabled = paths.isNotEmpty() || redactions.isNotEmpty()
                     ) {
-                        Icon(Icons.Default.Undo, contentDescription = "Undo")
+                        Icon(Icons.Default.Undo, contentDescription = stringResource(R.string.desc_undo))
                     }
 
                     TextButton(
@@ -102,7 +104,7 @@ fun AnnotationScreen(
                         },
                         modifier = Modifier.testTag("save_annotation_btn")
                     ) {
-                        Text("Save", fontWeight = FontWeight.Bold, color = EmeraldLight, fontSize = 16.sp)
+                        Text(stringResource(R.string.txt_save), fontWeight = FontWeight.Bold, color = EmeraldLight, fontSize = 16.sp)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -127,28 +129,28 @@ fun AnnotationScreen(
                         FilterChip(
                             selected = activeTool == AnnotateTool.PEN,
                             onClick = { activeTool = AnnotateTool.PEN },
-                            label = { Text("Pen") },
+                            label = { Text(stringResource(R.string.txt_pen)) },
                             leadingIcon = { Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                         // Highlighter
                         FilterChip(
                             selected = activeTool == AnnotateTool.HIGHLIGHTER,
                             onClick = { activeTool = AnnotateTool.HIGHLIGHTER },
-                            label = { Text("Highlight") },
+                            label = { Text(stringResource(R.string.txt_highlight)) },
                             leadingIcon = { Icon(Icons.Default.BorderColor, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                         // Redaction Blackout
                         FilterChip(
                             selected = activeTool == AnnotateTool.REDACT,
                             onClick = { activeTool = AnnotateTool.REDACT },
-                            label = { Text("Redact") },
+                            label = { Text(stringResource(R.string.txt_redact)) },
                             leadingIcon = { Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                         // Signature
                         FilterChip(
                             selected = activeTool == AnnotateTool.SIGNATURE,
                             onClick = { showSignatureDialog = true },
-                            label = { Text("Signature") },
+                            label = { Text(stringResource(R.string.txt_signature)) },
                             leadingIcon = { Icon(Icons.Default.Gesture, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                     }
@@ -350,10 +352,10 @@ fun AnnotationScreen(
         val signaturePoints = remember { mutableStateListOf<StrokePoint>() }
         AlertDialog(
             onDismissRequest = { showSignatureDialog = false },
-            title = { Text("Draw Electronic Signature") },
+            title = { Text(stringResource(R.string.txt_draw_electronic_signature)) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Sign inside the box below:", fontSize = 12.sp)
+                    Text(stringResource(R.string.txt_sign_inside_the_box_below), fontSize = 12.sp)
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -388,7 +390,7 @@ fun AnnotationScreen(
                         onClick = { signaturePoints.clear() },
                         modifier = Modifier.align(Alignment.End)
                     ) {
-                        Text("Clear Signature")
+                        Text(stringResource(R.string.txt_clear_signature))
                     }
                 }
             },
@@ -427,12 +429,12 @@ fun AnnotationScreen(
                         showSignatureDialog = false
                     }
                 ) {
-                    Text("Place Signature")
+                    Text(stringResource(R.string.txt_place_signature))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showSignatureDialog = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.txt_cancel))
                 }
             }
         )

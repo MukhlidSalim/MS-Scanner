@@ -1,5 +1,7 @@
 package com.example.ui.screens.home
 
+import androidx.compose.ui.res.stringResource
+import com.example.R
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -76,18 +78,18 @@ fun HomeScreen(
     if (updateInfo != null) {
         AlertDialog(
             onDismissRequest = { updateInfo = null },
-            title = { Text("Update Available") },
+            title = { Text(stringResource(R.string.txt_update_available)) },
             text = { Text("Version ${updateInfo?.version} is available!\n\n${updateInfo?.releaseNotes}") },
             confirmButton = {
                 Button(onClick = {
                     com.example.engine.updater.AppUpdater.downloadAndInstall(context, updateInfo!!.downloadUrl)
                     updateInfo = null
                 }) {
-                    Text("Update Now")
+                    Text(stringResource(R.string.txt_update_now))
                 }
             },
             dismissButton = {
-                TextButton(onClick = { updateInfo = null }) { Text("Later") }
+                TextButton(onClick = { updateInfo = null }) { Text(stringResource(R.string.txt_later)) }
             }
         )
     }
@@ -233,7 +235,7 @@ fun HomeScreen(
                     ) {
                         Icon(
                             imageVector = if (isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
-                            contentDescription = "Toggle Grid/List View"
+                            contentDescription = stringResource(R.string.desc_toggle_grid_list_view)
                         )
                     }
                     IconButton(
@@ -245,14 +247,14 @@ fun HomeScreen(
                                 Badge { Text("${uiState.trashDocuments.size}") }
                             }
                         }) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = "Trash Bin")
+                            Icon(Icons.Default.DeleteOutline, contentDescription = stringResource(R.string.desc_trash_bin))
                         }
                     }
                     IconButton(
                         onClick = onNavigateToSettings,
                         modifier = Modifier.testTag("settings_btn")
                     ) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.desc_settings))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -277,7 +279,7 @@ fun HomeScreen(
                     contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.testTag("import_photos_fab")
                 ) {
-                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Import Photos")
+                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = stringResource(R.string.desc_import_photos))
                 }
 
                 // ID Card Scanner
@@ -289,7 +291,7 @@ fun HomeScreen(
                     containerColor = CyanScan,
                     contentColor = Color.White,
                     icon = { Icon(Icons.Default.Badge, contentDescription = null) },
-                    text = { Text("ID Card", fontWeight = FontWeight.Bold) }
+                    text = { Text(stringResource(R.string.txt_id_card), fontWeight = FontWeight.Bold) }
                 )
 
                 // Primary FAB: Camera Scanner
@@ -301,7 +303,7 @@ fun HomeScreen(
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                     icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
-                    text = { Text("Scan Document", fontWeight = FontWeight.Bold) },
+                    text = { Text(stringResource(R.string.txt_scan_document), fontWeight = FontWeight.Bold) },
                     modifier = Modifier.testTag("main_scan_fab")
                 )
             }
@@ -316,12 +318,12 @@ fun HomeScreen(
             OutlinedTextField(
                 value = uiState.searchQuery,
                 onValueChange = { viewModel.onSearchQueryChanged(it) },
-                placeholder = { Text("Search titles, tags, or OCR text…") },
+                placeholder = { Text(stringResource(R.string.txt_search_titles__tags__or_oc)) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
                     if (uiState.searchQuery.isNotEmpty()) {
                         IconButton(onClick = { viewModel.onSearchQueryChanged("") }) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear Search")
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.desc_clear_search))
                         }
                     }
                 },
@@ -406,7 +408,7 @@ fun HomeScreen(
                         ) {
                             Icon(Icons.Default.CameraAlt, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Start Scanning")
+                            Text(stringResource(R.string.txt_start_scanning))
                         }
                     }
                 }
@@ -457,7 +459,7 @@ fun HomeScreen(
             title = { Text("Trash Bin (${uiState.trashDocuments.size})") },
             text = {
                 if (uiState.trashDocuments.isEmpty()) {
-                    Text("Trash is empty.")
+                    Text(stringResource(R.string.txt_trash_is_empty))
                 } else {
                     LazyColumn(
                         modifier = Modifier.heightIn(max = 300.dp),
@@ -472,10 +474,10 @@ fun HomeScreen(
                                 Text(doc.title, maxLines = 1, modifier = Modifier.weight(1f))
                                 Row {
                                     IconButton(onClick = { viewModel.restoreFromTrash(doc.id) }) {
-                                        Icon(Icons.Default.Restore, contentDescription = "Restore")
+                                        Icon(Icons.Default.Restore, contentDescription = stringResource(R.string.desc_restore))
                                     }
                                     IconButton(onClick = { viewModel.deletePermanently(doc.id) }) {
-                                        Icon(Icons.Default.DeleteForever, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
+                                        Icon(Icons.Default.DeleteForever, contentDescription = stringResource(R.string.desc_delete), tint = MaterialTheme.colorScheme.error)
                                     }
                                 }
                             }
@@ -489,13 +491,13 @@ fun HomeScreen(
                         viewModel.emptyTrash()
                         showTrashDialog = false
                     }) {
-                        Text("Empty Trash", color = MaterialTheme.colorScheme.error)
+                        Text(stringResource(R.string.txt_empty_trash), color = MaterialTheme.colorScheme.error)
                     }
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showTrashDialog = false }) {
-                    Text("Close")
+                    Text(stringResource(R.string.txt_close))
                 }
             }
         )

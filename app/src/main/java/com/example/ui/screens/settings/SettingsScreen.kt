@@ -1,5 +1,7 @@
 package com.example.ui.screens.settings
 
+import androidx.compose.ui.res.stringResource
+import com.example.R
 import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -43,10 +45,10 @@ fun SettingsScreen(
         modifier = modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
-                title = { Text("Settings & Privacy", fontWeight = FontWeight.Bold) },
+                title = { Text(stringResource(R.string.txt_settings___privacy), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.desc_back))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -144,7 +146,7 @@ fun SettingsScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text("App PIN Protection", fontWeight = FontWeight.SemiBold)
+                            Text(stringResource(R.string.txt_app_pin_protection), fontWeight = FontWeight.SemiBold)
                             Text(
                                 text = if (uiState.hasPinConfigured) "PIN configured and active" else "No PIN configured",
                                 fontSize = 12.sp,
@@ -168,7 +170,7 @@ fun SettingsScreen(
                             },
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                         ) {
-                            Text("Disable PIN Lock")
+                            Text(stringResource(R.string.txt_disable_pin_lock))
                         }
                     }
                 }
@@ -195,7 +197,7 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Total Scanned Documents", fontSize = 13.sp)
+                        Text(stringResource(R.string.txt_total_scanned_documents), fontSize = 13.sp)
                         Text("${stats?.totalDocumentsCount ?: 0}", fontWeight = FontWeight.Bold)
                     }
 
@@ -203,7 +205,7 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Total Pages", fontSize = 13.sp)
+                        Text(stringResource(R.string.txt_total_pages), fontSize = 13.sp)
                         Text("${stats?.totalPagesCount ?: 0}", fontWeight = FontWeight.Bold)
                     }
 
@@ -211,7 +213,7 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Document Scans Storage", fontSize = 13.sp)
+                        Text(stringResource(R.string.txt_document_scans_storage), fontSize = 13.sp)
                         val scansMb = (stats?.scansSizeBytes ?: 0L) / (1024 * 1024f)
                         Text(String.format("%.1f MB", scansMb), fontWeight = FontWeight.Bold)
                     }
@@ -220,7 +222,7 @@ fun SettingsScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text("Export / Temp Cache", fontSize = 13.sp)
+                        Text(stringResource(R.string.txt_export___temp_cache), fontSize = 13.sp)
                         val cacheMb = (stats?.cacheSizeBytes ?: 0L) / (1024 * 1024f)
                         Text(String.format("%.1f MB", cacheMb), fontWeight = FontWeight.Bold)
                     }
@@ -240,7 +242,7 @@ fun SettingsScreen(
                         ) {
                             Icon(Icons.Default.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Clear Cache")
+                            Text(stringResource(R.string.txt_clear_cache))
                         }
 
                         OutlinedButton(
@@ -252,7 +254,7 @@ fun SettingsScreen(
                         ) {
                             Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Empty Trash")
+                            Text(stringResource(R.string.txt_empty_trash))
                         }
                     }
                 }
@@ -273,7 +275,7 @@ fun SettingsScreen(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text("DocScan Pro v1.0", fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.txt_docscan_pro_v1_0), fontWeight = FontWeight.Bold)
                     Text(
                         "Professional Document Scanner with Intelligent Boundary Detection, 4-Corner Homography Perspective Correction, Deep OCR AI, and Searchable Multi-Page PDF Studio.",
                         fontSize = 12.sp,
@@ -287,12 +289,12 @@ fun SettingsScreen(
     if (showPinDialog) {
         AlertDialog(
             onDismissRequest = { showPinDialog = false },
-            title = { Text("Configure 4-Digit PIN") },
+            title = { Text(stringResource(R.string.txt_configure_4_digit_pin)) },
             text = {
                 OutlinedTextField(
                     value = pinInput,
                     onValueChange = { if (it.length <= 4 && it.all { c -> c.isDigit() }) pinInput = it },
-                    label = { Text("Enter 4 digits") },
+                    label = { Text(stringResource(R.string.txt_enter_4_digits)) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth().testTag("pin_setup_input")
                 )
@@ -309,12 +311,12 @@ fun SettingsScreen(
                         }
                     }
                 ) {
-                    Text("Save PIN")
+                    Text(stringResource(R.string.txt_save_pin))
                 }
             },
             dismissButton = {
                 TextButton(onClick = { showPinDialog = false }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.txt_cancel))
                 }
             }
         )
