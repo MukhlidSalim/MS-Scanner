@@ -57,7 +57,6 @@ class BackupManager(
                                     put("pageIndex", page.pageIndex)
                                     put("rawImagePath", File(page.rawImagePath).name)
                                     put("processedImagePath", File(page.processedImagePath).name)
-                                    put("thumbnailPath", if (page.thumbnailPath.isNotBlank()) File(page.thumbnailPath).name else "")
                                     put("ocrText", page.ocrText)
                                 }
                                 pagesArray.put(pageObj)
@@ -65,9 +64,6 @@ class BackupManager(
                                 // Copy files
                                 copyFileToZip(page.rawImagePath, "${docDir}pages/${File(page.rawImagePath).name}", zos)
                                 copyFileToZip(page.processedImagePath, "${docDir}pages/${File(page.processedImagePath).name}", zos)
-                                if (page.thumbnailPath.isNotBlank()) {
-                                    copyFileToZip(page.thumbnailPath, "${docDir}pages/${File(page.thumbnailPath).name}", zos)
-                                }
                             }
                             put("pages", pagesArray)
                         }
@@ -160,7 +156,6 @@ class BackupManager(
                                 val pageObj = pagesArray.getJSONObject(i)
                                 val rawName = pageObj.getString("rawImagePath")
                                 val procName = pageObj.getString("processedImagePath")
-                                val thumbName = pageObj.optString("thumbnailPath", "")
                                 
                                 val newRawPath = File(context.filesDir, "restored_${System.currentTimeMillis()}_$rawName")
                                 val newProcPath = File(context.filesDir, "restored_${System.currentTimeMillis()}_$procName")
@@ -178,13 +173,10 @@ class BackupManager(
                                         pageIndex = i,
                                         rawImagePath = newRawPath.absolutePath,
                                         processedImagePath = newProcPath.absolutePath,
-                                        thumbnailPath = newThumbPath?.absolutePath ?: "",
                                         ocrText = pageObj.optString("ocrText", "")
                                     )
                                 )
                             }
-                            
-                            documentDao.updateDocumentThumbnail(newDocId, firstThumb)
                             restoredCount++
                         }
                     }

@@ -146,18 +146,6 @@ class DocumentViewModel(
         _uiState.update { it.copy(searchQuery = query) }
         filterTrigger.value = filterTrigger.value.copy(query = query)
     }
-        viewModelScope.launch {
-            if (query.isBlank()) {
-                repository.getAllDocuments().first().let { docs ->
-                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
-                }
-            } else {
-                repository.searchDocuments(query).collectLatest { searchResults ->
-                    _uiState.update { state -> state.copy(documents = applySorting(searchResults, state.sortMode)) }
-                }
-            }
-        }
-    }
 
     
     fun renameFolder(oldName: String, newName: String) {
@@ -182,18 +170,6 @@ class DocumentViewModel(
         _uiState.update { it.copy(selectedFolder = folder) }
         filterTrigger.value = filterTrigger.value.copy(folder = folder)
     }
-        viewModelScope.launch {
-            if (folder == "ALL") {
-                repository.getAllDocuments().collectLatest { docs ->
-                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
-                }
-            } else {
-                repository.getDocumentsByFolder(folder).collectLatest { docs ->
-                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
-                }
-            }
-        }
-    }
 
     private fun applySorting(docs: List<DocumentEntity>, mode: SortMode): List<DocumentEntity> {
         return when (mode) {
@@ -210,25 +186,10 @@ class DocumentViewModel(
         _uiState.update { it.copy(sortMode = mode) }
         filterTrigger.value = filterTrigger.value.copy(sort = mode)
     }
-        val sorted = applySorting(_uiState.value.documents, mode)
-        _uiState.update { state -> state.copy(documents = applySorting(sorted, state.sortMode)) }
-    }
 
     fun filterByCategory(cat: DocumentCategory) {
         _uiState.update { it.copy(selectedCategory = cat) }
         filterTrigger.value = filterTrigger.value.copy(category = cat)
-    }
-        viewModelScope.launch {
-            if (cat == DocumentCategory.ALL) {
-                repository.getAllDocuments().collectLatest { docs ->
-                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
-                }
-            } else {
-                repository.getDocumentsByCategory(cat.name).collectLatest { docs ->
-                    _uiState.update { state -> state.copy(documents = applySorting(docs, state.sortMode)) }
-                }
-            }
-        }
     }
 
     fun loadDocument(docId: Long) {

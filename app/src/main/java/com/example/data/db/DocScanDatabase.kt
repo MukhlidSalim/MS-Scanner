@@ -14,7 +14,7 @@ import com.example.data.model.SignatureEntity
 @Database(
     entities = [DocumentEntity::class, PageEntity::class, SignatureEntity::class],
     version = 2,
-    exportSchema = true
+    exportSchema = false
 )
 abstract class DocScanDatabase : RoomDatabase() {
 

@@ -136,7 +136,7 @@ fun ReorderPagesScreen(
                         }
                 ) {
                     AsyncImage(
-                        model = page.thumbnailPath.ifBlank { page.processedImagePath },
+                        model = page.processedImagePath,
                         contentDescription = "Page ${index + 1}",
                         modifier = Modifier.fillMaxSize(),
                         contentScale = ContentScale.Crop

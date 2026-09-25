@@ -49,7 +49,6 @@ interface DocumentDao {
     fun getAllFolders(): Flow<List<String>>
 
     @Query("UPDATE documents SET folderName = :newName WHERE folderName = :oldName")
-    @Query("UPDATE documents SET folderName = :newName WHERE folderName = :oldName")
     suspend fun renameFolder(oldName: String, newName: String)
 
         @Query("UPDATE documents SET folderName = 'Default' WHERE folderName = :folderName")
@@ -100,7 +99,6 @@ interface DocumentDao {
     @Update
     suspend fun updatePage(page: PageEntity)
 
-    @Update
     @Update
     suspend fun updatePages(pages: List<PageEntity>)
 
