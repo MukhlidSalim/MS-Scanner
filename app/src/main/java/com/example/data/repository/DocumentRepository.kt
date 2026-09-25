@@ -104,6 +104,14 @@ class DocumentRepository(
         }
     }
 
+    suspend fun updatePagesIndices(pages: List<PageEntity>) = withContext(Dispatchers.IO) {
+        documentDao.updatePages(pages)
+    }
+
+    suspend fun insertPage(page: PageEntity): Long = withContext(Dispatchers.IO) {
+        documentDao.insertPage(page)
+    }
+
     suspend fun deletePage(pageId: Long, docId: Long) = withContext(Dispatchers.IO) {
         documentDao.deletePageById(pageId)
         val remaining = documentDao.getPagesListForDocument(docId)

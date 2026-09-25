@@ -236,6 +236,30 @@ class DocumentViewModel(
         }
     }
 
+    fun reorderPages(fromIndex: Int, toIndex: Int) {
+        val pages = _uiState.value.activePages.toMutableList()
+        if (fromIndex !in pages.indices || toIndex !in pages.indices) return
+        val item = pages.removeAt(fromIndex)
+        pages.add(toIndex, item)
+        viewModelScope.launch {
+            repository.updatePagesIndices(pages.mapIndexed { index, page -> page.copy(pageIndex = index) })
+        }
+    }
+
+    fun duplicateActivePage() {
+        val pages = _uiState.value.activePages
+        val idx = _uiState.value.selectedPageIndex
+        if (idx !in pages.indices) return
+        val page = pages[idx]
+        viewModelScope.launch {
+            val newPage = page.copy(id = 0, pageIndex = pages.size)
+            repository.insertPage(newPage)
+            val doc = repository.getDocumentById(page.documentId)
+            if (doc != null) repository.updateDocument(doc.copy(pageCount = pages.size + 1))
+            refreshStorageStats()
+        }
+    }
+
     fun deleteActivePage() {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex

@@ -86,6 +86,9 @@ interface DocumentDao {
     @Update
     suspend fun updatePage(page: PageEntity)
 
+    @Update
+    suspend fun updatePages(pages: List<PageEntity>)
+
     @Query("DELETE FROM pages WHERE id = :pageId")
     suspend fun deletePageById(pageId: Long)
 
