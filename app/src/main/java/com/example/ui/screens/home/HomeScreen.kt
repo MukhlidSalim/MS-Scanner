@@ -1,131 +1,79 @@
-package com.example.ui.screens.home
+﻿package com.example.ui.screens.home
 
-import androidx.compose.ui.res.stringResource
-import com.example.R
+import android.app.Activity
+import android.content.Intent
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.GridView
-import androidx.compose.material.icons.outlined.ViewList
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.data.model.DocumentCategory
+import coil.compose.AsyncImage
+import com.example.R
 import com.example.data.model.DocumentEntity
 import com.example.engine.cv.ImageProcessor
-import com.example.ui.components.CategoryChipsRow
-import com.example.ui.components.FolderChipsRow
-import com.example.ui.components.DocumentCard
 import com.example.ui.theme.CyanScan
-import com.example.ui.theme.EmeraldLight
 import com.example.ui.viewmodel.DocumentViewModel
-import kotlinx.coroutines.launch
-import android.app.Activity
-import androidx.activity.result.IntentSenderRequest
-import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
+import kotlinx.coroutines.launch
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     viewModel: DocumentViewModel,
-    onNavigateToScan: () -> Unit,
-    onNavigateToDocument: (Long) -> Unit,
     onNavigateToSettings: () -> Unit,
-    modifier: Modifier = Modifier
+    onNavigateToDocument: (Long) -> Unit,
+    onNavigateToScan: () -> Unit
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
-    val activity = context as? Activity
     val coroutineScope = rememberCoroutineScope()
 
-    var isGridView by remember { mutableStateOf(false) }
-    var isSearchActive by remember { mutableStateOf(false) }
-    var showTrashDialog by remember { mutableStateOf(false) }
     var selectionMode by remember { mutableStateOf(false) }
     var selectedDocIds by remember { mutableStateOf(setOf<Long>()) }
-    var isIdCardMode by remember { mutableStateOf(false) }
-    var pendingIdCardPages by remember { mutableStateOf<List<Pair<String, String>>?>(null) }
-
-    var showCreateFolderDialog by remember { mutableStateOf(false) }
-    var newFolderName by remember { mutableStateOf("") }
+    var showTrashDialog by remember { mutableStateOf(false) }
     var docToMove by remember { mutableStateOf<Long?>(null) }
-    var showSortMenu by remember { mutableStateOf(false) }
-
+    var showSearch by remember { mutableStateOf(false) }
     
-    var updateInfo by remember { mutableStateOf<com.example.engine.updater.AppUpdater.UpdateInfo?>(null) }
-    
-    LaunchedEffect(Unit) {
-        val info = com.example.engine.updater.AppUpdater.checkForUpdate()
-        if (info != null) {
-            updateInfo = info
-        }
-    }
-    
-    if (updateInfo != null) {
-        AlertDialog(
-            onDismissRequest = { updateInfo = null },
-            title = { Text(stringResource(R.string.txt_update_available)) },
-            text = { Text(stringResource(R.string.txt_version_available, updateInfo?.version ?: "", updateInfo?.releaseNotes ?: "")) },
-            confirmButton = {
-                Button(onClick = {
-                    com.example.engine.updater.AppUpdater.downloadAndInstall(context, updateInfo!!.downloadUrl)
-                    updateInfo = null
-                }) {
-                    Text(stringResource(R.string.txt_update_now))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { updateInfo = null }) { Text(stringResource(R.string.txt_later)) }
-            }
-        )
-    }
-
-    if (pendingIdCardPages != null) {
-        com.example.ui.screens.idcard.IdCardMergerScreen(
-            frontImagePath = pendingIdCardPages!![0].second,
-            backImagePath = pendingIdCardPages!![1].second,
-            onMerged = { mergedPath ->
-                val pagesToSave = listOf(
-                    pendingIdCardPages!![0],
-                    pendingIdCardPages!![1],
-                    Pair(mergedPath, mergedPath)
-                )
-                viewModel.importPagesAsDocument(pagesToSave) { newDocId ->
-                    pendingIdCardPages = null
-                    isIdCardMode = false
-                    onNavigateToDocument(newDocId)
-                }
-            },
-            onCancel = {
-                pendingIdCardPages = null
-                isIdCardMode = false
-            }
-        )
-        return // Overlay
-    }
+    // Scanner Options
+    val options = GmsDocumentScanningOptions.Builder()
+        .setGalleryImportAllowed(true)
+        .setPageLimit(20)
+        .setResultFormats(GmsDocumentScanningOptions.RESULT_FORMAT_JPEG)
+        .setScannerMode(GmsDocumentScanningOptions.SCANNER_MODE_FULL)
+        .build()
 
     val scannerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.StartIntentSenderForResult()
@@ -144,18 +92,13 @@ fun HomeScreen(
                             val proc = ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
                             val procPath = ImageProcessor.saveBitmapToFile(context, proc, "scan_proc_")
                             processedPages.add(Pair(rawPath, procPath))
-                            
                             if (bmp != proc) bmp.recycle()
                             proc.recycle()
                         }
                     }
                     if (processedPages.isNotEmpty()) {
-                        if (isIdCardMode && processedPages.size >= 2) {
-                            pendingIdCardPages = processedPages
-                        } else {
-                            viewModel.importPagesAsDocument(processedPages) { newDocId ->
-                                onNavigateToDocument(newDocId)
-                            }
+                        viewModel.importPagesAsDocument(processedPages) { newDocId ->
+                            onNavigateToDocument(newDocId)
                         }
                     }
                 }
@@ -163,7 +106,6 @@ fun HomeScreen(
         }
     }
 
-    // System Photo Picker for multi-image import
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
     ) { uris: List<Uri> ->
@@ -179,7 +121,6 @@ fun HomeScreen(
                         val proc = ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
                         val procPath = ImageProcessor.saveBitmapToFile(context, proc, "import_proc_")
                         pages.add(Pair(rawPath, procPath))
-                        
                         if (bmp != proc) bmp.recycle()
                         proc.recycle()
                     }
@@ -194,365 +135,231 @@ fun HomeScreen(
     }
 
     val launchScanner = {
-        val options = GmsDocumentScannerOptions.Builder()
-            .setGalleryImportAllowed(true)
-            .setPageLimit(if (isIdCardMode) 2 else 20)
-            .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG, GmsDocumentScannerOptions.RESULT_FORMAT_PDF)
-            .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
-            .build()
-        activity?.let { act ->
-            GmsDocumentScanning.getClient(options).getStartScanIntent(act)
+        val activity = context as? Activity
+        if (activity != null) {
+            GmsDocumentScanning.getClient(options).getStartScanIntent(activity)
                 .addOnSuccessListener { intentSender ->
                     scannerLauncher.launch(
-                        IntentSenderRequest.Builder(intentSender).build()
+                        androidx.activity.result.IntentSenderRequest.Builder(intentSender).build()
                     )
                 }
                 .addOnFailureListener {
-                    onNavigateToScan()
+                    onNavigateToScan() // Fallback
                 }
-        } ?: onNavigateToScan()
+        }
+    }
+
+    // Handle Back Press for Folder & Selection Mode
+    BackHandler(enabled = selectionMode || uiState.selectedFolder != "ALL") {
+        if (selectionMode) {
+            selectionMode = false
+            selectedDocIds = emptySet()
+        } else if (uiState.selectedFolder != "ALL") {
+            viewModel.filterByFolder("ALL")
+        }
     }
 
     Scaffold(
-        modifier = modifier.fillMaxSize(),
         topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    if (selectionMode) {
-                        IconButton(onClick = { selectionMode = false; selectedDocIds = emptySet() }) {
-                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.txt_cancel_selection))
-                        }
-                    }
-                },
-                title = {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .background(EmeraldLight, RoundedCornerShape(8.dp)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.DocumentScanner,
-                                contentDescription = null,
-                                tint = Color.Black,
-                                modifier = Modifier.size(20.dp)
-                            )
-                        }
-                        Text(
-                            text = if (selectionMode) stringResource(R.string.txt_selected_count, selectedDocIds.size) else stringResource(R.string.app_name),
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp
-                        )
-                    }
-                },
-                actions = {
-                    if (selectionMode) {
+            if (selectionMode) {
+                TopAppBar(
+                    title = { Text(stringResource(R.string.txt_selected_count, selectedDocIds.size)) },
+                    navigationIcon = {
                         IconButton(onClick = {
-                            selectedDocIds.forEach { viewModel.moveToTrash(it) }
                             selectionMode = false
                             selectedDocIds = emptySet()
                         }) {
-                            Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.txt_delete_selected), tint = MaterialTheme.colorScheme.error)
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.txt_cancel_selection))
                         }
-                    } else {
-
-                    Box {
-                        IconButton(onClick = { showSortMenu = true }) {
-                            Icon(Icons.Default.Sort, contentDescription = stringResource(R.string.txt_sort))
-                        }
-                        DropdownMenu(
-                            expanded = showSortMenu,
-                            onDismissRequest = { showSortMenu = false }
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_sort_newest)) },
-                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.NEWEST); showSortMenu = false }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_sort_oldest)) },
-                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.OLDEST); showSortMenu = false }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_sort_name_az)) },
-                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.NAME_AZ); showSortMenu = false }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_sort_name_za)) },
-                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.NAME_ZA); showSortMenu = false }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_sort_size)) },
-                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.SIZE_LARGEST); showSortMenu = false }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_sort_pages)) },
-                                onClick = { viewModel.setSortMode(com.example.data.model.SortMode.PAGE_COUNT); showSortMenu = false }
-                            )
-                        }
-                    }
-                    IconButton(
-                        onClick = { isGridView = !isGridView },
-                        modifier = Modifier.testTag("toggle_view_btn")
-                    ) {
-                        Icon(
-                            imageVector = if (isGridView) Icons.Outlined.ViewList else Icons.Outlined.GridView,
-                            contentDescription = stringResource(R.string.desc_toggle_grid_list_view)
-                        )
-                    }
-                    IconButton(
-                        onClick = { showTrashDialog = true },
-                        modifier = Modifier.testTag("trash_bin_btn")
-                    ) {
-                        BadgedBox(badge = {
-                            if (uiState.trashDocuments.isNotEmpty()) {
-                                Badge { Text("${uiState.trashDocuments.size}") }
+                    },
+                    actions = {
+                        if (selectedDocIds.size >= 2) {
+                            IconButton(onClick = {
+                                viewModel.mergeDocuments(selectedDocIds.toList())
+                                selectionMode = false
+                                selectedDocIds = emptySet()
+                            }) {
+                                Icon(Icons.Default.MergeType, contentDescription = "Merge")
                             }
-                        }) {
-                            Icon(Icons.Default.DeleteOutline, contentDescription = stringResource(R.string.desc_trash_bin))
                         }
-                    }
-                    IconButton(
-                        onClick = onNavigateToSettings,
-                        modifier = Modifier.testTag("settings_btn")
-                    ) {
-                        Icon(Icons.Default.Settings, contentDescription = stringResource(R.string.desc_settings))
-                    }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.background
+                        IconButton(onClick = {
+                            // Move multiple
+                            docToMove = selectedDocIds.firstOrNull() // Simplify: or show multi-move dialog
+                            // For simplicity, just use single move dialog logic expanded, or custom multi-move.
+                            // We will reuse docToMove but handle it as a trigger for a dialog that can move ALL selected.
+                        }) {
+                            Icon(Icons.Default.DriveFileMove, contentDescription = "Move")
+                        }
+                        IconButton(onClick = {
+                            selectedDocIds.forEach { viewModel.sharePdf(context, it) }
+                            selectionMode = false
+                            selectedDocIds = emptySet()
+                        }) {
+                            Icon(Icons.Default.Share, contentDescription = "Share")
+                        }
+                        IconButton(onClick = { showTrashDialog = true }) {
+                            Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.txt_delete_selected))
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
                 )
-            )
-        },
-        floatingActionButton = {
-            Column(
-                horizontalAlignment = Alignment.End,
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-                modifier = Modifier.navigationBarsPadding()
-            ) {
-                // Secondary FAB: Import from Gallery
-                SmallFloatingActionButton(
-                    onClick = {
-                        photoPickerLauncher.launch(
-                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+            } else if (showSearch) {
+                TopAppBar(
+                    title = {
+                        TextField(
+                            value = uiState.searchQuery,
+                            onValueChange = { viewModel.onSearchQueryChanged(it) },
+                            placeholder = { Text("Search...") },
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Transparent,
+                                unfocusedContainerColor = Color.Transparent,
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent
+                            ),
+                            modifier = Modifier.fillMaxWidth()
                         )
                     },
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.testTag("import_photos_fab")
-                ) {
-                    Icon(Icons.Default.AddPhotoAlternate, contentDescription = stringResource(R.string.desc_import_photos))
-                }
-
-                // ID Card Scanner
-                ExtendedFloatingActionButton(
-                    onClick = { 
-                        isIdCardMode = true
-                        launchScanner() 
+                    navigationIcon = {
+                        IconButton(onClick = {
+                            showSearch = false
+                            viewModel.onSearchQueryChanged("")
+                        }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                        }
                     },
-                    containerColor = CyanScan,
-                    contentColor = Color.White,
-                    icon = { Icon(Icons.Default.Badge, contentDescription = null) },
-                    text = { Text(stringResource(R.string.txt_id_card), fontWeight = FontWeight.Bold) }
+                    actions = {
+                        if (uiState.searchQuery.isNotEmpty()) {
+                            IconButton(onClick = { viewModel.onSearchQueryChanged("") }) {
+                                Icon(Icons.Default.Clear, contentDescription = "Clear")
+                            }
+                        }
+                    }
                 )
-
-                // Primary FAB: Camera Scanner
-                ExtendedFloatingActionButton(
-                    onClick = { 
-                        isIdCardMode = false
-                        launchScanner() 
+            } else {
+                TopAppBar(
+                    title = {
+                        Text(
+                            text = if (uiState.selectedFolder == "ALL") stringResource(R.string.app_name) else uiState.selectedFolder,
+                            fontWeight = FontWeight.Bold
+                        )
                     },
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary,
-                    icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
-                    text = { Text(stringResource(R.string.txt_scan_document), fontWeight = FontWeight.Bold) },
-                    modifier = Modifier.testTag("main_scan_fab")
+                    navigationIcon = {
+                        if (uiState.selectedFolder != "ALL") {
+                            IconButton(onClick = { viewModel.filterByFolder("ALL") }) {
+                                Icon(Icons.Default.ArrowBack, contentDescription = "Back")
+                            }
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { showSearch = true }) {
+                            Icon(Icons.Default.Search, contentDescription = "Search")
+                        }
+                        IconButton(onClick = onNavigateToSettings) {
+                            Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        }
+                    }
                 )
             }
-        }
-    ) { innerPadding ->
+        },
+        floatingActionButton = {
+            if (!selectionMode) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    modifier = Modifier.padding(bottom = 16.dp)
+                ) {
+                    FloatingActionButton(
+                        onClick = {
+                            photoPickerLauncher.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        containerColor = Color(0xFF2196F3),
+                        contentColor = Color.White
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.Image, contentDescription = "Import")
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Import")
+                        }
+                    }
+                    FloatingActionButton(
+                        onClick = { launchScanner() },
+                        containerColor = CyanScan,
+                        contentColor = Color.White
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CameraAlt, contentDescription = "Camera")
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("Camera")
+                        }
+                    }
+                }
+            }
+        },
+        floatingActionButtonPosition = FabPosition.Center
+    ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding)
+                .padding(paddingValues)
+                .background(MaterialTheme.colorScheme.background)
         ) {
-            // Search Bar
-            OutlinedTextField(
-                value = uiState.searchQuery,
-                onValueChange = { viewModel.onSearchQueryChanged(it) },
-                placeholder = { Text(stringResource(R.string.txt_search_titles__tags__or_oc)) },
-                leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (uiState.searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.onSearchQueryChanged("") }) {
-                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.desc_clear_search))
-                        }
-                    }
-                },
-                shape = RoundedCornerShape(16.dp),
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-                    .testTag("search_text_field")
-            )
-
-            // Folder Chips
-            FolderChipsRow(
-                folders = uiState.folders,
-                selectedFolder = uiState.selectedFolder,
-                onFolderSelected = { viewModel.filterByFolder(it) },
-                onCreateFolderClick = { showCreateFolderDialog = true },
-                onRenameFolder = { oldName, newName -> viewModel.renameFolder(oldName, newName) },
-                onDeleteFolder = { folderName -> viewModel.deleteFolder(folderName) }
-            )
-
-            // Category Filter Chips
-            CategoryChipsRow(
-                selectedCategory = uiState.selectedCategory,
-                onCategorySelected = { viewModel.filterByCategory(it) }
-            )
-
-            // Document Count & Quick Filter Header
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = stringResource(R.string.txt_documents_count, uiState.documents.size),
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    fontWeight = FontWeight.Medium
-                )
+            val displayDocs = if (uiState.selectedFolder == "ALL" && uiState.searchQuery.isEmpty()) {
+                uiState.documents.filter { it.folderName == "Default" || it.folderName == "ALL" }
+            } else {
+                uiState.documents
             }
+            
+            val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
 
-            // Documents List / Grid / Empty State
-            if (uiState.documents.isEmpty()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(32.dp),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(96.dp)
-                                .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.DocumentScanner,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(48.dp)
-                            )
-                        }
-
-                        Text(
-                            text = if (uiState.searchQuery.isNotEmpty()) stringResource(R.string.txt_no_matching) else stringResource(R.string.txt_no_documents),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Text(
-                            text = if (uiState.searchQuery.isNotEmpty()) {
-                                "Try searching for a different keyword or OCR term."
-                            } else {
-                                "Tap 'Scan Document' to capture your first invoice, receipt, or ID card with intelligent edge detection."
-                            },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Button(
-                            onClick = { launchScanner() },
-                            modifier = Modifier.testTag("empty_state_scan_btn")
-                        ) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(stringResource(R.string.txt_start_scanning))
-                        }
-                    }
-                }
-            } else if (isGridView) {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(uiState.documents, key = { it.id }) { doc ->
-                        DocumentCard(
-                            document = doc,
-                            isSelected = selectedDocIds.contains(doc.id),
-                            onClick = { 
-                                if (selectionMode) {
-                                    selectedDocIds = if (selectedDocIds.contains(doc.id)) selectedDocIds - doc.id else selectedDocIds + doc.id
-                                    if (selectedDocIds.isEmpty()) selectionMode = false
-                                } else {
-                                    onNavigateToDocument(doc.id) 
-                                }
-                            },
-                            onLongClick = {
-                                if (!selectionMode) {
-                                    selectionMode = true
-                                    selectedDocIds = setOf(doc.id)
-                                }
-                            },
-                            onToggleFavorite = { viewModel.toggleFavorite(doc.id) },
-                            onDelete = { viewModel.moveToTrash(doc.id) },
-                            onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
-                            onSharePdf = { onNavigateToDocument(doc.id) },
-                            onSaveToGallery = { viewModel.saveDocumentToGallery(context, doc.id) },
-                            onMoveToFolder = { docToMove = doc.id }
-                        )
+            if (uiState.documents.isEmpty() && folders.isEmpty() && uiState.searchQuery.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Outlined.GridView, contentDescription = null, modifier = Modifier.size(64.dp), tint = Color.Gray)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(stringResource(R.string.txt_no_documents), fontSize = 18.sp, fontWeight = FontWeight.Medium)
+                        Text(stringResource(R.string.txt_no_documents_body), color = Color.Gray)
                     }
                 }
             } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                LazyVerticalGrid(
+                    columns = GridCells.Fixed(2),
+                    contentPadding = PaddingValues(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.fillMaxSize()
                 ) {
-                    items(uiState.documents, key = { it.id }) { doc ->
-                        DocumentCard(
-                            document = doc,
+                    // Folders (Only show in ALL view or when searching)
+                    if ((uiState.selectedFolder == "ALL" || uiState.searchQuery.isNotEmpty()) && folders.isNotEmpty()) {
+                        val filteredFolders = folders.filter { it.contains(uiState.searchQuery, ignoreCase = true) }
+                        items(filteredFolders) { folder ->
+                            FolderGridItem(
+                                folderName = folder,
+                                documentCount = uiState.documents.count { it.folderName == folder },
+                                onClick = { viewModel.filterByFolder(folder) }
+                            )
+                        }
+                    }
+
+                    // Documents
+                    items(displayDocs) { doc ->
+                        DocumentGridItem(
+                            doc = doc,
                             isSelected = selectedDocIds.contains(doc.id),
-                            onClick = { 
+                            selectionMode = selectionMode,
+                            onClick = {
                                 if (selectionMode) {
-                                    selectedDocIds = if (selectedDocIds.contains(doc.id)) selectedDocIds - doc.id else selectedDocIds + doc.id
+                                    if (selectedDocIds.contains(doc.id)) selectedDocIds -= doc.id else selectedDocIds += doc.id
                                     if (selectedDocIds.isEmpty()) selectionMode = false
                                 } else {
-                                    onNavigateToDocument(doc.id) 
+                                    onNavigateToDocument(doc.id)
                                 }
                             },
                             onLongClick = {
-                                if (!selectionMode) {
-                                    selectionMode = true
-                                    selectedDocIds = setOf(doc.id)
-                                }
-                            },
-                            onToggleFavorite = { viewModel.toggleFavorite(doc.id) },
-                            onDelete = { viewModel.moveToTrash(doc.id) },
-                            onRename = { newTitle -> viewModel.renameDocument(doc.id, newTitle) },
-                            onSharePdf = { onNavigateToDocument(doc.id) },
-                            onSaveToGallery = { viewModel.saveDocumentToGallery(context, doc.id) },
-                            onMoveToFolder = { docToMove = doc.id }
+                                selectionMode = true
+                                selectedDocIds += doc.id
+                            }
                         )
                     }
                 }
@@ -560,113 +367,183 @@ fun HomeScreen(
         }
     }
 
-
-    if (showCreateFolderDialog) {
-        AlertDialog(
-            onDismissRequest = { showCreateFolderDialog = false },
-            title = { Text(stringResource(R.string.txt_create_folder)) },
-            text = {
-                OutlinedTextField(
-                    value = newFolderName,
-                    onValueChange = { newFolderName = it },
-                    label = { Text(stringResource(R.string.txt_folder_name)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(onClick = {
-                    if (newFolderName.isNotBlank()) {
-                        viewModel.filterByFolder(newFolderName.trim())
-                    }
-                    showCreateFolderDialog = false
-                    newFolderName = ""
-                }) {
-                    Text(stringResource(R.string.txt_create))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showCreateFolderDialog = false }) {
-                    Text(stringResource(R.string.txt_cancel))
-                }
-            }
-        )
-    }
-
-    if (docToMove != null) {
+        if (docToMove != null) {
+        var selectedFolderDest by remember { mutableStateOf("Default") }
         AlertDialog(
             onDismissRequest = { docToMove = null },
-            title = { Text(stringResource(R.string.txt_select_folder)) },
+            title = { Text(stringResource(R.string.txt_move_to_folder)) },
             text = {
-                LazyColumn {
-                    items(uiState.folders) { folder ->
-                        TextButton(
-                            onClick = {
-                                viewModel.changeDocumentFolder(docToMove!!, folder)
-                                docToMove = null
-                            },
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(folder, modifier = Modifier.fillMaxWidth(), textAlign = androidx.compose.ui.text.style.TextAlign.Start)
+                Column {
+                    uiState.folders.forEach { folder ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioButton(selected = selectedFolderDest == folder, onClick = { selectedFolderDest = folder })
+                            Text(folder)
                         }
                     }
                 }
             },
-            confirmButton = {},
+            confirmButton = {
+                TextButton(onClick = {
+                    if (selectedDocIds.isNotEmpty()) {
+                        selectedDocIds.forEach { viewModel.changeDocumentFolder(it, selectedFolderDest) }
+                    } else {
+                        viewModel.changeDocumentFolder(docToMove!!, selectedFolderDest)
+                    }
+                    docToMove = null
+                    selectionMode = false
+                    selectedDocIds = emptySet()
+                }) { Text(stringResource(R.string.txt_save)) }
+            },
             dismissButton = {
                 TextButton(onClick = { docToMove = null }) { Text(stringResource(R.string.txt_cancel)) }
             }
         )
     }
 
-    // Trash Bin Management Dialog
     if (showTrashDialog) {
         AlertDialog(
             onDismissRequest = { showTrashDialog = false },
-            title = { Text(stringResource(R.string.txt_trash_bin, uiState.trashDocuments.size)) },
-            text = {
-                if (uiState.trashDocuments.isEmpty()) {
-                    Text(stringResource(R.string.txt_trash_is_empty))
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.heightIn(max = 300.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(uiState.trashDocuments) { doc ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(doc.title, maxLines = 1, modifier = Modifier.weight(1f))
-                                Row {
-                                    IconButton(onClick = { viewModel.restoreFromTrash(doc.id) }) {
-                                        Icon(Icons.Default.Restore, contentDescription = stringResource(R.string.desc_restore))
-                                    }
-                                    IconButton(onClick = { viewModel.deletePermanently(doc.id) }) {
-                                        Icon(Icons.Default.DeleteForever, contentDescription = stringResource(R.string.desc_delete), tint = MaterialTheme.colorScheme.error)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            },
+            title = { Text(stringResource(R.string.txt_move_to_trash)) },
+            text = { Text("Move ${selectedDocIds.size} documents to trash?") },
             confirmButton = {
-                if (uiState.trashDocuments.isNotEmpty()) {
-                    TextButton(onClick = {
-                        viewModel.emptyTrash()
+                TextButton(
+                    onClick = {
+                        selectedDocIds.forEach { viewModel.moveToTrash(it) }
+                        selectionMode = false
+                        selectedDocIds = emptySet()
                         showTrashDialog = false
-                    }) {
-                        Text(stringResource(R.string.txt_empty_trash), color = MaterialTheme.colorScheme.error)
                     }
+                ) {
+                    Text("Delete", color = Color.Red)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showTrashDialog = false }) {
-                    Text(stringResource(R.string.txt_close))
-                }
+                TextButton(onClick = { showTrashDialog = false }) { Text(stringResource(R.string.txt_cancel)) }
             }
         )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun DocumentGridItem(
+    doc: DocumentEntity,
+    isSelected: Boolean,
+    selectionMode: Boolean,
+    onClick: () -> Unit,
+    onLongClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(0.8f)
+            .combinedClickable(
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .background(Color.LightGray.copy(alpha = 0.3f))
+                ) {
+                    if (doc.thumbnailPath.isNotEmpty()) {
+                        AsyncImage(
+                            model = File(doc.thumbnailPath),
+                            contentDescription = doc.title,
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        Icon(
+                            Icons.Default.InsertDriveFile,
+                            contentDescription = null,
+                            modifier = Modifier.align(Alignment.Center).size(40.dp),
+                            tint = Color.Gray
+                        )
+                    }
+                }
+                Column(modifier = Modifier.padding(8.dp)) {
+                    Text(
+                        text = doc.title,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        fontSize = 14.sp
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "${doc.pageCount} Pages • ${SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(doc.updatedAt))}",
+                        fontSize = 12.sp,
+                        color = Color.Gray,
+                        maxLines = 1
+                    )
+                }
+            }
+            if (selectionMode) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(if (isSelected) Color.Black.copy(alpha = 0.3f) else Color.Transparent)
+                )
+                RadioButton(
+                    selected = isSelected,
+                    onClick = null,
+                    modifier = Modifier.align(Alignment.TopEnd).padding(4.dp)
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun FolderGridItem(
+    folderName: String,
+    documentCount: Int,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1.2f),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Icon(
+                Icons.Outlined.Folder,
+                contentDescription = null,
+                modifier = Modifier.size(48.dp),
+                tint = CyanScan
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = folderName,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                fontSize = 16.sp
+            )
+            Text(
+                text = "$documentCount items",
+                fontSize = 12.sp,
+                color = Color.Gray
+            )
+        }
     }
 }

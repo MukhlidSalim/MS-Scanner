@@ -98,9 +98,6 @@ class DocumentViewModel(
                 if (filter.folder != "ALL") {
                     filtered = filtered.filter { it.folderName == filter.folder }
                 }
-                if (filter.category.name != "UNCATEGORIZED") {
-                    filtered = filtered.filter { it.category == filter.category.name }
-                }
                 if (filter.query.isNotBlank()) {
                     filtered = filtered.filter { it.title.contains(filter.query, ignoreCase = true) }
                 }
@@ -331,6 +328,29 @@ class DocumentViewModel(
             // Refresh from DB
             val dbPages = repository.getPagesList(doc.id)
             _uiState.update { it.copy(activePages = dbPages) }
+        }
+    }
+
+    
+    fun mergeDocuments(docIds: List<Long>) {
+        if (docIds.size < 2) return
+        viewModelScope.launch {
+            val docs = docIds.mapNotNull { id -> _uiState.value.documents.find { it.id == id } }
+            if (docs.size < 2) return@launch
+            
+            val allPages = mutableListOf<com.example.data.model.PageEntity>()
+            for (doc in docs) {
+                allPages.addAll(repository.getPagesForDocumentSync(doc.id))
+            }
+            
+            val newTitle = docs.first().title + "_Merged"
+            val newDocId = repository.createDocumentWithPages(
+                title = newTitle,
+                folderName = _uiState.value.selectedFolder.takeIf { it != "ALL" } ?: "Default",
+                category = "OTHER",
+                pages = allPages.map { Pair(it.rawImagePath, it.processedImagePath) }
+            )
+            refreshStorageStats()
         }
     }
 
