@@ -22,6 +22,8 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.theme.CyanScan
 import com.example.ui.theme.EmeraldLight
 import com.example.ui.viewmodel.DocumentViewModel
+import com.example.data.model.CompressionPreset
+import com.example.data.model.PageSizePreset
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -128,6 +130,102 @@ fun SettingsScreen(
                 }
             }
 
+            // Appearance Settings
+            Text(
+                text = "Appearance",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(text = "App Theme", fontWeight = FontWeight.SemiBold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("System", "Light", "Dark").forEach { theme ->
+                            FilterChip(
+                                selected = uiState.themeMode == theme,
+                                onClick = { viewModel.setThemeMode(theme) },
+                                label = { Text(theme) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // PDF Defaults
+            Text(
+                text = "Default PDF Export Settings",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(text = "Page Size", fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            PageSizePreset.values().forEach { size ->
+                                FilterChip(
+                                    selected = uiState.defaultPdfPageSize == size,
+                                    onClick = { viewModel.setDefaultPdfPageSize(size) },
+                                    label = { Text(size.name) }
+                                )
+                            }
+                        }
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(text = "Compression & Quality", fontWeight = FontWeight.SemiBold)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CompressionPreset.values().forEach { comp ->
+                                FilterChip(
+                                    selected = uiState.defaultPdfCompression == comp,
+                                    onClick = { viewModel.setDefaultPdfCompression(comp) },
+                                    label = { Text(comp.name) }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Cloud Sync & Auto-save (Dummy as per requirements)
+            Text(
+                text = "Cloud Sync & Backup",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column {
+                            Text(text = "Auto-save to Gallery", fontWeight = FontWeight.SemiBold)
+                            Text(text = "Save a copy of scanned pages to photos", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(checked = false, onCheckedChange = {
+                            Toast.makeText(context, "Coming soon", Toast.LENGTH_SHORT).show()
+                        })
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Column {
+                            Text(text = "Google Drive Sync", fontWeight = FontWeight.SemiBold)
+                            Text(text = "Securely backup your documents", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Button(onClick = {
+                            Toast.makeText(context, "Coming soon", Toast.LENGTH_SHORT).show()
+                        }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer, contentColor = MaterialTheme.colorScheme.onPrimaryContainer)) {
+                            Text("Connect")
+                        }
+                    }
+                }
+            }
+
             // Security & App Lock
             Text(
                 text = "Security & PIN Lock",
@@ -173,6 +271,32 @@ fun SettingsScreen(
                             Text(stringResource(R.string.txt_disable_pin_lock))
                         }
                     }
+                }
+            }
+
+            // Legal & Info
+            Text(
+                text = "Legal",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://example.com/privacy"))
+                            context.startActivity(intent)
+                        }
+                        .padding(16.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(text = "Privacy Policy", fontWeight = FontWeight.SemiBold)
+                    Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                 }
             }
 

@@ -519,8 +519,9 @@ fun DocumentViewerScreen(
 
     // PDF Export & Share Dialog
     if (showPdfExportDialog) {
-        var selectedSize by remember { mutableStateOf(PageSizePreset.A4) }
-        var selectedCompression by remember { mutableStateOf(CompressionPreset.HIGH) }
+        val uiState by viewModel.uiState.collectAsState()
+        var selectedSize by remember { mutableStateOf(uiState.defaultPdfPageSize) }
+        var selectedCompression by remember { mutableStateOf(uiState.defaultPdfCompression) }
         var includeOcr by remember { mutableStateOf(true) }
 
         AlertDialog(

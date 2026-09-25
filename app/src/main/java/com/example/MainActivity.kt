@@ -41,8 +41,15 @@ class MainActivity : AppCompatActivity() {
 
         setContent {
             val docViewModel = remember { DocumentViewModel(applicationContext, repository) }
+            val docUiState by docViewModel.uiState.collectAsState()
+            
+            val isDarkTheme = when (docUiState.themeMode) {
+                "Light" -> false
+                "Dark" -> true
+                else -> androidx.compose.foundation.isSystemInDarkTheme()
+            }
 
-            DocScanTheme {
+            DocScanTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     DocScanApp(
                         docViewModel = docViewModel

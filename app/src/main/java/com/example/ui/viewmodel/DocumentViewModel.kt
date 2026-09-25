@@ -41,7 +41,10 @@ data class DocumentUiState(
     val savedSignatures: List<SignatureEntity> = emptyList(),
     val isAppLocked: Boolean = false,
     val userPin: String = "",
-    val hasPinConfigured: Boolean = false
+    val hasPinConfigured: Boolean = false,
+    val themeMode: String = "System",
+    val defaultPdfPageSize: com.example.data.model.PageSizePreset = com.example.data.model.PageSizePreset.A4,
+    val defaultPdfCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH
 )
 
 class DocumentViewModel(
@@ -49,7 +52,14 @@ class DocumentViewModel(
     private val repository: DocumentRepository
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(DocumentUiState())
+    private val prefs = com.example.data.repository.AppPreferences(context)
+    private val _uiState = MutableStateFlow(DocumentUiState(
+        userPin = prefs.userPin,
+        hasPinConfigured = prefs.userPin.length == 4,
+        themeMode = prefs.themeMode,
+        defaultPdfPageSize = prefs.pdfPageSize,
+        defaultPdfCompression = prefs.pdfCompression
+    ))
     val uiState: StateFlow<DocumentUiState> = _uiState.asStateFlow()
 
     init {
@@ -537,7 +547,23 @@ class DocumentViewModel(
     }
 
     fun setPin(pin: String) {
+        prefs.userPin = pin
         _uiState.update { it.copy(userPin = pin, hasPinConfigured = pin.length == 4) }
+    }
+
+    fun setThemeMode(mode: String) {
+        prefs.themeMode = mode
+        _uiState.update { it.copy(themeMode = mode) }
+    }
+
+    fun setDefaultPdfPageSize(size: com.example.data.model.PageSizePreset) {
+        prefs.pdfPageSize = size
+        _uiState.update { it.copy(defaultPdfPageSize = size) }
+    }
+
+    fun setDefaultPdfCompression(comp: com.example.data.model.CompressionPreset) {
+        prefs.pdfCompression = comp
+        _uiState.update { it.copy(defaultPdfCompression = comp) }
     }
 
     fun verifyPin(pin: String): Boolean {
