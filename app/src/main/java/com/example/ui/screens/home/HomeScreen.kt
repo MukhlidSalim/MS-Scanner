@@ -38,6 +38,11 @@ import com.example.ui.theme.CyanScan
 import com.example.ui.theme.EmeraldLight
 import com.example.ui.viewmodel.DocumentViewModel
 import kotlinx.coroutines.launch
+import android.app.Activity
+import androidx.activity.result.IntentSenderRequest
+import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
+import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,11 +55,44 @@ fun HomeScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
+    val activity = context as? Activity
     val coroutineScope = rememberCoroutineScope()
 
     var isGridView by remember { mutableStateOf(false) }
     var isSearchActive by remember { mutableStateOf(false) }
     var showTrashDialog by remember { mutableStateOf(false) }
+
+    val scannerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
+            scanResult?.pages?.let { pages ->
+                coroutineScope.launch {
+                    val processedPages = mutableListOf<Pair<String, String>>()
+                    for (page in pages) {
+                        val stream = context.contentResolver.openInputStream(page.imageUri)
+                        val bmp = android.graphics.BitmapFactory.decodeStream(stream)
+                        stream?.close()
+                        if (bmp != null) {
+                            val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "scan_raw_")
+                            val proc = ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
+                            val procPath = ImageProcessor.saveBitmapToFile(context, proc, "scan_proc_")
+                            processedPages.add(Pair(rawPath, procPath))
+                            
+                            if (bmp != proc) bmp.recycle()
+                            proc.recycle()
+                        }
+                    }
+                    if (processedPages.isNotEmpty()) {
+                        viewModel.importPagesAsDocument(processedPages) { newDocId ->
+                            onNavigateToDocument(newDocId)
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     // System Photo Picker for multi-image import
     val photoPickerLauncher = rememberLauncherForActivityResult(
@@ -84,6 +122,26 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    val launchScanner = {
+        val options = GmsDocumentScannerOptions.Builder()
+            .setGalleryImportAllowed(true)
+            .setPageLimit(20)
+            .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG, GmsDocumentScannerOptions.RESULT_FORMAT_PDF)
+            .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+            .build()
+        activity?.let { act ->
+            GmsDocumentScanning.getClient(options).getStartScanIntent(act)
+                .addOnSuccessListener { intentSender ->
+                    scannerLauncher.launch(
+                        IntentSenderRequest.Builder(intentSender).build()
+                    )
+                }
+                .addOnFailureListener {
+                    onNavigateToScan()
+                }
+        } ?: onNavigateToScan()
     }
 
     Scaffold(
@@ -171,7 +229,7 @@ fun HomeScreen(
 
                 // Primary FAB: Camera Scanner
                 ExtendedFloatingActionButton(
-                    onClick = onNavigateToScan,
+                    onClick = { launchScanner() },
                     containerColor = MaterialTheme.colorScheme.primary,
                     contentColor = MaterialTheme.colorScheme.onPrimary,
                     icon = { Icon(Icons.Default.CameraAlt, contentDescription = null) },
@@ -275,7 +333,7 @@ fun HomeScreen(
                         Spacer(modifier = Modifier.height(8.dp))
 
                         Button(
-                            onClick = onNavigateToScan,
+                            onClick = { launchScanner() },
                             modifier = Modifier.testTag("empty_state_scan_btn")
                         ) {
                             Icon(Icons.Default.CameraAlt, contentDescription = null)
