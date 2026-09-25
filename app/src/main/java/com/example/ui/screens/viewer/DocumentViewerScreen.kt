@@ -100,6 +100,14 @@ fun DocumentViewerScreen(
                     IconButton(onClick = { showPdfExportDialog = true }, modifier = Modifier.testTag("export_pdf_top_btn")) {
                         Icon(Icons.Default.PictureAsPdf, contentDescription = "Export PDF", tint = EmeraldLight)
                     }
+                    if (pages.size > 1) {
+                        IconButton(onClick = {
+                            val allFiles = pages.map { File(it.processedImagePath) }
+                            shareMultipleFiles(context, allFiles)
+                        }) {
+                            Icon(Icons.Default.Collections, contentDescription = "Share All JPEGs")
+                        }
+                    }
                     IconButton(onClick = {
                         val activePage = pages.getOrNull(pagerState.currentPage) ?: return@IconButton
                         shareFile(context, File(activePage.processedImagePath))
@@ -469,18 +477,24 @@ fun DocumentViewerScreen(
 
 private fun shareFile(context: android.content.Context, file: File, mimeType: String = "image/jpeg") {
     try {
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file
-        )
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = mimeType
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         context.startActivity(Intent.createChooser(intent, "Share Document via"))
-    } catch (e: Exception) {
-        // Handle error
-    }
+    } catch (e: Exception) {}
+}
+
+private fun shareMultipleFiles(context: android.content.Context, files: List<File>, mimeType: String = "image/jpeg") {
+    try {
+        val uris = files.map { FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it) }
+        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = mimeType
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(intent, "Share Pages via"))
+    } catch (e: Exception) {}
 }
