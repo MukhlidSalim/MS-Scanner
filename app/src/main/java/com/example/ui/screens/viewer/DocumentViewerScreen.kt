@@ -126,7 +126,13 @@ fun DocumentViewerScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
+                    var showRenameDialog by remember { mutableStateOf(false) }
+                    var renameInput by remember { mutableStateOf(doc?.title ?: "") }
+
+                    Column(modifier = Modifier.clickable { 
+                        renameInput = doc?.title ?: ""
+                        showRenameDialog = true 
+                    }) {
                         Text(
                             text = doc?.title ?: "Document",
                             style = MaterialTheme.typography.titleMedium,
@@ -140,6 +146,31 @@ fun DocumentViewerScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
+                    }
+
+                    if (showRenameDialog) {
+                        AlertDialog(
+                            onDismissRequest = { showRenameDialog = false },
+                            title = { Text(stringResource(R.string.action_rename)) },
+                            text = {
+                                OutlinedTextField(
+                                    value = renameInput,
+                                    onValueChange = { renameInput = it },
+                                    singleLine = true
+                                )
+                            },
+                            confirmButton = {
+                                Button(onClick = {
+                                    if (renameInput.isNotBlank() && doc != null) {
+                                        viewModel.renameDocument(doc.id, renameInput.trim())
+                                    }
+                                    showRenameDialog = false
+                                }) { Text(stringResource(R.string.txt_save)) }
+                            },
+                            dismissButton = {
+                                TextButton(onClick = { showRenameDialog = false }) { Text(stringResource(R.string.txt_cancel)) }
+                            }
+                        )
                     }
                 },
                 navigationIcon = {
