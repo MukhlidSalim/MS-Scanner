@@ -27,8 +27,7 @@ android {
   }
 
   signingConfigs {
-    create("debugConfig") {
-      storeFile = file("${rootDir}/debug.keystore")
+    /debug.keystore")
       storePassword = "android"
       keyAlias = "androiddebugkey"
       keyPassword = "android"
@@ -51,7 +50,7 @@ android {
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
-      signingConfig = signingConfigs.getByName("debugConfig")
+      
     }
   }
   compileOptions {
