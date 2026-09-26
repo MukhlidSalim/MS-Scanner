@@ -23,4 +23,20 @@ class AppPreferences(context: Context) {
     var pdfCompression: CompressionPreset
         get() = CompressionPreset.valueOf(prefs.getString("pdf_compression", CompressionPreset.HIGH.name) ?: CompressionPreset.HIGH.name)
         set(value) = prefs.edit().putString("pdf_compression", value.name).apply()
+
+    var githubRepoSlug: String
+        get() = prefs.getString("github_repo_slug", "km-alrawahi/MS-Scanner") ?: "km-alrawahi/MS-Scanner"
+        set(value) = prefs.edit().putString("github_repo_slug", value.trim()).apply()
+
+    var autoCheckUpdates: Boolean
+        get() = prefs.getBoolean("auto_check_updates", true)
+        set(value) = prefs.edit().putBoolean("auto_check_updates", value).apply()
+
+    var lastUpdateCheckTime: Long
+        get() = prefs.getLong("last_update_check_time", 0L)
+        set(value) = prefs.edit().putLong("last_update_check_time", value).apply()
+
+    var ignoredUpdateVersion: String
+        get() = prefs.getString("ignored_update_version", "") ?: ""
+        set(value) = prefs.edit().putString("ignored_update_version", value).apply()
 }

@@ -22,7 +22,9 @@ data class PdfExportConfig(
     val title: String,
     val pageSize: PageSizePreset = PageSizePreset.A4,
     val compression: CompressionPreset = CompressionPreset.HIGH,
-    val includeSearchableText: Boolean = true
+    val includeSearchableText: Boolean = true,
+    val includePageNumbers: Boolean = true,
+    val watermarkText: String? = null
 )
 
 object PdfEngine {
@@ -46,6 +48,25 @@ object PdfEngine {
         } else {
             String.format(Locale.US, "%.1f MB", bytes.toFloat() / (1024f * 1024f))
         }
+    }
+
+    /**
+     * Prints or exports to PDF using the Android Print framework (Save as PDF).
+     */
+    fun printScannedDocuments(
+        context: Context,
+        documentTitle: String,
+        imagePaths: List<String>
+    ) {
+        if (imagePaths.isEmpty()) return
+        val printManager = context.getSystemService(Context.PRINT_SERVICE) as? android.print.PrintManager ?: return
+        val safeTitle = documentTitle.replace("[^a-zA-Z0-9_\\-\\s]".toRegex(), "_").trim().ifBlank { "Scanned_Document" }
+        val adapter = ScannedImagePrintAdapter(context, safeTitle, imagePaths)
+        val printAttributes = android.print.PrintAttributes.Builder()
+            .setMediaSize(android.print.PrintAttributes.MediaSize.ISO_A4)
+            .setColorMode(android.print.PrintAttributes.COLOR_MODE_COLOR)
+            .build()
+        printManager.print("$safeTitle PDF", adapter, printAttributes)
     }
 
     /**
@@ -73,7 +94,7 @@ object PdfEngine {
 
         try {
             for (i in pagePathsAndOcr.indices) {
-                val (path, _) = pagePathsAndOcr[i]
+                val (path, ocrText) = pagePathsAndOcr[i]
                 val originalBitmap = ImageProcessor.loadBitmapFromFile(path, maxDim = maxDimension) ?: continue
 
                 // Standard PDF point dimensions (72 pt/inch)
@@ -127,6 +148,48 @@ object PdfEngine {
 
                 val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
                 canvas.drawBitmap(renderBitmap, null, drawRect, paint)
+
+                // Searchable OCR text layer
+                if (config.includeSearchableText && ocrText.isNotBlank()) {
+                    val ocrPaint = Paint().apply {
+                        color = android.graphics.Color.TRANSPARENT
+                        alpha = 0
+                        textSize = 8f
+                    }
+                    val words = ocrText.split("\\s+".toRegex()).take(200)
+                    var textY = margin + 14f
+                    for (chunk in words.chunked(10)) {
+                        if (textY < pageHeight - margin) {
+                            canvas.drawText(chunk.joinToString(" "), margin.toFloat(), textY, ocrPaint)
+                            textY += 12f
+                        }
+                    }
+                }
+
+                // Watermark overlay if configured
+                val watermark = config.watermarkText
+                if (!watermark.isNullOrBlank()) {
+                    val wmPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = android.graphics.Color.argb(45, 120, 120, 120)
+                        textSize = 38f
+                        typeface = android.graphics.Typeface.DEFAULT_BOLD
+                        textAlign = Paint.Align.CENTER
+                    }
+                    canvas.save()
+                    canvas.rotate(-45f, (pageWidth / 2).toFloat(), (pageHeight / 2).toFloat())
+                    canvas.drawText(watermark, (pageWidth / 2).toFloat(), (pageHeight / 2).toFloat(), wmPaint)
+                    canvas.restore()
+                }
+
+                // Page numbering footer
+                if (config.includePageNumbers) {
+                    val numPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                        color = android.graphics.Color.DKGRAY
+                        textSize = 9f
+                        textAlign = Paint.Align.CENTER
+                    }
+                    canvas.drawText("${i + 1} / ${pagePathsAndOcr.size}", (pageWidth / 2).toFloat(), (pageHeight - 4).toFloat(), numPaint)
+                }
 
                 pdfDocument.finishPage(page)
 

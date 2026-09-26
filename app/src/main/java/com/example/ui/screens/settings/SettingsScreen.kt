@@ -38,6 +38,10 @@ import com.example.ui.theme.EmeraldLight
 import com.example.ui.viewmodel.DocumentViewModel
 import com.example.data.model.CompressionPreset
 import com.example.data.model.PageSizePreset
+import com.example.BuildConfig
+import com.example.ui.components.AppUpdateDialog
+import com.example.engine.updater.UpdateCheckState
+import com.example.engine.updater.UpdateDownloadState
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -56,6 +60,9 @@ fun SettingsScreen(
 
     var showPinDialog by remember { mutableStateOf(false) }
     var pinInput by remember { mutableStateOf("") }
+    
+    val updateCheckState by viewModel.updateCheckState.collectAsState()
+    val updateDownloadState by viewModel.updateDownloadState.collectAsState()
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
@@ -487,6 +494,22 @@ fun SettingsScreen(
             }
         }
     }
+
+    // GitHub In-App Update Dialog
+    AppUpdateDialog(
+        checkState = updateCheckState,
+        downloadState = updateDownloadState,
+        onStartDownload = { info ->
+            viewModel.downloadAndInstallUpdate(info)
+        },
+        onInstallApk = { apkFile ->
+            viewModel.requestInstallApk(apkFile)
+        },
+        onDismiss = { ignoreVersion ->
+            val version = (updateCheckState as? UpdateCheckState.Available)?.updateInfo?.latestVersion.orEmpty()
+            viewModel.dismissUpdate(ignoreVersion, version)
+        }
+    )
 
     if (showPinDialog) {
         AlertDialog(

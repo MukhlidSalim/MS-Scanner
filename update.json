@@ -1,0 +1,8 @@
+{
+  "versionName": "1.0.1",
+  "versionCode": 1,
+  "title": "MS Scanner v1.0.1",
+  "notes": "- تحسينات في دقة المسح وتوليد المستندات\n- تكبير وتصغير حجم البطاقات وجواز السفر وتنسيق الترتيب على ورقة A4\n- دعم التحديث المباشر عبر جيت هب",
+  "apkUrl": "https://github.com/km-alrawahi/MS-Scanner/releases/download/v1.0.1/app-release.apk",
+  "size": 18432000
+}

@@ -2,85 +2,83 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// ============================================================================
-// MS SCANNER - MODERN EXECUTIVE DESIGN SYSTEM PALETTE
-// Inspired by world-class productivity tools: Adobe Scan, Apple Notes, Scanner Pro
-// ============================================================================
+// ═══════════════════════════════════════════════════════
+// MS SCANNER — OBSIDIAN INK DESIGN SYSTEM
+// Philosophy: One gold accent. Deep ink surfaces. No noise.
+// ═══════════════════════════════════════════════════════
 
-// --- Brand Primary (Precision Emerald / Deep Alpine) ---
-// Commanding, trusted, razor-sharp green tone
-val Emerald900 = Color(0xFF064E3B)
-val Emerald800 = Color(0xFF065F46)
-val Emerald700 = Color(0xFF047857)
-val Emerald600 = Color(0xFF059669)
-val Emerald500 = Color(0xFF10B981)
-val Emerald400 = Color(0xFF34D399)
-val Emerald300 = Color(0xFF6EE7B7)
-val Emerald200 = Color(0xFFA7F3D0)
-val Emerald100 = Color(0xFFD1FAE5)
-val Emerald50 = Color(0xFFECFDF5)
+// ── INK SURFACES (Dark Palette) ──
+// True obsidian — near-black with a subtle warm-indigo tint.
+// Avoids the cold blue-gray common in generic dark themes.
+val InkBase      = Color(0xFF0A090E)   // Page canvas — deepest layer
+val InkSurface1  = Color(0xFF111018)   // Elevated card / list item
+val InkSurface2  = Color(0xFF1A1825)   // Bottom sheets, dialogs
+val InkSurface3  = Color(0xFF242235)   // Chips, pills, input fields
+val InkSurface4  = Color(0xFF2E2C42)   // Active/hover states, selected items
+val InkBorder    = Color(0xFF2A2840)   // Default hairline borders
+val InkBorderStrong = Color(0xFF3D3B56) // Emphasized borders
 
-// --- Brand Secondary (Precision Laser Cyan / Tech Ray) ---
-val Cyan900 = Color(0xFF0C4A6E)
-val Cyan800 = Color(0xFF075985)
-val Cyan700 = Color(0xFF0369A1)
-val Cyan600 = Color(0xFF0284C7)
-val Cyan500 = Color(0xFF0EA5E9)
-val Cyan400 = Color(0xFF38BDF8)
-val Cyan300 = Color(0xFF7DD3FC)
-val Cyan100 = Color(0xFFE0F2FE)
-val Cyan50 = Color(0xFFF0F9FF)
+// ── GOLD ACCENT RAMP ──
+// Warm archival gold — NOT yellow. Evokes stamped letterhead, notary seals.
+// Used exclusively for: primary actions, active states, scan corners, FAB.
+val GoldDeep     = Color(0xFF8A6E3E)   // Darkest — on-light-background text
+val GoldBase     = Color(0xFFC8A96E)   // Core brand accent
+val GoldLight    = Color(0xFFE8C98A)   // Hover / lighter states
+val GoldPale     = Color(0xFFF5E6C0)   // Tint backgrounds (use at max 15% opacity)
+val GoldOnSurface = Color(0xFFC8A96E)  // Gold on dark surfaces (same as GoldBase)
 
-// --- Light Palette Tokens (Pure Alabaster & Crisp Executive Paper) ---
-val LightBg = Color(0xFFF8FAFC)                 // Clean ultra-subtle off-white
-val LightSurface = Color(0xFFFFFFFF)            // Pure white cards & dialogs
-val LightSurfaceContainerLow = Color(0xFFF8FAFC)
-val LightSurfaceContainer = Color(0xFFF1F5F9)   // Subtle section contrast
-val LightSurfaceContainerHigh = Color(0xFFE2E8F0)
-val LightSurfaceContainerHighest = Color(0xFFCBD5E1)
-val LightOutline = Color(0xFFE2E8F0)            // Micro borders
-val LightOutlineVariant = Color(0xFFF1F5F9)     // Soft dividers
-val LightTextPrimary = Color(0xFF0F172A)        // Deep slate ink typography
-val LightTextSecondary = Color(0xFF475569)      // Subtitles & metadata
-val LightTextTertiary = Color(0xFF94A3B8)       // Timestamps & hints
+// ── TEXT RAMP ──
+val TextPrimary   = Color(0xFFF0EFF8)  // Near-white with a whisper of violet
+val TextSecondary = Color(0xFF9896B0)  // Muted — subtitles, metadata
+val TextTertiary  = Color(0xFF5E5C76)  // Ghost — timestamps, placeholders
+val TextDisabled  = Color(0xFF3A3850)  // Disabled labels
 
-// --- Dark Palette Tokens (Studio Obsidian & Midnight Slate) ---
-// Deep, battery-saving, true dark without murky gray tones
-val DarkBg = Color(0xFF090D14)                  // Deepest midnight obsidian
-val DarkSurface = Color(0xFF111827)             // Elevated card surface
-val DarkSurfaceContainerLow = Color(0xFF0E1422)
-val DarkSurfaceContainer = Color(0xFF161F30)    // Secondary container
-val DarkSurfaceContainerHigh = Color(0xFF1E293B)// Higher elevation pill/card
-val DarkSurfaceContainerHighest = Color(0xFF283548)
-val DarkOutline = Color(0xFF334155)             // Structural separation
-val DarkOutlineVariant = Color(0xFF1E293B)      // Dividers
-val DarkTextPrimary = Color(0xFFF8FAFC)         // Crisp high contrast text
-val DarkTextSecondary = Color(0xFF94A3B8)       // Secondary readable text
-val DarkTextTertiary = Color(0xFF64748B)        // Muted captions
+// ── LIGHT PALETTE ──
+// Clean paper with a very slight cream warmth — not stark white.
+val PaperBase     = Color(0xFFF7F5F0)  // Page background — warm white
+val PaperSurface1 = Color(0xFFFFFFFF)  // Cards
+val PaperSurface2 = Color(0xFFF2F0EB)  // Subtle section backgrounds
+val PaperBorder   = Color(0xFFE4E0D8)  // Hairlines
+val PaperBorderStrong = Color(0xFFCDC9BE) // Dividers
+val PaperTextPrimary   = Color(0xFF18161F) // Near-black ink
+val PaperTextSecondary = Color(0xFF6B6880) // Supporting text
+val PaperTextTertiary  = Color(0xFF9E9BB0) // Captions
 
-// --- Functional & Semantic Highlights ---
-val WarningAmber = Color(0xFFF59E0B)
-val WarningContainerLight = Color(0xFFFEF3C7)
-val WarningContainerDark = Color(0xFF451A03)
-val ErrorRed = Color(0xFFEF4444)
+// ── SEMANTIC COLORS ──
+val SemanticSuccess  = Color(0xFF3EE0A0)  // Scan detected / quality good
+val SemanticSuccessBg = Color(0xFF0D2E22) // Dark mode success tint
+val SemanticWarning  = Color(0xFFEDB84A)  // Blur warning / low light
+val SemanticWarningBg = Color(0xFF2E1F08)
+val SemanticError    = Color(0xFFE05555)  // Delete / error states
+val SemanticErrorBg  = Color(0xFF2E0D0D)
+val SemanticInfo     = Color(0xFF5B9CF6)  // OCR running / info
+
+// ── CAMERA VIEWFINDER ──
+val ViewfinderBg      = Color(0xFF05040A)  // Deeper than InkBase for immersion
+val ViewfinderOverlay = Color(0xCC07060E)  // Semi-transparent control strips
+val ScanFrameGold     = Color(0xFFC8A96E)  // Corner detection frame = GoldBase
+val ScanFrameDetected = Color(0xFF3EE0A0)  // Green corners when document found
+
+// ── BACKWARD COMPATIBILITY ──
+val EmeraldPrimaryLight = GoldBase          // was Emerald700
+val EmeraldPrimaryDark  = GoldLight         // was Emerald400
+val EmeraldLight        = GoldLight
+val EmeraldContainerLight = GoldPale
+val EmeraldContainerDark  = Color(0xFF1A1200)
+val OnEmeraldContainerLight = GoldDeep
+val OnEmeraldContainerDark  = GoldLight
+val CyanScan      = GoldBase
+val CyanScanLight = GoldLight
+val GoldStar      = GoldBase               // Favorite star = same gold
+
+val StudioCanvasBg  = ViewfinderBg
+val StudioCardOverlay = ViewfinderOverlay
+val WarningAmber      = SemanticWarning
+val WarningContainerDark = SemanticWarningBg
+val ErrorRed = SemanticError
 val ErrorContainerLight = Color(0xFFFEE2E2)
-val ErrorContainerDark = Color(0xFF450A0A)
-val SuccessGreen = Color(0xFF10B981)
-val GoldStar = Color(0xFFFBBF24)
+val ErrorContainerDark  = SemanticErrorBg
+val SuccessGreen = SemanticSuccess
 
-// --- Studio Lightbox (Document Viewer / Camera) ---
-val StudioCanvasBg = Color(0xFF080C14)
-val StudioCardOverlay = Color(0xCC0B111E)
-val GlassmorphismBgLight = Color(0xEBFFFFFF)
-val GlassmorphismBgDark = Color(0xE0111827)
-
-// Backward compatibility references for existing code
-val CyanScan = Cyan600
-val CyanScanLight = Cyan400
-val EmeraldPrimaryLight = Emerald700
-val EmeraldPrimaryDark = Emerald400
-val EmeraldLight = Emerald400
-val EmeraldContainerLight = Emerald50
-val EmeraldContainerDark = Emerald900
-val OnEmeraldContainerLight = Emerald800
-val OnEmeraldContainerDark = Emerald200
+// BACKWARD COMPATIBILITY ADDITION
+val Emerald400 = GoldBase

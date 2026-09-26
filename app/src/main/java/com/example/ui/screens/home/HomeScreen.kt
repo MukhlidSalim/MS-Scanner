@@ -2,6 +2,7 @@ package com.example.ui.screens.home
 
 import android.app.Activity
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -48,11 +49,22 @@ import com.example.data.model.DocumentEntity
 import com.example.engine.cv.ImageProcessor
 import com.example.ui.components.CategoryChipsRow
 import com.example.ui.components.FolderChipsRow
+import com.example.ui.components.AppUpdateDialog
+import com.example.ui.components.ScanActionButton
+import com.example.ui.screens.home.components.DocumentGridItem
+import com.example.ui.screens.home.components.FolderGridItem
+import com.example.ui.screens.home.components.NewFolderDialog
+import com.example.ui.screens.home.components.RenameDocumentsDialog
+import com.example.engine.updater.UpdateCheckState
+import com.example.ui.theme.Emerald400
+import com.example.ui.theme.*
 import com.example.ui.viewmodel.DocumentViewModel
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -64,15 +76,22 @@ fun HomeScreen(
     viewModel: DocumentViewModel,
     onNavigateToSettings: () -> Unit,
     onNavigateToDocument: (Long) -> Unit,
-    onNavigateToScan: (String) -> Unit = {}
+    onNavigateToScan: (String) -> Unit = {},
+    onNavigateToEditSession: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val isArabic = context.resources.configuration.locales[0].language == "ar"
+    val updateCheckState by viewModel.updateCheckState.collectAsState()
+    val updateDownloadState by viewModel.updateDownloadState.collectAsState()
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedDocIds by remember { mutableStateOf(setOf<Long>()) }
     var showTrashDialog by remember { mutableStateOf(false) }
+    var showRenameDialog by remember { mutableStateOf(false) }
+    var renameBaseName by remember { mutableStateOf("") }
+    var renameDocIds by remember { mutableStateOf(listOf<Long>()) }
     var docToMove by remember { mutableStateOf<Long?>(null) }
     var showSearch by remember { mutableStateOf(false) }
     var showCameraSheet by remember { mutableStateOf(false) }
@@ -104,9 +123,8 @@ fun HomeScreen(
                     }
                 }
                 if (pages.isNotEmpty()) {
-                    viewModel.importPagesAsDocument(pages) { newDocId ->
-                        onNavigateToDocument(newDocId)
-                    }
+                    viewModel.addPagesToPendingSession(pages)
+                    onNavigateToEditSession()
                 }
             }
         }
@@ -118,16 +136,42 @@ fun HomeScreen(
         if (success && tempCameraFile != null && tempCameraFile!!.exists()) {
             coroutineScope.launch {
                 try {
-                    val bmp = android.graphics.BitmapFactory.decodeFile(tempCameraFile!!.absolutePath)
+                    val path = tempCameraFile!!.absolutePath
+                    val exif = android.media.ExifInterface(path)
+                    val orientation = exif.getAttributeInt(
+                        android.media.ExifInterface.TAG_ORIENTATION,
+                        android.media.ExifInterface.ORIENTATION_NORMAL
+                    )
+                    val rotationDegrees = when (orientation) {
+                        android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90
+                        android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180
+                        android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270
+                        else -> 0
+                    }
+                    var bmp = android.graphics.BitmapFactory.decodeFile(path)
                     if (bmp != null) {
+                        if (rotationDegrees != 0) {
+                            val rotated = ImageProcessor.rotateBitmap(bmp, rotationDegrees)
+                            if (rotated != bmp) {
+                                bmp.recycle()
+                                bmp = rotated
+                            }
+                        }
                         val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "scan_raw_")
-                        val proc = ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
+                        val quad = ImageProcessor.detectDocumentQuad(bmp)
+                        val proc = try {
+                            val warped = ImageProcessor.warpPerspective(bmp, quad)
+                            val filtered = ImageProcessor.applyFilter(warped, com.example.data.model.FilterType.MAGIC)
+                            if (warped != bmp && warped != filtered) warped.recycle()
+                            filtered
+                        } catch (e: Exception) {
+                            ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
+                        }
                         val procPath = ImageProcessor.saveBitmapToFile(context, proc, "scan_proc_")
                         if (bmp != proc) bmp.recycle()
                         proc.recycle()
-                        viewModel.importPagesAsDocument(listOf(Pair(rawPath, procPath))) { newDocId ->
-                            onNavigateToDocument(newDocId)
-                        }
+                        viewModel.addPagesToPendingSession(listOf(Pair(rawPath, procPath)))
+                        onNavigateToEditSession()
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -178,16 +222,8 @@ fun HomeScreen(
                             }
                         }
                         if (processedPages.isNotEmpty()) {
-                            if (isIdCardMode && processedPages.size >= 2) {
-                                val collagePath = ImageProcessor.createIdCardCollage(context, processedPages[0].second, processedPages[1].second, "idcard_proc_")
-                                viewModel.importPagesAsDocument(listOf(Pair(processedPages[0].first, collagePath))) { newDocId ->
-                                    onNavigateToDocument(newDocId)
-                                }
-                            } else {
-                                viewModel.importPagesAsDocument(processedPages) { newDocId ->
-                                    onNavigateToDocument(newDocId)
-                                }
-                            }
+                            viewModel.addPagesToPendingSession(processedPages)
+                            onNavigateToEditSession()
                         }
                     }
                 }
@@ -286,6 +322,23 @@ fun HomeScreen(
                         }) {
                             Icon(Icons.Default.Share, contentDescription = "Share")
                         }
+                        IconButton(onClick = {
+                            renameDocIds = selectedDocIds.toList()
+                            renameBaseName = ""
+                            showRenameDialog = true
+                        }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Rename")
+                        }
+                        IconButton(onClick = {
+                            val docId = selectedDocIds.firstOrNull()
+                            if (docId != null) {
+                                viewModel.printDocumentById(context, docId)
+                                selectionMode = false
+                                selectedDocIds = emptySet()
+                            }
+                        }) {
+                            Icon(Icons.Default.Print, contentDescription = "Print")
+                        }
                         IconButton(onClick = { showTrashDialog = true }) {
                             Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.txt_delete_selected), tint = MaterialTheme.colorScheme.error)
                         }
@@ -294,93 +347,126 @@ fun HomeScreen(
                         containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
                     )
                 )
-            } else if (showSearch) {
-                TopAppBar(
-                    title = {
-                        Surface(
-                            shape = RoundedCornerShape(24.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                            modifier = Modifier.fillMaxWidth().height(46.dp)
-                        ) {
-                            TextField(
-                                value = uiState.searchQuery,
-                                onValueChange = { viewModel.onSearchQueryChanged(it) },
-                                placeholder = {
-                                    Text(
-                                        text = stringResource(R.string.search_hint),
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                                    )
-                                },
-                                singleLine = true,
-                                textStyle = MaterialTheme.typography.bodyMedium,
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = Color.Transparent,
-                                    unfocusedContainerColor = Color.Transparent,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent
-                                ),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = {
-                            showSearch = false
-                            viewModel.onSearchQueryChanged("")
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    },
-                    actions = {
-                        if (uiState.searchQuery.isNotEmpty()) {
-                            IconButton(onClick = { viewModel.onSearchQueryChanged("") }) {
-                                Icon(Icons.Default.Clear, contentDescription = "Clear")
-                            }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-                )
             } else {
                 TopAppBar(
                     title = {
                         Column {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = if (uiState.selectedFolder == "ALL") stringResource(R.string.app_name) else uiState.selectedFolder,
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(MaterialTheme.colorScheme.primary)
-                                )
-                            }
-                            if (uiState.selectedFolder == "ALL") {
-                                Text(
-                                    text = stringResource(R.string.tagline),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    },
-                    navigationIcon = {
-                        if (uiState.selectedFolder != "ALL") {
-                            IconButton(onClick = { viewModel.filterByFolder("ALL") }) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                            }
+                            Text(
+                                text = "مرحباً بك",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = TextSecondary
+                            )
+                            Text(
+                                text = stringResource(R.string.app_name),
+                                style = MaterialTheme.typography.headlineLarge,
+                                fontWeight = FontWeight.Black,
+                                color = GoldBase
+                            )
                         }
                     },
                     actions = {
-                        IconButton(onClick = { showSearch = true }) {
-                            Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.onSurface)
+                        var expanded by remember { mutableStateOf(false) }
+                        IconButton(onClick = { expanded = true }) {
+                            Icon(Icons.Default.MoreVert, contentDescription = "Menu")
                         }
-                        IconButton(onClick = onNavigateToSettings) {
-                            Icon(Icons.Default.Settings, contentDescription = "Settings", tint = MaterialTheme.colorScheme.onSurface)
+                        DropdownMenu(
+                            expanded = expanded,
+                            onDismissRequest = { expanded = false },
+                            shape = RoundedCornerShape(14.dp)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_select)) },
+                                leadingIcon = { Icon(Icons.Default.Check, null) },
+                                onClick = { expanded = false; selectionMode = true }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_grid_view)) },
+                                leadingIcon = { Icon(Icons.Default.GridView, null) },
+                                onClick = { expanded = false } // Grid view is default
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_sort)) },
+                                leadingIcon = { Icon(Icons.Default.Sort, null) },
+                                onClick = { expanded = false; /* TODO: Show sort dialog */ }
+                            )
+                            HorizontalDivider()
+                            // Launcher for PDF import
+                            val pdfPickerLauncher = rememberLauncherForActivityResult(
+                                contract = ActivityResultContracts.OpenDocument()
+                            ) { uri: Uri? ->
+                                uri?.let {
+                                    // Take persistable permission to access the URI later
+                                    context.contentResolver.takePersistableUriPermission(it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    
+                                    // TODO: Implement PDF to Image conversion logic using PdfEngine
+                                    // For now, toast the success
+                                    Toast.makeText(context, "PDF Selected: ${it.lastPathSegment}", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+
+                            // ... (rest of your code)
+
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_import_pdf)) },
+                                leadingIcon = { Icon(Icons.Default.PictureAsPdf, null) },
+                                onClick = { 
+                                    expanded = false
+                                    pdfPickerLauncher.launch(arrayOf("application/pdf"))
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.desc_import_photos)) },
+                                leadingIcon = { Icon(Icons.Default.PhotoLibrary, null) },
+                                onClick = { expanded = false; photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_new_folder)) },
+                                leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
+                                onClick = { expanded = false; showNewFolderDialog = true }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_insert_blank_page)) },
+                                leadingIcon = { Icon(Icons.Default.NoteAdd, null) },
+                                onClick = { 
+                                    expanded = false
+                                    // Assuming a blank page is a white bitmap
+                                    coroutineScope.launch(Dispatchers.IO) {
+                                        val blankBmp = android.graphics.Bitmap.createBitmap(2480, 3508, android.graphics.Bitmap.Config.ARGB_8888)
+                                        blankBmp.eraseColor(android.graphics.Color.WHITE)
+                                        val path = ImageProcessor.saveBitmapToFile(context, blankBmp, "blank_")
+                                        blankBmp.recycle()
+                                        withContext(Dispatchers.Main) {
+                                            viewModel.importPagesAsDocument(listOf(Pair(path, path))) { newDocId ->
+                                                onNavigateToDocument(newDocId)
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_settings_menu)) },
+                                leadingIcon = { Icon(Icons.Default.Settings, null) },
+                                onClick = { expanded = false; onNavigateToSettings() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_about_app)) },
+                                leadingIcon = { Icon(Icons.Default.Info, null) },
+                                onClick = { expanded = false; Toast.makeText(context, "DocScan Pro v1.0", Toast.LENGTH_SHORT).show() }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.txt_feedback_menu)) },
+                                leadingIcon = { Icon(Icons.Default.Feedback, null) },
+                                onClick = { 
+                                    expanded = false
+                                    val intent = android.content.Intent(android.content.Intent.ACTION_SENDTO).apply {
+                                        data = android.net.Uri.parse("mailto:support@example.com")
+                                        putExtra(android.content.Intent.EXTRA_SUBJECT, "Feedback for DocScan Pro")
+                                    }
+                                    context.startActivity(android.content.Intent.createChooser(intent, "Send Feedback"))
+                                }
+                            )
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -388,93 +474,67 @@ fun HomeScreen(
             }
         },
         floatingActionButton = {
-            if (!selectionMode) {
-                // Sleek integrated floating scanner pill
-                Surface(
-                    shape = RoundedCornerShape(32.dp),
-                    color = MaterialTheme.colorScheme.surface,
-                    border = CardDefaults.outlinedCardBorder().copy(
-                        brush = Brush.horizontalGradient(
-                            listOf(
-                                MaterialTheme.colorScheme.outlineVariant,
-                                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                            )
-                        ),
-                        width = 1.dp
-                    ),
-                    shadowElevation = 8.dp,
-                    modifier = Modifier
-                        .navigationBarsPadding()
-                        .padding(bottom = 8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        // Quick Import
-                        TextButton(
-                            onClick = {
-                                photoPickerLauncher.launch(
-                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                )
-                            },
-                            shape = RoundedCornerShape(24.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp),
-                            colors = ButtonDefaults.textButtonColors(
-                                contentColor = MaterialTheme.colorScheme.onSurface
-                            )
-                        ) {
-                            Icon(
-                                Icons.Default.AddPhotoAlternate,
-                                contentDescription = "Import",
-                                modifier = Modifier.size(20.dp),
-                                tint = MaterialTheme.colorScheme.secondary
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = "Import",
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                        }
-
-                        // Divider
-                        Box(
-                            modifier = Modifier
-                                .height(24.dp)
-                                .width(1.dp)
-                                .background(MaterialTheme.colorScheme.outlineVariant)
-                        )
-
-                        // Main Scan Button (Glowing Executive Emerald)
-                        Button(
-                            onClick = { showCameraSheet = true },
-                            shape = RoundedCornerShape(24.dp),
-                            contentPadding = PaddingValues(horizontal = 18.dp, vertical = 8.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            ),
-                            elevation = ButtonDefaults.buttonElevation(defaultElevation = 2.dp)
-                        ) {
-                            Icon(
-                                Icons.Default.CameraAlt,
-                                contentDescription = "Camera",
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(
-                                text = stringResource(R.string.nav_scan),
-                                style = MaterialTheme.typography.labelLarge,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                }
-            }
+            // FAB removed as requested
         },
-        floatingActionButtonPosition = FabPosition.Center
+        floatingActionButtonPosition = FabPosition.Center,
+        bottomBar = {
+            NavigationBar(
+                containerColor = InkBase,
+                modifier = Modifier.border(1.dp, InkBorder)
+            ) {
+                // Shared colors
+                val navItemColors = NavigationBarItemDefaults.colors(
+                    selectedIconColor = GoldBase,
+                    indicatorColor = InkSurface2,
+                    unselectedIconColor = TextSecondary
+                )
+
+                // Home
+                NavigationBarItem(
+                    selected = true,
+                    onClick = { /* Already Home */ },
+                    icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
+                    label = { Text(stringResource(R.string.nav_home)) },
+                    colors = navItemColors
+                )
+                // Import
+                NavigationBarItem(
+                    selected = false,
+                    onClick = {
+                        // Need a way to handle photo picker callback here to add to pending session
+                        // For now just note it needs update
+                        photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    icon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Import") },
+                    label = { Text(stringResource(R.string.txt_import)) },
+                    colors = navItemColors
+                )
+                // Scan
+                NavigationBarItem(
+                    selected = false,
+                    onClick = { onNavigateToScan("DOCUMENT") },
+                    icon = { Icon(Icons.Default.CameraAlt, contentDescription = "Scan") },
+                    label = { Text(stringResource(R.string.txt_scan)) },
+                    colors = navItemColors
+                )
+                // Favorites
+                NavigationBarItem(
+                    selected = false,
+                    onClick = { /* Navigate to Favorites */ },
+                    icon = { Icon(Icons.Default.StarBorder, contentDescription = "Favorites") },
+                    label = { Text(stringResource(R.string.nav_favorites)) },
+                    colors = navItemColors
+                )
+                // Settings
+                NavigationBarItem(
+                    selected = false,
+                    onClick = { onNavigateToSettings() },
+                    icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
+                    label = { Text(stringResource(R.string.nav_settings)) },
+                    colors = navItemColors
+                )
+            }
+        }
     ) { paddingValues ->
         Column(
             modifier = Modifier
@@ -482,6 +542,34 @@ fun HomeScreen(
                 .padding(paddingValues)
                 .background(MaterialTheme.colorScheme.background)
         ) {
+            // Persistent Search Bar
+            if (!selectionMode) {
+                OutlinedTextField(
+                    value = uiState.searchQuery,
+                    onValueChange = { viewModel.onSearchQueryChanged(it) },
+                    placeholder = {
+                        Text(
+                            text = stringResource(R.string.search_hint),
+                            color = TextSecondary
+                        )
+                    },
+                    leadingIcon = {
+                        Icon(Icons.Default.Search, contentDescription = null, tint = TextSecondary)
+                    },
+                    shape = RoundedCornerShape(16.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedContainerColor   = InkSurface1,
+                        unfocusedContainerColor = InkSurface1,
+                        focusedBorderColor      = Color.Transparent,
+                        unfocusedBorderColor    = Color.Transparent
+                    ),
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+            
             val displayDocs = if (uiState.selectedFolder == "ALL" && uiState.searchQuery.isEmpty()) {
                 uiState.documents.filter { it.folderName == "Default" || it.folderName == "ALL" }
             } else {
@@ -605,44 +693,24 @@ fun HomeScreen(
         }
     }
 
-    if (showNewFolderDialog) {
-        AlertDialog(
-            onDismissRequest = { showNewFolderDialog = false },
-            shape = RoundedCornerShape(22.dp),
-            title = { Text(stringResource(R.string.txt_create_folder), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) },
-            text = {
-                OutlinedTextField(
-                    value = newFolderNameInput,
-                    onValueChange = { newFolderNameInput = it },
-                    label = { Text(stringResource(R.string.txt_folder_name)) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (newFolderNameInput.isNotBlank()) {
-                            viewModel.filterByFolder(newFolderNameInput.trim())
-                            newFolderNameInput = ""
-                        }
-                        showNewFolderDialog = false
-                    },
-                    shape = RoundedCornerShape(12.dp)
-                ) { Text(stringResource(R.string.txt_create), fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showNewFolderDialog = false }, shape = RoundedCornerShape(12.dp)) {
-                    Text(stringResource(R.string.txt_cancel))
-                }
-            }
-        )
-    }
+    NewFolderDialog(
+        show = showNewFolderDialog,
+        onDismiss = { showNewFolderDialog = false },
+        onConfirm = { name ->
+            viewModel.filterByFolder(name)
+            newFolderNameInput = ""
+        }
+    )
+
+    RenameDocumentsDialog(
+        show = showRenameDialog,
+        onDismiss = { showRenameDialog = false },
+        onConfirm = { name ->
+            viewModel.renameDocuments(renameDocIds, name)
+            selectionMode = false
+            selectedDocIds = emptySet()
+        }
+    )
 
     if (docToMove != null) {
         var selectedFolderDest by remember { mutableStateOf("Default") }
@@ -742,8 +810,8 @@ fun HomeScreen(
                             )
                         }
                         Column {
-                            Text(stringResource(R.string.txt_scan_doc), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text("Intelligent auto capture & edge detection", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(if (isArabic) "تصوير مستند (تلقائي)" else "Scan Document (Auto)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(if (isArabic) "التقاط تلقائي ذكي مع تحديد حواف المستند" else "Intelligent auto capture & edge detection", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -782,8 +850,8 @@ fun HomeScreen(
                             )
                         }
                         Column {
-                            Text(stringResource(R.string.txt_scan_id_card), style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text("Capture front & back and merge professionally", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(if (isArabic) "تصوير بطاقة" else "Scan ID Card", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(if (isArabic) "تصوير الوجهين الأمامي والخلفي ودمجهما باحترافية" else "Capture front & back and merge professionally", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -822,8 +890,48 @@ fun HomeScreen(
                             )
                         }
                         Column {
-                            Text("Batch Multi-Page Scan", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text("Continuous rapid scanning into one document", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(if (isArabic) "تصوير متعدد (دفعة صفحات)" else "Batch Multi-Page Scan", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(if (isArabic) "تصوير متتالي وسريع لعدة صفحات في مستند واحد" else "Continuous rapid scanning into one document", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(16.dp),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
+                    border = CardDefaults.outlinedCardBorder().copy(
+                        brush = Brush.horizontalGradient(
+                            listOf(MaterialTheme.colorScheme.outlineVariant, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                        )
+                    ),
+                    modifier = Modifier.fillMaxWidth().clickable {
+                        showCameraSheet = false
+                        onNavigateToScan("PASSPORT")
+                    }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(44.dp)
+                                .clip(CircleShape)
+                                .background(Emerald400.copy(alpha = 0.2f)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.Default.MenuBook,
+                                contentDescription = null,
+                                tint = Emerald400
+                            )
+                        }
+                        Column {
+                            Text(if (isArabic) "تصوير جواز" else "Scan Passport", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                            Text(if (isArabic) "إطار مخصص لصفحة بيانات وصورة الجواز" else "Dedicated frame for passport bio page & MRZ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
@@ -898,224 +1006,7 @@ fun HomeScreen(
             }
         )
     }
-}
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun DocumentGridItem(
-    doc: DocumentEntity,
-    isSelected: Boolean,
-    selectionMode: Boolean,
-    onClick: () -> Unit,
-    onLongClick: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(0.72f)
-            .clip(RoundedCornerShape(18.dp))
-            .combinedClickable(
-                onClick = onClick,
-                onLongClick = onLongClick
-            ),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f) else MaterialTheme.colorScheme.surface
-        ),
-        border = CardDefaults.outlinedCardBorder().copy(
-            brush = Brush.horizontalGradient(
-                listOf(
-                    if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                    if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                )
-            ),
-            width = if (isSelected) 1.5.dp else 1.dp
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = if (isSelected) 3.dp else 0.5.dp)
-    ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                // Thumbnail Paper Canvas
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                ) {
-                    if (doc.thumbnailPath.isNotEmpty() && File(doc.thumbnailPath).exists()) {
-                        AsyncImage(
-                            model = File(doc.thumbnailPath),
-                            contentDescription = doc.title,
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } else {
-                        Icon(
-                            Icons.AutoMirrored.Filled.InsertDriveFile,
-                            contentDescription = null,
-                            modifier = Modifier.align(Alignment.Center).size(36.dp),
-                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
-                        )
-                    }
-
-                    // Page count pill at bottom-right of preview
-                    Surface(
-                        modifier = Modifier
-                            .align(Alignment.BottomEnd)
-                            .padding(6.dp),
-                        shape = RoundedCornerShape(6.dp),
-                        color = Color.Black.copy(alpha = 0.75f)
-                    ) {
-                        Text(
-                            text = "${doc.pageCount}p",
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
-                        )
-                    }
-                }
-
-                // Metadata Section
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    Text(
-                        text = doc.title,
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                    Spacer(modifier = Modifier.height(2.dp))
-                    Text(
-                        text = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(doc.updatedAt)),
-                        style = MaterialTheme.typography.bodySmall,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-
-            // Selection Checkbox Badge
-            if (selectionMode) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent)
-                )
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp)
-                        .size(24.dp)
-                        .clip(CircleShape)
-                        .background(
-                            if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.4f)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (isSelected) {
-                        Icon(Icons.Default.Check, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun FolderGridItem(
-    folderName: String,
-    documentCount: Int,
-    onClick: () -> Unit,
-    onRenameClick: () -> Unit
-) {
-    var expanded by remember { mutableStateOf(false) }
-    Card(
-        onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .aspectRatio(1.2f),
-        shape = RoundedCornerShape(18.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.5f)
-        ),
-        border = CardDefaults.outlinedCardBorder().copy(
-            brush = Brush.horizontalGradient(
-                listOf(
-                    MaterialTheme.colorScheme.outlineVariant,
-                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)
-                )
-            ),
-            width = 1.dp
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.SpaceBetween
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.Top
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(42.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Outlined.Folder,
-                        contentDescription = null,
-                        modifier = Modifier.size(24.dp),
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                Box {
-                    IconButton(onClick = { expanded = true }, modifier = Modifier.size(28.dp)) {
-                        Icon(Icons.Default.MoreVert, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    DropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false },
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text(stringResource(R.string.txt_rename_folder)) },
-                            leadingIcon = { Icon(Icons.Default.Edit, null) },
-                            onClick = {
-                                expanded = false
-                                onRenameClick()
-                            }
-                        )
-                    }
-                }
-            }
-
-            Column {
-                Text(
-                    text = folderName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-                Text(
-                    text = "$documentCount documents",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        }
-    }
+    // GitHub In-App Update Dialog
+    
 }

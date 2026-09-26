@@ -1,5 +1,6 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -14,10 +15,12 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.R
+import com.example.ui.theme.*
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,7 +58,7 @@ fun FolderChipsRow(
                         Text(
                             text = if (folder == "ALL") stringResource(R.string.txt_all_folders) else folder,
                             style = MaterialTheme.typography.labelMedium,
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
                         )
                     },
                     leadingIcon = {
@@ -80,21 +83,23 @@ fun FolderChipsRow(
                         }
                     },
                     colors = FilterChipDefaults.filterChipColors(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        iconColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary,
-                        selectedTrailingIconColor = MaterialTheme.colorScheme.primary
+                        containerColor      = Color.Transparent,
+                        labelColor          = MaterialTheme.colorScheme.onSurfaceVariant,
+                        iconColor           = MaterialTheme.colorScheme.onSurfaceVariant,
+                        selectedContainerColor = Color.Transparent,
+                        selectedLabelColor  = GoldBase,
+                        selectedLeadingIconColor = GoldBase,
+                        selectedTrailingIconColor = GoldBase
                     ),
                     border = FilterChipDefaults.filterChipBorder(
                         enabled = true,
                         selected = isSelected,
-                        borderColor = MaterialTheme.colorScheme.outlineVariant,
-                        selectedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-                        borderWidth = 1.dp
-                    )
+                        borderColor         = MaterialTheme.colorScheme.outline,
+                        selectedBorderColor = GoldBase,
+                        borderWidth         = 0.75.dp,
+                        selectedBorderWidth = 1.5.dp
+                    ),
+                    elevation = FilterChipDefaults.filterChipElevation(elevation = 0.dp)
                 )
                 
                 DropdownMenu(
@@ -124,34 +129,28 @@ fun FolderChipsRow(
             }
         }
 
-        SuggestionChip(
+        // New Folder Button
+        OutlinedButton(
             onClick = onCreateFolderClick,
             shape = RoundedCornerShape(50),
-            label = {
-                Text(
-                    text = stringResource(R.string.txt_new_folder),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold
-                )
-            },
-            icon = {
-                Icon(
-                    Icons.Default.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
-            },
-            colors = SuggestionChipDefaults.suggestionChipColors(
-                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
-                labelColor = MaterialTheme.colorScheme.primary
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp),
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = GoldBase
             ),
-            border = SuggestionChipDefaults.suggestionChipBorder(
-                enabled = true,
-                borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
-                borderWidth = 1.dp
+            border = BorderStroke(0.75.dp, GoldBase.copy(alpha = 0.5f))
+        ) {
+            Icon(
+                Icons.Default.Add,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp)
             )
-        )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                text = stringResource(R.string.txt_new_folder),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold
+            )
+        }
     }
     
     if (folderToRename != null) {

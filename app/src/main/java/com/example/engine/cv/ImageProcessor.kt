@@ -5,6 +5,7 @@ import android.content.Context
 import android.graphics.*
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.LruCache
 import com.example.data.model.FilterType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -22,7 +23,32 @@ data class QualityReport(
     val statusTextAr: String
 )
 
+enum class MergeGridLayout(val titleEn: String, val titleAr: String, val columns: Int, val rows: Int) {
+    AUTO("Auto", "تلقائي", 0, 0),
+    VERTICAL_2("1 × 2 (Vertical)", "1 × 2 (رأسي)", 1, 2),
+    HORIZONTAL_2("2 × 1 (Horizontal)", "2 × 1 (أفقي)", 2, 1),
+    GRID_4("2 × 2 (4-Grid)", "2 × 2 (شبكة 4)", 2, 2),
+    VERTICAL_3("1 × 3 (3-Vertical)", "1 × 3 (3 رأسي)", 1, 3),
+    HORIZONTAL_3("3 × 1 (3-Horizontal)", "3 × 1 (3 أفقي)", 3, 1),
+    GRID_6("2 × 3 (6-Grid)", "2 × 3 (شبكة 6)", 2, 3)
+}
+
+enum class MergeFitMode(val titleEn: String, val titleAr: String) {
+    FIT("Fit (Keep Ratio)", "احتواء كامل"),
+    FILL("Fill (Crop)", "ملء الإطار")
+}
+
+enum class CardArrangement {
+    TOP_BOTTOM,
+    TOP_PAGE,
+    SIDE_BY_SIDE,
+    CENTERED,
+    FIT_PAGE
+}
+
 object ImageProcessor {
+
+    private val thumbnailCache = LruCache<String, Bitmap>(20)
 
     /**
      * Enhanced Document Quad Corner Detection
@@ -542,22 +568,34 @@ object ImageProcessor {
     }
 
     /**
-     * Merges Front & Back of an ID card onto a single A4 page
+     * Merges Front & Back of an ID card or Passport onto a single A4 page
+     * with customizable scale, arrangement, and order.
      */
     suspend fun createIdCardCollage(
         context: Context,
         frontPath: String,
         backPath: String,
         outPrefix: String,
-        isSideBySide: Boolean = false
+        isSideBySide: Boolean = false,
+        scale: Float = 0.85f,
+        arrangement: CardArrangement = if (isSideBySide) CardArrangement.SIDE_BY_SIDE else CardArrangement.TOP_BOTTOM,
+        swapOrder: Boolean = false,
+        isPassport: Boolean = false,
+        spacingFactor: Float = 1.0f,
+        hasBorder: Boolean = true
     ): String = withContext(Dispatchers.IO) {
         try {
-            val frontBmp = loadBitmapFromFile(frontPath, 1600)
-            val backBmp = loadBitmapFromFile(backPath, 1600)
+            val rawFrontBmp = loadBitmapFromFile(frontPath, 1800)
+            val rawBackBmp = if (backPath.isNotBlank() && backPath != frontPath) {
+                loadBitmapFromFile(backPath, 1800)
+            } else null
 
-            if (frontBmp == null || backBmp == null) return@withContext frontPath
+            if (rawFrontBmp == null) return@withContext frontPath
 
-            // A4 page @ standard scan resolution: 1240 x 1754
+            val frontBmp = if (swapOrder && rawBackBmp != null) rawBackBmp else rawFrontBmp
+            val backBmp = if (swapOrder && rawBackBmp != null) rawFrontBmp else rawBackBmp
+
+            // A4 page @ standard scan resolution: 1240 x 1754 (Ratio 1 : 1.414)
             val canvasW = 1240
             val canvasH = 1754
             val result = Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888)
@@ -571,59 +609,109 @@ object ImageProcessor {
                 strokeWidth = 2.5f
             }
             val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(20, 0, 0, 0)
+                color = Color.argb(22, 0, 0, 0)
                 style = Paint.Style.FILL
             }
+            val cornerRadius = if (isPassport) 12f else 18f
 
-            if (!isSideBySide) {
-                // Top & Bottom Layout (standard ID card sheet)
-                val targetW = canvasW * 0.76f
-                val frontRatio = frontBmp.width.toFloat() / frontBmp.height.toFloat().coerceAtLeast(1f)
-                val targetH = targetW / frontRatio
+            if (backBmp == null) {
+                // Single card or passport
+                val clampedScale = if (arrangement == CardArrangement.FIT_PAGE) 0.94f else scale.coerceIn(0.40f, 1.10f) * 0.85f
+                val targetW = canvasW * clampedScale
+                val ratio = frontBmp.width.toFloat() / frontBmp.height.toFloat().coerceAtLeast(0.1f)
+                val targetH = (targetW / ratio).coerceAtMost(canvasH * 0.90f)
+                val left = (canvasW - targetW) / 2f
+                val top = when (arrangement) {
+                    CardArrangement.TOP_PAGE -> canvasH * 0.08f
+                    else -> (canvasH - targetH) / 2f
+                }
+                val rect = RectF(left, top, left + targetW, top + targetH)
+                val shadow = RectF(left + 5, top + 5, left + targetW + 5, top + targetH + 5)
+                canvas.drawRoundRect(shadow, cornerRadius, cornerRadius, shadowPaint)
+                canvas.drawBitmap(frontBmp, null, rect, paint)
+                if (hasBorder) {
+                    canvas.drawRoundRect(rect, cornerRadius, cornerRadius, borderPaint)
+                }
+            } else when (arrangement) {
+                CardArrangement.SIDE_BY_SIDE -> {
+                    // Horizontal side-by-side layout
+                    val clampedScale = scale.coerceIn(0.40f, 1.10f)
+                    var targetW = canvasW * 0.44f * clampedScale
+                    val frontRatio = frontBmp.width.toFloat() / frontBmp.height.toFloat().coerceAtLeast(0.1f)
+                    val backRatio = backBmp.width.toFloat() / backBmp.height.toFloat().coerceAtLeast(0.1f)
+                    var targetHFront = targetW / frontRatio
+                    var targetHBack = targetW / backRatio
 
-                // Front card
-                val frontLeft = (canvasW - targetW) / 2f
-                val frontTop = canvasH * 0.16f
-                val frontRect = RectF(frontLeft, frontTop, frontLeft + targetW, frontTop + targetH)
-                val frontShadow = RectF(frontLeft + 4, frontTop + 4, frontLeft + targetW + 4, frontTop + targetH + 4)
-                canvas.drawRoundRect(frontShadow, 18f, 18f, shadowPaint)
-                canvas.drawBitmap(frontBmp, null, frontRect, paint)
-                canvas.drawRoundRect(frontRect, 18f, 18f, borderPaint)
+                    val gap = (canvasW * 0.035f * spacingFactor).coerceIn(10f, 90f)
+                    val totalContentW = targetW * 2 + gap
+                    val startX = ((canvasW - totalContentW) / 2f).coerceAtLeast(canvasW * 0.02f)
 
-                // Back card
-                val backRatio = backBmp.width.toFloat() / backBmp.height.toFloat().coerceAtLeast(1f)
-                val targetHBack = targetW / backRatio
-                val backLeft = (canvasW - targetW) / 2f
-                val backTop = canvasH * 0.54f
-                val backRect = RectF(backLeft, backTop, backLeft + targetW, backTop + targetHBack)
-                val backShadow = RectF(backLeft + 4, backTop + 4, backLeft + targetW + 4, backTop + targetHBack + 4)
-                canvas.drawRoundRect(backShadow, 18f, 18f, shadowPaint)
-                canvas.drawBitmap(backBmp, null, backRect, paint)
-                canvas.drawRoundRect(backRect, 18f, 18f, borderPaint)
-            } else {
-                // Side by Side Layout
-                val targetW = canvasW * 0.44f
-                val frontRatio = frontBmp.width.toFloat() / frontBmp.height.toFloat().coerceAtLeast(1f)
-                val targetH = targetW / frontRatio
+                    val frontTop = (canvasH - targetHFront) / 2f
+                    val frontRect = RectF(startX, frontTop, startX + targetW, frontTop + targetHFront)
+                    val frontShadow = RectF(startX + 5, frontTop + 5, startX + targetW + 5, frontTop + targetHFront + 5)
+                    canvas.drawRoundRect(frontShadow, cornerRadius, cornerRadius, shadowPaint)
+                    canvas.drawBitmap(frontBmp, null, frontRect, paint)
+                    if (hasBorder) canvas.drawRoundRect(frontRect, cornerRadius, cornerRadius, borderPaint)
 
-                val frontLeft = canvasW * 0.04f
-                val frontTop = (canvasH - targetH) / 2f
-                val frontRect = RectF(frontLeft, frontTop, frontLeft + targetW, frontTop + targetH)
-                val frontShadow = RectF(frontLeft + 4, frontTop + 4, frontLeft + targetW + 4, frontTop + targetH + 4)
-                canvas.drawRoundRect(frontShadow, 18f, 18f, shadowPaint)
-                canvas.drawBitmap(frontBmp, null, frontRect, paint)
-                canvas.drawRoundRect(frontRect, 18f, 18f, borderPaint)
+                    val backLeft = startX + targetW + gap
+                    val backTop = (canvasH - targetHBack) / 2f
+                    val backRect = RectF(backLeft, backTop, backLeft + targetW, backTop + targetHBack)
+                    val backShadow = RectF(backLeft + 5, backTop + 5, backLeft + targetW + 5, backTop + targetHBack + 5)
+                    canvas.drawRoundRect(backShadow, cornerRadius, cornerRadius, shadowPaint)
+                    canvas.drawBitmap(backBmp, null, backRect, paint)
+                    if (hasBorder) canvas.drawRoundRect(backRect, cornerRadius, cornerRadius, borderPaint)
+                }
+                else -> {
+                    // Vertical stacked layouts (TOP_BOTTOM, TOP_PAGE, CENTERED, FIT_PAGE)
+                    val scaleMul = if (arrangement == CardArrangement.FIT_PAGE) 0.94f else (scale.coerceIn(0.40f, 1.10f) * 0.82f)
+                    var targetW = canvasW * scaleMul
+                    val frontRatio = frontBmp.width.toFloat() / frontBmp.height.toFloat().coerceAtLeast(0.1f)
+                    val backRatio = backBmp.width.toFloat() / backBmp.height.toFloat().coerceAtLeast(0.1f)
+                    var targetHFront = targetW / frontRatio
+                    var targetHBack = targetW / backRatio
 
-                val backLeft = canvasW * 0.52f
-                val backRect = RectF(backLeft, frontTop, backLeft + targetW, frontTop + targetH)
-                val backShadow = RectF(backLeft + 4, frontTop + 4, backLeft + targetW + 4, frontTop + targetH + 4)
-                canvas.drawRoundRect(backShadow, 18f, 18f, shadowPaint)
-                canvas.drawBitmap(backBmp, null, backRect, paint)
-                canvas.drawRoundRect(backRect, 18f, 18f, borderPaint)
+                    val gap = when (arrangement) {
+                        CardArrangement.CENTERED -> (canvasH * 0.025f * spacingFactor).coerceIn(10f, 80f)
+                        CardArrangement.TOP_PAGE -> (canvasH * 0.035f * spacingFactor).coerceIn(12f, 90f)
+                        CardArrangement.FIT_PAGE -> (canvasH * 0.035f * spacingFactor).coerceIn(14f, 100f)
+                        else -> (canvasH * 0.055f * spacingFactor).coerceIn(16f, 150f)
+                    }
+
+                    val maxAllowedH = canvasH * 0.90f
+                    if (targetHFront + targetHBack + gap > maxAllowedH) {
+                        val shrink = (maxAllowedH - gap) / (targetHFront + targetHBack)
+                        targetW *= shrink
+                        targetHFront *= shrink
+                        targetHBack *= shrink
+                    }
+
+                    val startY = when (arrangement) {
+                        CardArrangement.TOP_PAGE -> canvasH * 0.07f
+                        else -> ((canvasH - (targetHFront + targetHBack + gap)) / 2f).coerceAtLeast(canvasH * 0.04f)
+                    }
+
+                    // Front Card
+                    val frontLeft = (canvasW - targetW) / 2f
+                    val frontTop = startY
+                    val frontRect = RectF(frontLeft, frontTop, frontLeft + targetW, frontTop + targetHFront)
+                    val frontShadow = RectF(frontLeft + 5, frontTop + 5, frontLeft + targetW + 5, frontTop + targetHFront + 5)
+                    canvas.drawRoundRect(frontShadow, cornerRadius, cornerRadius, shadowPaint)
+                    canvas.drawBitmap(frontBmp, null, frontRect, paint)
+                    if (hasBorder) canvas.drawRoundRect(frontRect, cornerRadius, cornerRadius, borderPaint)
+
+                    // Back Card
+                    val backLeft = (canvasW - targetW) / 2f
+                    val backTop = frontTop + targetHFront + gap
+                    val backRect = RectF(backLeft, backTop, backLeft + targetW, backTop + targetHBack)
+                    val backShadow = RectF(backLeft + 5, backTop + 5, backLeft + targetW + 5, backTop + targetHBack + 5)
+                    canvas.drawRoundRect(backShadow, cornerRadius, cornerRadius, shadowPaint)
+                    canvas.drawBitmap(backBmp, null, backRect, paint)
+                    if (hasBorder) canvas.drawRoundRect(backRect, cornerRadius, cornerRadius, borderPaint)
+                }
             }
 
-            frontBmp.recycle()
-            backBmp.recycle()
+            rawFrontBmp.recycle()
+            rawBackBmp?.recycle()
 
             val outPath = saveBitmapToFile(context, result, outPrefix)
             result.recycle()
@@ -631,6 +719,169 @@ object ImageProcessor {
         } catch (e: Exception) {
             e.printStackTrace()
             frontPath
+        }
+    }
+
+    /**
+     * Merges multiple images into a single A4 composite page using custom grid layout,
+     * cell image scaling, spacing, corner radius, borders, and aspect fit/fill mode.
+     */
+    suspend fun createMultiImageGridCollage(
+        context: Context,
+        imagePaths: List<String>,
+        layout: MergeGridLayout = MergeGridLayout.AUTO,
+        imageScale: Float = 1.0f,
+        spacingPx: Float = 32f,
+        cornerRadiusPx: Float = 16f,
+        hasBorder: Boolean = true,
+        backgroundColor: Int = android.graphics.Color.WHITE,
+        fitMode: MergeFitMode = MergeFitMode.FIT,
+        outPrefix: String = "merged_grid_"
+    ): String = withContext(Dispatchers.IO) {
+        if (imagePaths.isEmpty()) return@withContext ""
+        if (imagePaths.size == 1) return@withContext imagePaths[0]
+
+        try {
+            // A4 page @ standard high clarity: 1414 x 2000
+            val canvasW = 1414
+            val canvasH = 2000
+            val result = Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(result)
+            canvas.drawColor(backgroundColor)
+
+            val count = imagePaths.size
+            val (cols, rows) = when (layout) {
+                MergeGridLayout.AUTO -> {
+                    when {
+                        count <= 2 -> Pair(1, 2)
+                        count == 3 -> Pair(1, 3)
+                        count == 4 -> Pair(2, 2)
+                        count in 5..6 -> Pair(2, 3)
+                        else -> Pair(2, ceil(count / 2.0).toInt())
+                    }
+                }
+                MergeGridLayout.VERTICAL_2 -> Pair(1, 2)
+                MergeGridLayout.HORIZONTAL_2 -> Pair(2, 1)
+                MergeGridLayout.GRID_4 -> Pair(2, 2)
+                MergeGridLayout.VERTICAL_3 -> Pair(1, 3)
+                MergeGridLayout.HORIZONTAL_3 -> Pair(3, 1)
+                MergeGridLayout.GRID_6 -> Pair(2, 3)
+            }
+
+            val margin = spacingPx * 1.5f
+            val cellSpacing = spacingPx
+            val totalHorizontalSpacing = 2 * margin + (cols - 1) * cellSpacing
+            val totalVerticalSpacing = 2 * margin + (rows - 1) * cellSpacing
+            val cellW = (canvasW - totalHorizontalSpacing) / cols
+            val cellH = (canvasH - totalVerticalSpacing) / rows
+
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            val borderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = if (backgroundColor == android.graphics.Color.WHITE) android.graphics.Color.rgb(215, 220, 225) else android.graphics.Color.rgb(80, 80, 90)
+                style = Paint.Style.STROKE
+                strokeWidth = 2.5f
+            }
+            val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.argb(22, 0, 0, 0)
+                style = Paint.Style.FILL
+            }
+
+            val maxSlots = cols * rows
+            for (i in 0 until minOf(count, maxSlots)) {
+                val path = imagePaths[i]
+                val bmp = loadBitmapFromFile(path, 1600) ?: continue
+
+                val col = i % cols
+                val row = i / cols
+
+                val cellLeft = margin + col * (cellW + cellSpacing)
+                val cellTop = margin + row * (cellH + cellSpacing)
+
+                // Apply user custom image scale inside cell (0.5f to 1.0f)
+                val scaledW = cellW * imageScale.coerceIn(0.4f, 1.0f)
+                val scaledH = cellH * imageScale.coerceIn(0.4f, 1.0f)
+                val targetLeft = cellLeft + (cellW - scaledW) / 2f
+                val targetTop = cellTop + (cellH - scaledH) / 2f
+
+                if (fitMode == MergeFitMode.FIT) {
+                    val bmpRatio = bmp.width.toFloat() / bmp.height.toFloat().coerceAtLeast(0.01f)
+                    val targetRatio = scaledW / scaledH.coerceAtLeast(0.01f)
+                    val drawW: Float
+                    val drawH: Float
+                    if (bmpRatio > targetRatio) {
+                        drawW = scaledW
+                        drawH = scaledW / bmpRatio
+                    } else {
+                        drawH = scaledH
+                        drawW = scaledH * bmpRatio
+                    }
+                    val drawLeft = targetLeft + (scaledW - drawW) / 2f
+                    val drawTop = targetTop + (scaledH - drawH) / 2f
+                    val drawRect = RectF(drawLeft, drawTop, drawLeft + drawW, drawTop + drawH)
+                    val shadowRect = RectF(drawLeft + 4, drawTop + 4, drawLeft + drawW + 4, drawTop + drawH + 4)
+
+                    if (cornerRadiusPx > 0) {
+                        canvas.drawRoundRect(shadowRect, cornerRadiusPx, cornerRadiusPx, shadowPaint)
+                        canvas.save()
+                        val clipP = Path().apply {
+                            addRoundRect(drawRect, cornerRadiusPx, cornerRadiusPx, Path.Direction.CW)
+                        }
+                        canvas.clipPath(clipP)
+                        canvas.drawBitmap(bmp, null, drawRect, paint)
+                        canvas.restore()
+                        if (hasBorder) {
+                            canvas.drawRoundRect(drawRect, cornerRadiusPx, cornerRadiusPx, borderPaint)
+                        }
+                    } else {
+                        canvas.drawRect(shadowRect, shadowPaint)
+                        canvas.drawBitmap(bmp, null, drawRect, paint)
+                        if (hasBorder) canvas.drawRect(drawRect, borderPaint)
+                    }
+                } else {
+                    // Fill mode (center crop)
+                    val drawRect = RectF(targetLeft, targetTop, targetLeft + scaledW, targetTop + scaledH)
+                    val shadowRect = RectF(targetLeft + 4, targetTop + 4, targetLeft + scaledW + 4, targetTop + scaledH + 4)
+
+                    val bmpRatio = bmp.width.toFloat() / bmp.height.toFloat().coerceAtLeast(0.01f)
+                    val cellRatio = scaledW / scaledH.coerceAtLeast(0.01f)
+                    val srcRect = if (bmpRatio > cellRatio) {
+                        val srcW = (bmp.height * cellRatio).toInt()
+                        val srcX = (bmp.width - srcW) / 2
+                        android.graphics.Rect(srcX, 0, srcX + srcW, bmp.height)
+                    } else {
+                        val srcH = (bmp.width / cellRatio).toInt()
+                        val srcY = (bmp.height - srcH) / 2
+                        android.graphics.Rect(0, srcY, bmp.width, srcY + srcH)
+                    }
+
+                    if (cornerRadiusPx > 0) {
+                        canvas.drawRoundRect(shadowRect, cornerRadiusPx, cornerRadiusPx, shadowPaint)
+                        canvas.save()
+                        val clipP = Path().apply {
+                            addRoundRect(drawRect, cornerRadiusPx, cornerRadiusPx, Path.Direction.CW)
+                        }
+                        canvas.clipPath(clipP)
+                        canvas.drawBitmap(bmp, srcRect, drawRect, paint)
+                        canvas.restore()
+                        if (hasBorder) {
+                            canvas.drawRoundRect(drawRect, cornerRadiusPx, cornerRadiusPx, borderPaint)
+                        }
+                    } else {
+                        canvas.drawRect(shadowRect, shadowPaint)
+                        canvas.drawBitmap(bmp, srcRect, drawRect, paint)
+                        if (hasBorder) canvas.drawRect(drawRect, borderPaint)
+                    }
+                }
+
+                bmp.recycle()
+            }
+
+            val outPath = saveBitmapToFile(context, result, outPrefix)
+            result.recycle()
+            outPath
+        } catch (e: Exception) {
+            e.printStackTrace()
+            imagePaths.firstOrNull() ?: ""
         }
     }
 
@@ -674,6 +925,11 @@ object ImageProcessor {
     }
 
     suspend fun loadBitmapFromFile(path: String, maxDim: Int = 2400): Bitmap? = withContext(Dispatchers.IO) {
+        // Try cache first if maxDim is small (thumbnail request)
+        if (maxDim <= 500) {
+            thumbnailCache.get(path)?.let { return@withContext it }
+        }
+
         try {
             val file = File(path)
             if (!file.exists()) return@withContext null
@@ -690,8 +946,15 @@ object ImageProcessor {
             val opts = BitmapFactory.Options().apply {
                 inSampleSize = sampleSize
                 inPreferredConfig = Bitmap.Config.ARGB_8888
+                inMutable = true // Allow reuse if needed
             }
-            BitmapFactory.decodeFile(path, opts)
+            val bitmap = BitmapFactory.decodeFile(path, opts)
+            
+            // Cache if it's a thumbnail request
+            if (bitmap != null && maxDim <= 500) {
+                thumbnailCache.put(path, bitmap)
+            }
+            bitmap
         } catch (e: Exception) {
             null
         }

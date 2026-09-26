@@ -3,6 +3,7 @@
     <string name="app_name">MS Scanner</string>
     <string name="tagline">ماسح ضوئي ذكي واستوديو PDF متكامل</string>
     <string name="nav_documents">المستندات</string>
+    <string name="nav_home">الرئيسية</string>
     <string name="nav_scan">مسح ضوئي</string>
     <string name="nav_folders">المجلدات</string>
     <string name="nav_favorites">المفضلة</string>
@@ -244,15 +245,30 @@
     <string name="txt_move_left">نقل الصفحة لليسار</string>
     <string name="txt_move_right">نقل الصفحة لليمين</string>
 
-    <string name="txt_backup_restore">Backup &amp; Restore</string>
-    <string name="txt_create_backup">Create Backup (ZIP)</string>
-    <string name="txt_create_backup_desc">Export your documents to a safe location</string>
-    <string name="txt_restore_backup">Restore Backup</string>
-    <string name="txt_restore_backup_desc">Import documents from a ZIP file</string>
-    <string name="txt_creating_backup">Creating backup...</string>
-    <string name="txt_restoring_backup">Restoring backup...</string>
-    <string name="txt_backup_success">Backup created successfully</string>
-    <string name="txt_restore_success">Restore completed successfully</string>
-    <string name="txt_backup_failed">Backup failed</string>
-    <string name="txt_restore_failed">Restore failed</string>
-<string name="txt_scan_doc">مسح مستند</string><string name="txt_scan_id_card">مسح بطاقة هوية / جواز سفر</string><string name="txt_new_folder_name">اسم المجلد الجديد</string></resources>
+    <string name="txt_backup_restore">نسخ احتياطي واستعادة</string>
+    <string name="txt_create_backup">إنشاء نسخة احتياطية (ZIP)</string>
+    <string name="txt_create_backup_desc">تصدير مستنداتك إلى مكان آمن</string>
+    <string name="txt_restore_backup">استعادة النسخة الاحتياطية</string>
+    <string name="txt_restore_backup_desc">استيراد مستندات من ملف ZIP</string>
+    <string name="txt_creating_backup">جاري إنشاء النسخة الاحتياطية...</string>
+    <string name="txt_restoring_backup">جاري استعادة النسخة الاحتياطية...</string>
+    <string name="txt_backup_success">تم إنشاء النسخة الاحتياطية بنجاح</string>
+    <string name="txt_restore_success">تمت الاستعادة بنجاح</string>
+    <string name="txt_backup_failed">فشل إنشاء النسخة الاحتياطية</string>
+    <string name="txt_restore_failed">فشل الاستعادة</string>
+<string name="txt_scan_doc">مسح مستند</string><string name="txt_scan_id_card">مسح بطاقة هوية / جواز سفر</string><string name="txt_new_folder_name">اسم المجلد الجديد</string>    <string name="txt_export_docx">تصدير DOCX</string>
+    <string name="txt_export_txt">تصدير TXT</string>
+    <string name="txt_export_png">تصدير PNG</string>
+    <string name="desc_export_docx">تصدير المستند كملف Word</string>
+    <string name="desc_export_txt">تصدير نص OCR كملف نصي</string>
+    <string name="desc_export_png">مشاركة صورة PNG عالية الجودة</string>
+    <string name="txt_select">تحديد</string>
+    <string name="txt_settings_menu">الإعدادات</string>
+    <string name="txt_about_app">حول التطبيق</string>
+    <string name="txt_feedback_menu">إرسال ملاحظات</string>
+    <string name="txt_grid_view">عرض كشبكة</string>
+    <string name="txt_import_pdf">استيراد PDF</string>
+    <string name="txt_insert_blank_page">إدراج صفحة فارغة</string>
+    <string name="txt_import">استيراد</string>
+    <string name="txt_scan">تصوير</string>
+</resources>

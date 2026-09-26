@@ -6,6 +6,9 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
+import androidx.work.*
+import java.util.concurrent.TimeUnit
+import com.example.engine.updater.UpdateCheckWorker
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
@@ -31,6 +34,7 @@ import com.example.ui.screens.annotate.AnnotationScreen
 import com.example.ui.screens.camera.CameraScanScreen
 import com.example.ui.screens.camera.ScanCameraMode
 import com.example.ui.screens.editor.DocumentCropEditorScreen
+import com.example.ui.screens.editor.EditSessionScreen
 import com.example.ui.screens.home.HomeScreen
 import com.example.ui.screens.idcard.IdCardMergerScreen
 import com.example.ui.screens.ocr.OcrScreen
@@ -44,6 +48,19 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
+        val updateWorkRequest = PeriodicWorkRequestBuilder<UpdateCheckWorker>(24, TimeUnit.HOURS)
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .build()
+        WorkManager.getInstance(applicationContext).enqueueUniquePeriodicWork(
+            "update_check",
+            ExistingPeriodicWorkPolicy.KEEP,
+            updateWorkRequest
+        )
 
         val database = DocScanDatabase.getInstance(applicationContext)
         val repository = DocumentRepository(applicationContext, database.documentDao())
@@ -139,6 +156,7 @@ fun DocScanApp(
                 val cameraMode = when (modeStr.uppercase()) {
                     "ID_CARD" -> ScanCameraMode.ID_CARD
                     "BATCH" -> ScanCameraMode.BATCH
+                    "PASSPORT" -> ScanCameraMode.PASSPORT
                     else -> ScanCameraMode.DOCUMENT
                 }
                 val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
@@ -170,30 +188,42 @@ fun DocScanApp(
                         }
                     },
                     onIdCardCaptured = { frontPath, backPath ->
-                        navController.navigate(Screen.IdCardMerger.createRoute(frontPath, backPath, docId))
+                        navController.navigate(Screen.IdCardMerger.createRoute(frontPath, backPath, docId, isPassport = false))
+                    },
+                    onPassportCaptured = { frontPath, backPath ->
+                        navController.navigate(Screen.IdCardMerger.createRoute(frontPath, backPath, docId, isPassport = true))
                     }
                 )
             }
 
-            // ID Card Merger Screen
+            // ID Card & Passport Merger Screen
             composable(
                 route = Screen.IdCardMerger.route,
                 arguments = listOf(
                     navArgument("front") { type = NavType.StringType },
-                    navArgument("back") { type = NavType.StringType },
+                    navArgument("back") {
+                        type = NavType.StringType
+                        defaultValue = ""
+                    },
                     navArgument("docId") {
                         type = NavType.LongType
                         defaultValue = 0L
+                    },
+                    navArgument("isPassport") {
+                        type = NavType.BoolType
+                        defaultValue = false
                     }
                 )
             ) { backStackEntry ->
                 val front = Uri.decode(backStackEntry.arguments?.getString("front") ?: "")
                 val back = Uri.decode(backStackEntry.arguments?.getString("back") ?: "")
                 val targetDocId = backStackEntry.arguments?.getLong("docId") ?: 0L
+                val isPassport = backStackEntry.arguments?.getBoolean("isPassport") ?: false
 
                 IdCardMergerScreen(
                     frontImagePath = front,
                     backImagePath = back,
+                    isPassportMode = isPassport,
                     onMerged = { mergedPath ->
                         if (targetDocId > 0L) {
                             docViewModel.addPagesToCurrentDocument(listOf(Pair(front, mergedPath)))
@@ -311,6 +341,22 @@ fun DocScanApp(
                     viewModel = docViewModel,
                     onNavigateBack = {
                         navController.popBackStack()
+                    }
+                )
+            }
+
+            // Edit Session Screen
+            composable(
+                route = Screen.EditSession.route,
+                arguments = listOf(navArgument("docId") { type = NavType.LongType })
+            ) { backStackEntry ->
+                val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
+                EditSessionScreen(
+                    viewModel = docViewModel,
+                    docId = docId,
+                    onNavigateBack = { navController.popBackStack() },
+                    onNavigateToFinish = {
+                        navController.popBackStack(Screen.DocumentViewer.createRoute(docId), inclusive = false)
                     }
                 )
             }

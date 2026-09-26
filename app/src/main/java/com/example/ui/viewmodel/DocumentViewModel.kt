@@ -22,6 +22,11 @@ import com.example.engine.ocr.DocumentAiEngine
 import com.example.engine.ocr.DocumentAnalysisResult
 import com.example.engine.pdf.PdfEngine
 import com.example.engine.pdf.PdfExportConfig
+import com.example.BuildConfig
+import com.example.engine.updater.AppUpdateInfo
+import com.example.engine.updater.GitHubUpdateManager
+import com.example.engine.updater.UpdateCheckState
+import com.example.engine.updater.UpdateDownloadState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -44,6 +49,9 @@ data class DocumentUiState(
     val ocrResult: DocumentAnalysisResult? = null,
     val exportedPdfFile: File? = null,
     val isExportingPdf: Boolean = false,
+    val pendingPages: List<Pair<String, String>> = emptyList(),
+    val editingSessionPages: List<PageEntity> = emptyList(),
+    val isEditingSession: Boolean = false,
     val storageStats: StorageStats? = null,
     val savedSignatures: List<SignatureEntity> = emptyList(),
     val isAppLocked: Boolean = false,
@@ -52,6 +60,8 @@ data class DocumentUiState(
     val themeMode: String = "System",
     val defaultPdfPageSize: com.example.data.model.PageSizePreset = com.example.data.model.PageSizePreset.A4,
     val defaultPdfCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH,
+    val selectedCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH,
+    val ocrLanguage: com.example.engine.ocr.OcrLanguage = com.example.engine.ocr.OcrLanguage.AUTO,
     val sortMode: SortMode = SortMode.NEWEST,
     val isLoading: Boolean = false
 )
@@ -81,11 +91,116 @@ class DocumentViewModel(
     private val filterTrigger = MutableStateFlow(FilterState())
     private val qualityCache = mutableMapOf<Long, QualityReport>()
 
+    private val updateManager = GitHubUpdateManager(context)
+    val updateCheckState = MutableStateFlow<UpdateCheckState>(UpdateCheckState.Idle)
+    val updateDownloadState = MutableStateFlow<UpdateDownloadState>(UpdateDownloadState.Idle)
+
     init {
         setupDocumentStream()
         loadFolders()
         loadSignatures()
         refreshStorageStats()
+        checkUpdatesOnLaunch()
+    }
+
+    var githubRepoSlug: String
+        get() = prefs.githubRepoSlug
+        set(value) {
+            prefs.githubRepoSlug = value
+        }
+
+    var autoCheckUpdates: Boolean
+        get() = prefs.autoCheckUpdates
+        set(value) {
+            prefs.autoCheckUpdates = value
+        }
+
+    fun checkUpdates(isManual: Boolean = false) {
+        viewModelScope.launch {
+            updateCheckState.value = UpdateCheckState.Checking
+            try {
+                val info = updateManager.checkUpdate(prefs.githubRepoSlug)
+                if (info.isUpdateAvailable) {
+                    if (isManual || prefs.ignoredUpdateVersion != info.latestVersion) {
+                        updateCheckState.value = UpdateCheckState.Available(info, isManual)
+                    } else {
+                        updateCheckState.value = UpdateCheckState.Idle
+                    }
+                } else {
+                    updateCheckState.value = UpdateCheckState.UpToDate(BuildConfig.VERSION_NAME, isManual)
+                }
+                prefs.lastUpdateCheckTime = System.currentTimeMillis()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                updateCheckState.value = UpdateCheckState.Error(
+                    messageAr = "تعذر التحقق من التحديثات: ${e.localizedMessage ?: "خطأ في الاتصال بالإنترنت"}",
+                    messageEn = "Failed to check updates: ${e.localizedMessage ?: "Network error"}",
+                    isManual = isManual
+                )
+            }
+        }
+    }
+
+    fun dismissUpdate(ignoreVersion: Boolean = false, version: String = "") {
+        if (ignoreVersion && version.isNotBlank()) {
+            prefs.ignoredUpdateVersion = version
+        }
+        updateCheckState.value = UpdateCheckState.Idle
+        updateDownloadState.value = UpdateDownloadState.Idle
+    }
+
+    fun downloadAndInstallUpdate(updateInfo: AppUpdateInfo) {
+        viewModelScope.launch {
+            if (updateInfo.downloadUrl.isBlank()) {
+                updateDownloadState.value = UpdateDownloadState.Error(
+                    messageAr = "رابط ملف التحديث (APK) غير متوفر حالياً على جيت هب",
+                    messageEn = "Update APK URL is currently not available on GitHub"
+                )
+                return@launch
+            }
+
+            try {
+                updateDownloadState.value = UpdateDownloadState.Downloading(0L, updateInfo.apkSize, 0f)
+                val apkFile = updateManager.downloadApk(
+                    downloadUrl = updateInfo.downloadUrl,
+                    targetVersion = updateInfo.latestVersion
+                ) { bytesRead, totalBytes, progress ->
+                    updateDownloadState.value = UpdateDownloadState.Downloading(bytesRead, totalBytes, progress)
+                }
+
+                if (updateManager.canInstallPackages()) {
+                    updateDownloadState.value = UpdateDownloadState.ReadyToInstall(apkFile, updateInfo)
+                    updateManager.launchInstallApk(apkFile)
+                } else {
+                    updateDownloadState.value = UpdateDownloadState.PermissionRequired(apkFile, updateInfo)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                updateDownloadState.value = UpdateDownloadState.Error(
+                    messageAr = "فشل تحميل التحديث: ${e.localizedMessage ?: "يرجى التحقق من الاتصال بالإنترنت"}",
+                    messageEn = "Update download failed: ${e.localizedMessage ?: "Please check internet connection"}"
+                )
+            }
+        }
+    }
+
+    fun requestInstallApk(apkFile: File) {
+        if (updateManager.canInstallPackages()) {
+            updateManager.launchInstallApk(apkFile)
+        } else {
+            context.startActivity(updateManager.getInstallPermissionIntent())
+        }
+    }
+
+    fun checkUpdatesOnLaunch() {
+        if (prefs.autoCheckUpdates) {
+            val lastCheck = prefs.lastUpdateCheckTime
+            val now = System.currentTimeMillis()
+            // Check if more than 30 minutes passed since last check
+            if (now - lastCheck > 1000 * 60 * 30) {
+                checkUpdates(isManual = false)
+            }
+        }
     }
 
     private fun setupDocumentStream() {
@@ -154,6 +269,102 @@ class DocumentViewModel(
         }
     }
 
+    fun addPagesToPendingSession(pages: List<Pair<String, String>>) {
+        _uiState.update { it.copy(pendingPages = it.pendingPages + pages) }
+    }
+
+    fun rotateEditingSessionPage(index: Int, clockwise: Boolean) {
+        val pages = _uiState.value.editingSessionPages.toMutableList()
+        if (index !in pages.indices) return
+        val page = pages[index]
+        viewModelScope.launch {
+            val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 2000)
+            if (bmp != null) {
+                val rotated = ImageProcessor.rotateBitmap(bmp, if (clockwise) 90 else -90)
+                val newPath = ImageProcessor.saveBitmapToFile(context, rotated, "rot_session_")
+                rotated.recycle()
+                bmp.recycle()
+                pages[index] = page.copy(
+                    processedImagePath = newPath,
+                    rotationDegrees = (page.rotationDegrees + if (clockwise) 90 else -90) % 360
+                )
+                _uiState.update { it.copy(editingSessionPages = pages) }
+            }
+        }
+    }
+
+    fun rotatePendingPage(index: Int, clockwise: Boolean) {
+        val pages = _uiState.value.pendingPages.toMutableList()
+        if (index !in pages.indices) return
+        val pagePair = pages[index]
+        viewModelScope.launch {
+            val bmp = ImageProcessor.loadBitmapFromFile(pagePair.second, 2000)
+            if (bmp != null) {
+                val rotated = ImageProcessor.rotateBitmap(bmp, if (clockwise) 90 else -90)
+                val newPath = ImageProcessor.saveBitmapToFile(context, rotated, "rot_pending_")
+                rotated.recycle()
+                bmp.recycle()
+                pages[index] = Pair(pagePair.first, newPath)
+                _uiState.update { it.copy(pendingPages = pages) }
+            }
+        }
+    }
+
+    fun clearPendingPages() {
+        _uiState.update { it.copy(pendingPages = emptyList()) }
+    }
+
+    fun commitPendingPagesToDocument(docId: Long, onComplete: () -> Unit) {
+        viewModelScope.launch {
+            val pages = _uiState.value.pendingPages
+            if (pages.isEmpty()) return@launch
+            
+            // Add to repository
+            val doc = repository.getDocumentById(docId) ?: return@launch
+            var pageCount = doc.pageCount
+            for (pagePair in pages) {
+                val newPage = PageEntity(
+                    documentId = doc.id,
+                    pageIndex = pageCount,
+                    rawImagePath = pagePair.first,
+                    processedImagePath = pagePair.second
+                )
+                repository.insertPage(newPage)
+                pageCount++
+            }
+            repository.updateDocument(doc.copy(pageCount = pageCount))
+            
+            clearPendingPages()
+            refreshStorageStats()
+            loadDocument(docId)
+            onComplete()
+        }
+    }
+
+    fun startEditingSession(pages: List<PageEntity>) {
+        _uiState.update { it.copy(editingSessionPages = pages, isEditingSession = true) }
+    }
+
+    fun endEditingSession() {
+        _uiState.update { it.copy(editingSessionPages = emptyList(), isEditingSession = false) }
+    }
+
+    fun commitEditingSessionChanges(onComplete: () -> Unit) {
+        viewModelScope.launch {
+            val pages = _uiState.value.editingSessionPages
+            if (pages.isEmpty()) return@launch
+            
+            // Save each page in session back to repository
+            for (page in pages) {
+                repository.updatePage(page)
+            }
+            
+            endEditingSession()
+            refreshStorageStats()
+            onComplete()
+        }
+    }
+
     fun onSearchQueryChanged(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
         filterTrigger.value = filterTrigger.value.copy(query = query)
@@ -197,6 +408,10 @@ class DocumentViewModel(
     fun setSortMode(mode: SortMode) {
         _uiState.update { it.copy(sortMode = mode) }
         filterTrigger.value = filterTrigger.value.copy(sort = mode)
+    }
+
+    fun setCompression(preset: com.example.data.model.CompressionPreset) {
+        _uiState.update { it.copy(selectedCompression = preset) }
     }
 
     fun filterByCategory(cat: DocumentCategory) {
@@ -432,6 +647,103 @@ class DocumentViewModel(
         }
     }
 
+    fun rotatePage(pageId: Long) {
+        val page = _uiState.value.activePages.find { it.id == pageId } ?: return
+        viewModelScope.launch {
+            val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 2000)
+            if (bmp != null) {
+                val rotated = ImageProcessor.rotateBitmap(bmp, 90)
+                val newPath = ImageProcessor.saveBitmapToFile(context, rotated, "rot_")
+                rotated.recycle()
+                bmp.recycle()
+                val updated = page.copy(
+                    processedImagePath = newPath,
+                    rotationDegrees = (page.rotationDegrees + 90) % 360
+                )
+                repository.updatePage(updated)
+                qualityCache.remove(page.id)
+                loadDocument(page.documentId)
+            }
+        }
+    }
+
+    fun duplicatePage(pageId: Long) {
+        val page = _uiState.value.activePages.find { it.id == pageId } ?: return
+        viewModelScope.launch {
+            val pages = _uiState.value.activePages
+            val newPage = page.copy(id = 0, pageIndex = pages.size)
+            repository.insertPage(newPage)
+            val doc = repository.getDocumentById(page.documentId)
+            if (doc != null) repository.updateDocument(doc.copy(pageCount = pages.size + 1))
+            refreshStorageStats()
+            loadDocument(page.documentId)
+        }
+    }
+
+    fun deletePageById(pageId: Long) {
+        viewModelScope.launch {
+            val page = _uiState.value.activePages.find { it.id == pageId } ?: return@launch
+            repository.deletePage(page.id, page.documentId)
+            val remaining = _uiState.value.activePages.filter { it.id != pageId }
+            repository.updatePagesIndices(remaining.mapIndexed { i, p -> p.copy(pageIndex = i) })
+            val doc = repository.getDocumentById(page.documentId)
+            if (doc != null) repository.updateDocument(doc.copy(pageCount = remaining.size))
+            refreshStorageStats()
+            loadDocument(page.documentId)
+        }
+    }
+
+    fun mergePagesIntoSinglePage(
+        selectedPageIds: List<Long>,
+        mergedImagePath: String,
+        replaceSelected: Boolean,
+        onComplete: (Long) -> Unit
+    ) {
+        viewModelScope.launch {
+            val doc = _uiState.value.activeDocument ?: return@launch
+            val currentPages = _uiState.value.activePages
+            if (replaceSelected && selectedPageIds.isNotEmpty()) {
+                val firstId = selectedPageIds.first()
+                val firstPage = currentPages.find { it.id == firstId }
+                if (firstPage != null) {
+                    repository.updatePage(
+                        firstPage.copy(
+                            rawImagePath = mergedImagePath,
+                            processedImagePath = mergedImagePath,
+                            cropQuadJson = "",
+                            rotationDegrees = 0
+                        )
+                    )
+                }
+                for (id in selectedPageIds.drop(1)) {
+                    val pToDelete = currentPages.find { it.id == id }
+                    if (pToDelete != null) {
+                        repository.deletePage(id, doc.id)
+                    }
+                }
+                val remainingPages = repository.getPagesList(doc.id)
+                repository.updatePagesIndices(remainingPages.mapIndexed { idx, p -> p.copy(pageIndex = idx) })
+                repository.updateDocument(doc.copy(pageCount = remainingPages.size))
+                refreshStorageStats()
+                loadDocument(doc.id)
+                onComplete(firstId)
+            } else {
+                val newPageIndex = currentPages.size
+                val newPage = com.example.data.model.PageEntity(
+                    documentId = doc.id,
+                    pageIndex = newPageIndex,
+                    rawImagePath = mergedImagePath,
+                    processedImagePath = mergedImagePath
+                )
+                repository.insertPage(newPage)
+                repository.updateDocument(doc.copy(pageCount = currentPages.size + 1))
+                refreshStorageStats()
+                loadDocument(doc.id)
+                onComplete(0L)
+            }
+        }
+    }
+
     fun printActivePage(context: Context) {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
@@ -637,6 +949,10 @@ class DocumentViewModel(
     /**
      * Performs OCR & AI Intelligence on the active page
      */
+    fun setOcrLanguage(language: com.example.engine.ocr.OcrLanguage) {
+        _uiState.update { it.copy(ocrLanguage = language) }
+    }
+
     fun runOcrOnActivePage(useDeepAi: Boolean = true) {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
@@ -648,7 +964,7 @@ class DocumentViewModel(
             val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath)
             if (bmp != null) {
                 val result = if (useDeepAi) {
-                    DocumentAiEngine.analyzeWithGemini(bmp)
+                    DocumentAiEngine.analyzeWithGemini(bmp, _uiState.value.ocrLanguage)
                 } else {
                     DocumentAiEngine.performOfflineOcr(bmp)
                 }
@@ -737,6 +1053,35 @@ class DocumentViewModel(
                 )
             }
             onComplete(pdfFile)
+        }
+    }
+
+    /**
+     * Prints or saves active document pages to PDF using the Android Print framework.
+     */
+    fun printDocument(activityContext: Context, selectedPageIds: Set<Long>? = null) {
+        val pages = if (selectedPageIds != null && selectedPageIds.isNotEmpty()) {
+            _uiState.value.activePages.filter { selectedPageIds.contains(it.id) }
+        } else {
+            _uiState.value.activePages
+        }
+        if (pages.isEmpty()) return
+        val docTitle = _uiState.value.activeDocument?.title ?: "Document"
+        val paths = pages.map { it.processedImagePath }
+        PdfEngine.printScannedDocuments(activityContext, docTitle, paths)
+    }
+
+    /**
+     * Prints a document by ID using the Android Print framework.
+     */
+    fun printDocumentById(activityContext: Context, docId: Long) {
+        viewModelScope.launch {
+            val pages = repository.getPagesList(docId)
+            if (pages.isEmpty()) return@launch
+            val doc = repository.getDocumentById(docId)
+            val docTitle = doc?.title ?: "Document"
+            val paths = pages.map { it.processedImagePath }
+            PdfEngine.printScannedDocuments(activityContext, docTitle, paths)
         }
     }
 
@@ -910,6 +1255,18 @@ class DocumentViewModel(
     fun lockApp() {
         if (_uiState.value.hasPinConfigured) {
             _uiState.update { it.copy(isAppLocked = true) }
+        }
+    }
+
+    fun renameDocuments(docIds: List<Long>, baseName: String) {
+        viewModelScope.launch {
+            docIds.forEachIndexed { index, id ->
+                val doc = repository.getDocumentById(id)
+                if (doc != null) {
+                    val newTitle = if (docIds.size > 1) "${baseName}_${index + 1}" else baseName
+                    repository.updateDocument(doc.copy(title = newTitle))
+                }
+            }
         }
     }
 }

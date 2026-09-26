@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import android.util.Base64
 import com.example.BuildConfig
 import com.example.data.model.DocumentCategory
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -16,13 +18,20 @@ import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
-import java.util.regex.Pattern
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 
 data class ExtractedField(
     val labelEn: String,
     val labelAr: String,
     val value: String
 )
+
+enum class OcrLanguage(val displayName: String) {
+    AUTO("Auto-detect"),
+    ARABIC("Arabic"),
+    ENGLISH("English")
+}
 
 data class DocumentAnalysisResult(
     val fullText: String,
@@ -41,69 +50,86 @@ object DocumentAiEngine {
         .build()
 
     /**
-     * Local offline pattern and heuristic OCR text extractor
+     * Offline OCR text extractor using ML Kit Text Recognition
      */
-    fun performOfflineOcr(bitmap: Bitmap): DocumentAnalysisResult {
-        // Sample text recognition patterns, numbers, dates, currency, and IDs
-        val datePattern = Pattern.compile("(\\d{1,4}[-/.]\\d{1,2}[-/.]\\d{1,4})")
-        val amountPattern = Pattern.compile("(\\$|€|£|SAR|AED|USD|EGP|OMR|QAR|KWD|دينار|ريال|جنيه|درهم)?\\s*(\\d+[.,]\\d{2})")
-        val invoicePattern = Pattern.compile("(INV|FAT|FAC|BILL|REC|فاتورة|إيصال|رقم)[-#\\s]*([A-Z0-9]+)", Pattern.CASE_INSENSITIVE)
-        val phonePattern = Pattern.compile("(\\+?\\d{1,4}[\\s-]?\\(?\\d{1,4}\\)?[\\s-]?\\d{3,4}[\\s-]?\\d{3,4})")
+    suspend fun performOfflineOcr(bitmap: Bitmap): DocumentAnalysisResult = suspendCoroutine { continuation ->
+        val recognizer = TextRecognition.getClient()
+        val image = InputImage.fromBitmap(bitmap, 0)
 
-        val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-        val fields = mutableListOf<ExtractedField>()
+        recognizer.process(image)
+            .addOnSuccessListener { text ->
+                val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                val fields = mutableListOf<ExtractedField>()
 
-        // Heuristic extraction for offline mode
-        fields.add(ExtractedField("Date Scanned", "تاريخ المسح", dateStr))
-        fields.add(ExtractedField("Resolution", "الدقة", "${bitmap.width}x${bitmap.height} px"))
+                // Heuristic extraction
+                fields.add(ExtractedField("Date Scanned", "تاريخ المسح", dateStr))
+                fields.add(ExtractedField("Resolution", "الدقة", "${bitmap.width}x${bitmap.height} px"))
 
-        val aspect = bitmap.width.toFloat() / bitmap.height.toFloat()
-        val category = when {
-            aspect in 1.4f..1.8f || aspect in 0.55f..0.7f -> DocumentCategory.ID_CARD
-            aspect < 0.45f -> DocumentCategory.RECEIPT
-            else -> DocumentCategory.OTHER
-        }
+                val aspect = bitmap.width.toFloat() / bitmap.height.toFloat()
+                val category = when {
+                    aspect in 1.4f..1.8f || aspect in 0.55f..0.7f -> DocumentCategory.ID_CARD
+                    aspect < 0.45f -> DocumentCategory.RECEIPT
+                    else -> DocumentCategory.OTHER
+                }
 
-        val suggestedTitle = when (category) {
-            DocumentCategory.ID_CARD -> "ID Card - $dateStr"
-            DocumentCategory.RECEIPT -> "Receipt - $dateStr"
-            else -> "Document - $dateStr"
-        }
+                val suggestedTitle = when (category) {
+                    DocumentCategory.ID_CARD -> "ID Card - $dateStr"
+                    DocumentCategory.RECEIPT -> "Receipt - $dateStr"
+                    else -> "Document - $dateStr"
+                }
 
-        val sampleText = StringBuilder()
-        sampleText.append("=== DOCSCAN PRO OCR ===\n")
-        sampleText.append("Date: $dateStr\n")
-        sampleText.append("Document: $suggestedTitle\n")
-        sampleText.append("Status: Processed & Enhanced\n")
-
-        return DocumentAnalysisResult(
-            fullText = sampleText.toString(),
-            suggestedTitle = suggestedTitle,
-            detectedCategory = category,
-            fields = fields,
-            confidence = 0.88f,
-            isAiPowered = false
-        )
+                continuation.resume(
+                    DocumentAnalysisResult(
+                        fullText = text.text,
+                        suggestedTitle = suggestedTitle,
+                        detectedCategory = category,
+                        fields = fields,
+                        confidence = 0.8f,
+                        isAiPowered = false
+                    )
+                )
+            }
+            .addOnFailureListener {
+                // Fallback to simple placeholder if ML Kit fails
+                val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                continuation.resume(
+                    DocumentAnalysisResult(
+                        fullText = "OCR Failed: ${it.message}",
+                        suggestedTitle = "Document - $dateStr",
+                        detectedCategory = DocumentCategory.OTHER,
+                        fields = emptyList(),
+                        confidence = 0f,
+                        isAiPowered = false
+                    )
+                )
+            }
     }
 
     /**
      * Deep AI Document Intelligence using Gemini 2.5 Flash for complete Arabic + English OCR,
      * table extraction, metadata, and category classification.
      */
-    suspend fun analyzeWithGemini(bitmap: Bitmap): DocumentAnalysisResult = withContext(Dispatchers.IO) {
+    suspend fun analyzeWithGemini(bitmap: Bitmap, language: OcrLanguage = OcrLanguage.AUTO): DocumentAnalysisResult = withContext(Dispatchers.IO) {
         val apiKey = BuildConfig.GEMINI_API_KEY
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
             return@withContext performOfflineOcr(bitmap)
+        }
+        
+        val languagePrompt = when (language) {
+            OcrLanguage.AUTO -> "Detect the language automatically (could be Arabic, English, or mixed)."
+            OcrLanguage.ARABIC -> "The document is primarily in Arabic."
+            OcrLanguage.ENGLISH -> "The document is primarily in English."
         }
 
         try {
             val base64Image = bitmapToBase64(bitmap)
             val prompt = """
-                You are an expert Document Scanner AI and OCR engine for Arabic and English documents.
+                You are an expert Document Scanner AI and OCR engine.
+                $languagePrompt
                 Analyze this document image thoroughly.
                 Return a STRICT JSON object with the following schema:
                 {
-                  "fullText": "complete verbatim transcription of all text in the document, preserving Arabic and English faithfully",
+                  "fullText": "complete verbatim transcription of all text in the document, preserving language faithfully",
                   "suggestedTitle": "Short, professional title (e.g. Invoice - Supplier - Date)",
                   "category": "RECEIPT | INVOICE | ID_CARD | CONTRACT | BOOK | NOTE | OTHER",
                   "fields": [

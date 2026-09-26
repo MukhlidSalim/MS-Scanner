@@ -3,6 +3,7 @@
     <string name="app_name">MS Scanner</string>
     <string name="tagline">Smart Document Scanner &amp; PDF Studio</string>
     <string name="nav_documents">Documents</string>
+    <string name="nav_home">Home</string>
     <string name="nav_scan">Scan</string>
     <string name="nav_folders">Folders</string>
     <string name="nav_favorites">Favorites</string>
@@ -255,4 +256,19 @@
     <string name="txt_restore_success">Restore completed successfully</string>
     <string name="txt_backup_failed">Backup failed</string>
     <string name="txt_restore_failed">Restore failed</string>
-<string name="txt_scan_doc">Scan Document</string><string name="txt_scan_id_card">Scan ID Card / Passport</string><string name="txt_new_folder_name">New Folder Name</string></resources>
+<string name="txt_scan_doc">Scan Document</string><string name="txt_scan_id_card">Scan ID Card / Passport</string><string name="txt_new_folder_name">New Folder Name</string>    <string name="txt_export_docx">Export DOCX</string>
+    <string name="txt_export_txt">Export TXT</string>
+    <string name="txt_export_png">Export PNG</string>
+    <string name="desc_export_docx">Export document as Word file</string>
+    <string name="desc_export_txt">Export OCR text as plain text</string>
+    <string name="desc_export_png">Share high-quality PNG</string>
+    <string name="txt_select">Select</string>
+    <string name="txt_settings_menu">Settings</string>
+    <string name="txt_about_app">About</string>
+    <string name="txt_feedback_menu">Feedback</string>
+    <string name="txt_grid_view">Grid View</string>
+    <string name="txt_import_pdf">Import PDF</string>
+    <string name="txt_insert_blank_page">Insert Blank Page</string>
+    <string name="txt_import">Import</string>
+    <string name="txt_scan">Scan</string>
+</resources>

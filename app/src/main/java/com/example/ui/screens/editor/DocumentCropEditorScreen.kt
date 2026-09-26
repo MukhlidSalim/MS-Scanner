@@ -118,6 +118,7 @@ fun DocumentCropEditorScreen(
     var activeHandleIndex by remember { mutableStateOf<Int?>(null) }
     var activeTouchOffset by remember { mutableStateOf<Offset?>(null) }
     var isProcessing by remember { mutableStateOf(false) }
+    var showBoundary by remember { mutableStateOf(true) }
 
     LaunchedEffect(imagePath) {
         withContext(Dispatchers.IO) {
@@ -295,6 +296,14 @@ fun DocumentCropEditorScreen(
                                     rotationDegrees = (rotationDegrees + 90) % 360
                                 }) {
                                     Icon(Icons.AutoMirrored.Filled.RotateRight, contentDescription = "Rotate 90°")
+                                }
+                                
+                                // Boundary Toggle
+                                IconButton(onClick = { showBoundary = !showBoundary }) {
+                                    Icon(
+                                        imageVector = if (showBoundary) Icons.Default.Visibility else Icons.Default.VisibilityOff,
+                                        contentDescription = "Toggle Boundary"
+                                    )
                                 }
                             }
                         }
@@ -496,10 +505,6 @@ fun DocumentCropEditorScreen(
                             close()
                         }
 
-                        // Shaded area
-                        drawPath(p, color = Emerald400.copy(alpha = 0.15f))
-                        drawPath(p, color = Emerald400, style = Stroke(width = 3.dp.toPx()))
-
                         // Draw Corner Handles with touch circles
                         val pts = listOf(
                             Offset(offsetX + quad.topLeft.x * renderW, offsetY + quad.topLeft.y * renderH),
@@ -508,18 +513,24 @@ fun DocumentCropEditorScreen(
                             Offset(offsetX + quad.bottomLeft.x * renderW, offsetY + quad.bottomLeft.y * renderH)
                         )
 
-                        for ((i, pt) in pts.withIndex()) {
-                            val isActive = activeHandleIndex == i
-                            drawCircle(
-                                color = Color.White,
-                                radius = if (isActive) 15.dp.toPx() else 11.dp.toPx(),
-                                center = pt
-                            )
-                            drawCircle(
-                                color = Emerald400,
-                                radius = if (isActive) 11.dp.toPx() else 8.dp.toPx(),
-                                center = pt
-                            )
+                        if (showBoundary) {
+                            // Shaded area
+                            drawPath(p, color = Emerald400.copy(alpha = 0.15f))
+                            drawPath(p, color = Emerald400, style = Stroke(width = 3.dp.toPx()))
+
+                            for ((i, pt) in pts.withIndex()) {
+                                val isActive = activeHandleIndex == i
+                                drawCircle(
+                                    color = Color.White,
+                                    radius = if (isActive) 15.dp.toPx() else 11.dp.toPx(),
+                                    center = pt
+                                )
+                                drawCircle(
+                                    color = Emerald400,
+                                    radius = if (isActive) 11.dp.toPx() else 8.dp.toPx(),
+                                    center = pt
+                                )
+                            }
                         }
 
                         // Draw Midpoint Handles (for edge dragging guidance)
