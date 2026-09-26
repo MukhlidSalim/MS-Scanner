@@ -3,17 +3,22 @@ package com.example.ui.screens.settings
 import androidx.compose.ui.res.stringResource
 import com.example.R
 import android.widget.Toast
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -28,6 +33,7 @@ import java.util.Locale
 import kotlinx.coroutines.flow.collectLatest
 
 import com.example.ui.theme.CyanScan
+import com.example.ui.theme.Emerald400
 import com.example.ui.theme.EmeraldLight
 import com.example.ui.viewmodel.DocumentViewModel
 import com.example.data.model.CompressionPreset
@@ -58,7 +64,7 @@ fun SettingsScreen(
                 title = { Text(stringResource(R.string.txt_settings___privacy), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.desc_back))
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.desc_back))
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -71,33 +77,43 @@ fun SettingsScreen(
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
             // Privacy Card (Zero Tracking / Local Only)
             Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f))
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
             ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Shield,
-                        contentDescription = null,
-                        tint = EmeraldLight,
-                        modifier = Modifier.size(36.dp)
-                    )
+                    Box(
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Shield,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(26.dp)
+                        )
+                    }
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
                             text = stringResource(R.string.txt_offline_architecture),
                             fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer
                         )
                         Text(
                             text = stringResource(R.string.txt_offline_desc),
-                            fontSize = 12.sp,
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
@@ -113,8 +129,9 @@ fun SettingsScreen(
             val currentLocale = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales().toLanguageTags()
             var isArabic by remember { mutableStateOf(currentLocale.contains("ar")) }
             Card(
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Row(
                     modifier = Modifier
@@ -145,8 +162,9 @@ fun SettingsScreen(
                 fontWeight = FontWeight.Bold
             )
             Card(
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Text(text = stringResource(R.string.txt_app_theme), fontWeight = FontWeight.SemiBold)
@@ -156,6 +174,7 @@ fun SettingsScreen(
                             FilterChip(
                                 selected = uiState.themeMode == themeId,
                                 onClick = { viewModel.setThemeMode(themeId) },
+                                shape = RoundedCornerShape(50),
                                 label = { Text(themeLabel) }
                             )
                         }
@@ -170,8 +189,9 @@ fun SettingsScreen(
                 fontWeight = FontWeight.Bold
             )
             Card(
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -187,6 +207,7 @@ fun SettingsScreen(
                                 FilterChip(
                                     selected = uiState.defaultPdfPageSize == size,
                                     onClick = { viewModel.setDefaultPdfPageSize(size) },
+                                    shape = RoundedCornerShape(50),
                                     label = { Text(sizeName) }
                                 )
                             }
@@ -205,6 +226,7 @@ fun SettingsScreen(
                                 FilterChip(
                                     selected = uiState.defaultPdfCompression == comp,
                                     onClick = { viewModel.setDefaultPdfCompression(comp) },
+                                    shape = RoundedCornerShape(50),
                                     label = { Text(compName) }
                                 )
                             }
@@ -213,9 +235,6 @@ fun SettingsScreen(
                 }
             }
 
-
-
-
             // Backup & Restore
             Text(
                 text = stringResource(R.string.txt_backup_restore),
@@ -223,10 +242,11 @@ fun SettingsScreen(
                 fontWeight = FontWeight.Bold
             )
             Card(
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
                         uri?.let { viewModel.createBackup(it) }
                     }
@@ -249,19 +269,25 @@ fun SettingsScreen(
                             Text(text = stringResource(R.string.txt_create_backup), fontWeight = FontWeight.SemiBold)
                             Text(text = stringResource(R.string.txt_create_backup_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Button(onClick = { 
-                            val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
-                            backupLauncher.launch("MS_Scanner_Backup_$dateStr.zip")
-                        }) {
+                        Button(
+                            onClick = { 
+                                val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
+                                backupLauncher.launch("MS_Scanner_Backup_$dateStr.zip")
+                            },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
                             Text("Backup")
                         }
                     }
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(text = stringResource(R.string.txt_restore_backup), fontWeight = FontWeight.SemiBold)
                             Text(text = stringResource(R.string.txt_restore_backup_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        Button(onClick = { restoreLauncher.launch(arrayOf("application/zip")) },
+                        Button(
+                            onClick = { restoreLauncher.launch(arrayOf("application/zip")) },
+                            shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer)
                         ) {
                             Text("Restore")
@@ -278,8 +304,9 @@ fun SettingsScreen(
             )
 
             Card(
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     Row(
@@ -298,6 +325,7 @@ fun SettingsScreen(
 
                         Button(
                             onClick = { showPinDialog = true },
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.testTag("set_pin_btn")
                         ) {
                             Text(if (uiState.hasPinConfigured) stringResource(R.string.txt_change_pin) else stringResource(R.string.txt_set_pin))
@@ -310,6 +338,7 @@ fun SettingsScreen(
                                 viewModel.setPin("")
                                 Toast.makeText(context, context.getString(R.string.txt_pin_disabled), Toast.LENGTH_SHORT).show()
                             },
+                            shape = RoundedCornerShape(12.dp),
                             colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
                         ) {
                             Text(stringResource(R.string.txt_disable_pin_lock))
@@ -325,8 +354,9 @@ fun SettingsScreen(
                 fontWeight = FontWeight.Bold
             )
             Card(
-                shape = RoundedCornerShape(12.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Row(
                     modifier = Modifier
@@ -352,8 +382,9 @@ fun SettingsScreen(
             )
 
             Card(
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(
                     modifier = Modifier
@@ -395,7 +426,7 @@ fun SettingsScreen(
                         Text(String.format("%.1f MB", cacheMb), fontWeight = FontWeight.Bold)
                     }
 
-                    HorizontalDivider()
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -406,11 +437,12 @@ fun SettingsScreen(
                                 viewModel.clearCache()
                                 Toast.makeText(context, context.getString(R.string.txt_cache_cleared), Toast.LENGTH_SHORT).show()
                             },
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f).testTag("clear_cache_btn")
                         ) {
                             Icon(Icons.Default.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(stringResource(R.string.txt_clear_cache))
+                            Text(stringResource(R.string.txt_clear_cache), fontSize = 12.sp)
                         }
 
                         OutlinedButton(
@@ -418,11 +450,12 @@ fun SettingsScreen(
                                 viewModel.emptyTrash()
                                 Toast.makeText(context, context.getString(R.string.txt_trash_emptied), Toast.LENGTH_SHORT).show()
                             },
+                            shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.weight(1f).testTag("empty_trash_btn")
                         ) {
                             Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(stringResource(R.string.txt_empty_trash))
+                            Text(stringResource(R.string.txt_empty_trash), fontSize = 12.sp)
                         }
                     }
                 }
@@ -436,14 +469,15 @@ fun SettingsScreen(
             )
 
             Card(
-                shape = RoundedCornerShape(14.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
             ) {
                 Column(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(stringResource(R.string.txt_docscan_pro_v1_0), fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.app_name) + " v1.0", fontWeight = FontWeight.Bold)
                     Text(
                         stringResource(R.string.txt_professional_document_scan),
                         fontSize = 12.sp,
@@ -457,13 +491,19 @@ fun SettingsScreen(
     if (showPinDialog) {
         AlertDialog(
             onDismissRequest = { showPinDialog = false },
-            title = { Text(stringResource(R.string.txt_configure_4_digit_pin)) },
+            shape = RoundedCornerShape(22.dp),
+            title = { Text(stringResource(R.string.txt_configure_4_digit_pin), fontWeight = FontWeight.Bold) },
             text = {
                 OutlinedTextField(
                     value = pinInput,
                     onValueChange = { if (it.length <= 4 && it.all { c -> c.isDigit() }) pinInput = it },
                     label = { Text(stringResource(R.string.txt_enter_4_digits)) },
                     singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                    ),
                     modifier = Modifier.fillMaxWidth().testTag("pin_setup_input")
                 )
             },
@@ -477,13 +517,14 @@ fun SettingsScreen(
                         } else {
                             Toast.makeText(context, context.getString(R.string.txt_pin_4_digits), Toast.LENGTH_SHORT).show()
                         }
-                    }
+                    },
+                    shape = RoundedCornerShape(12.dp)
                 ) {
-                    Text(stringResource(R.string.txt_save_pin))
+                    Text(stringResource(R.string.txt_save_pin), fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showPinDialog = false }) {
+                TextButton(onClick = { showPinDialog = false }, shape = RoundedCornerShape(12.dp)) {
                     Text(stringResource(R.string.txt_cancel))
                 }
             }

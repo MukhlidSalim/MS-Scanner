@@ -3,23 +3,21 @@ package com.example.ui.components
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import com.example.R
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.setValue
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -46,12 +44,20 @@ fun FolderChipsRow(
         val allFolders = listOf("ALL") + folders.filter { it != "ALL" }
         allFolders.forEach { folder ->
             var showMenu by remember { mutableStateOf(false) }
+            val isSelected = folder == selectedFolder
             
             Box {
                 FilterChip(
-                    selected = folder == selectedFolder,
+                    selected = isSelected,
                     onClick = { onFolderSelected(folder) },
-                    label = { Text(if (folder == "ALL") stringResource(R.string.txt_all_folders) else folder) },
+                    shape = RoundedCornerShape(50),
+                    label = {
+                        Text(
+                            text = if (folder == "ALL") stringResource(R.string.txt_all_folders) else folder,
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                        )
+                    },
                     leadingIcon = {
                         Icon(
                             imageVector = Icons.Outlined.Folder,
@@ -60,17 +66,42 @@ fun FolderChipsRow(
                         )
                     },
                     trailingIcon = {
-                        if (folder == selectedFolder && folder != "ALL") {
-                            IconButton(onClick = { showMenu = true }, modifier = Modifier.size(16.dp)) {
-                                Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.txt_options))
+                        if (isSelected && folder != "ALL") {
+                            IconButton(
+                                onClick = { showMenu = true },
+                                modifier = Modifier.size(18.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.MoreVert,
+                                    contentDescription = stringResource(R.string.txt_options),
+                                    modifier = Modifier.size(14.dp)
+                                )
                             }
                         }
-                    }
+                    },
+                    colors = FilterChipDefaults.filterChipColors(
+                        containerColor = MaterialTheme.colorScheme.surface,
+                        labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        iconColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                        selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                        selectedLeadingIconColor = MaterialTheme.colorScheme.primary,
+                        selectedTrailingIconColor = MaterialTheme.colorScheme.primary
+                    ),
+                    border = FilterChipDefaults.filterChipBorder(
+                        enabled = true,
+                        selected = isSelected,
+                        borderColor = MaterialTheme.colorScheme.outlineVariant,
+                        selectedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
+                        borderWidth = 1.dp
+                    )
                 )
                 
                 DropdownMenu(
                     expanded = showMenu,
-                    onDismissRequest = { showMenu = false }
+                    onDismissRequest = { showMenu = false },
+                    shape = RoundedCornerShape(16.dp),
+                    containerColor = MaterialTheme.colorScheme.surface
                 ) {
                     DropdownMenuItem(
                         text = { Text(stringResource(R.string.txt_rename)) },
@@ -93,35 +124,80 @@ fun FolderChipsRow(
             }
         }
 
-        InputChip(
-            selected = false,
+        SuggestionChip(
             onClick = onCreateFolderClick,
-            label = { Text(stringResource(R.string.txt_new_folder)) },
-            leadingIcon = { Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp)) }
+            shape = RoundedCornerShape(50),
+            label = {
+                Text(
+                    text = stringResource(R.string.txt_new_folder),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+            },
+            icon = {
+                Icon(
+                    Icons.Default.Add,
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            },
+            colors = SuggestionChipDefaults.suggestionChipColors(
+                containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.4f),
+                labelColor = MaterialTheme.colorScheme.primary
+            ),
+            border = SuggestionChipDefaults.suggestionChipBorder(
+                enabled = true,
+                borderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
+                borderWidth = 1.dp
+            )
         )
     }
     
     if (folderToRename != null) {
         AlertDialog(
             onDismissRequest = { folderToRename = null },
-            title = { Text(stringResource(R.string.txt_rename_folder)) },
+            shape = RoundedCornerShape(22.dp),
+            title = {
+                Text(
+                    text = stringResource(R.string.txt_rename_folder),
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 OutlinedTextField(
                     value = renameInput,
                     onValueChange = { renameInput = it },
-                    singleLine = true
+                    singleLine = true,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = MaterialTheme.colorScheme.primary,
+                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
+                    ),
+                    modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
-                Button(onClick = {
-                    if (renameInput.isNotBlank()) {
-                        onRenameFolder(folderToRename!!, renameInput.trim())
-                    }
-                    folderToRename = null
-                }) { Text(stringResource(R.string.txt_save)) }
+                Button(
+                    onClick = {
+                        if (renameInput.isNotBlank()) {
+                            onRenameFolder(folderToRename!!, renameInput.trim())
+                        }
+                        folderToRename = null
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(stringResource(R.string.txt_save), fontWeight = FontWeight.Bold)
+                }
             },
             dismissButton = {
-                TextButton(onClick = { folderToRename = null }) { Text(stringResource(R.string.txt_cancel)) }
+                TextButton(
+                    onClick = { folderToRename = null },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(stringResource(R.string.txt_cancel))
+                }
             }
         )
     }

@@ -7,23 +7,29 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.ui.theme.CyanScan
+import com.example.ui.theme.Emerald400
 import com.example.ui.theme.EmeraldLight
 import com.example.ui.viewmodel.DocumentViewModel
 
@@ -53,7 +59,7 @@ fun OcrScreen(
                 title = { Text(stringResource(R.string.txt_ocr___document_ai), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
-                        Icon(Icons.Default.ArrowBack, contentDescription = stringResource(R.string.desc_back))
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.desc_back))
                     }
                 },
                 actions = {
@@ -73,16 +79,32 @@ fun OcrScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            TabRow(selectedTabIndex = selectedTab) {
+            PrimaryTabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = MaterialTheme.colorScheme.surface,
+                contentColor = MaterialTheme.colorScheme.primary
+            ) {
                 Tab(
                     selected = selectedTab == 0,
                     onClick = { selectedTab = 0 },
-                    text = { Text(stringResource(R.string.txt_structured_ai_data)) }
+                    text = {
+                        Text(
+                            text = stringResource(R.string.txt_structured_ai_data),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Medium
+                        )
+                    }
                 )
                 Tab(
                     selected = selectedTab == 1,
                     onClick = { selectedTab = 1 },
-                    text = { Text(stringResource(R.string.txt_full_ocr_text)) }
+                    text = {
+                        Text(
+                            text = stringResource(R.string.txt_full_ocr_text),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = if (selectedTab == 1) FontWeight.Bold else FontWeight.Medium
+                        )
+                    }
                 )
             }
 
@@ -95,11 +117,12 @@ fun OcrScreen(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(16.dp)
                     ) {
-                        CircularProgressIndicator(color = EmeraldLight)
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         Text(
                             text = "Analyzing document with AI Engine…",
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -115,35 +138,50 @@ fun OcrScreen(
                     ) {
                         // Smart Title Banner
                         Card(
-                            shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)
+                            shape = RoundedCornerShape(18.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
                         ) {
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .padding(16.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
+                                verticalArrangement = Arrangement.spacedBy(10.dp)
                             ) {
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                                 ) {
-                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = EmeraldLight)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(28.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(
+                                            Icons.Default.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
                                     Text(
                                         text = "AI Suggested Title & Category",
                                         fontWeight = FontWeight.Bold,
-                                        fontSize = 12.sp,
+                                        style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
                                     )
                                 }
                                 Text(
                                     text = ocrResult.suggestedTitle,
-                                    style = MaterialTheme.typography.titleMedium,
+                                    style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.Bold
                                 )
                                 Text(
                                     text = "Category: ${ocrResult.detectedCategory.displayNameEn} • Confidence: ${(ocrResult.confidence * 100).toInt()}%",
-                                    fontSize = 12.sp
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
 
                                 Button(
@@ -151,9 +189,10 @@ fun OcrScreen(
                                         viewModel.renameDocument(docId, ocrResult.suggestedTitle)
                                         Toast.makeText(context, "Title applied!", Toast.LENGTH_SHORT).show()
                                     },
+                                    shape = RoundedCornerShape(12.dp),
                                     modifier = Modifier.testTag("apply_suggested_title_btn")
                                 ) {
-                                    Text(stringResource(R.string.txt_apply_title_to_document))
+                                    Text(stringResource(R.string.txt_apply_title_to_document), fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
@@ -168,8 +207,9 @@ fun OcrScreen(
                         if (ocrResult.fields.isNotEmpty()) {
                             ocrResult.fields.forEach { field ->
                                 Card(
-                                    shape = RoundedCornerShape(12.dp),
-                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                                    shape = RoundedCornerShape(14.dp),
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                                 ) {
                                     Row(
                                         modifier = Modifier
@@ -184,6 +224,7 @@ fun OcrScreen(
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
+                                            Spacer(modifier = Modifier.height(2.dp))
                                             Text(
                                                 text = field.value,
                                                 style = MaterialTheme.typography.bodyLarge,
@@ -195,7 +236,11 @@ fun OcrScreen(
                                             copyToClipboard(context, field.value)
                                             Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
                                         }) {
-                                            Icon(Icons.Default.ContentCopy, contentDescription = stringResource(R.string.desc_copy))
+                                            Icon(
+                                                Icons.Default.ContentCopy,
+                                                contentDescription = stringResource(R.string.desc_copy),
+                                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
                                         }
                                     }
                                 }
@@ -225,9 +270,9 @@ fun OcrScreen(
                                 copyToClipboard(context, ocrResult.fullText)
                                 Toast.makeText(context, "Full text copied!", Toast.LENGTH_SHORT).show()
                             }) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = null)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(stringResource(R.string.txt_copy_all))
+                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(stringResource(R.string.txt_copy_all), fontWeight = FontWeight.SemiBold)
                             }
 
                             TextButton(onClick = {
@@ -237,9 +282,9 @@ fun OcrScreen(
                                 }
                                 context.startActivity(Intent.createChooser(intent, "Share OCR Text"))
                             }) {
-                                Icon(Icons.Default.Share, contentDescription = null)
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(stringResource(R.string.txt_share))
+                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(stringResource(R.string.txt_share), fontWeight = FontWeight.SemiBold)
                             }
                         }
 
@@ -247,8 +292,9 @@ fun OcrScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            shape = RoundedCornerShape(16.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
                         ) {
                             Text(
                                 text = ocrResult.fullText,
@@ -272,9 +318,12 @@ fun OcrScreen(
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Icon(Icons.Default.ErrorOutline, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.error)
-                        Text(stringResource(R.string.txt_analysis_failed__please_tr))
-                        Button(onClick = { viewModel.runOcrOnActivePage(useDeepAi = true) }) {
-                            Text(stringResource(R.string.txt_retry_analysis))
+                        Text(stringResource(R.string.txt_analysis_failed__please_tr), style = MaterialTheme.typography.bodyMedium)
+                        Button(
+                            onClick = { viewModel.runOcrOnActivePage(useDeepAi = true) },
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(stringResource(R.string.txt_retry_analysis), fontWeight = FontWeight.Bold)
                         }
                     }
                 }

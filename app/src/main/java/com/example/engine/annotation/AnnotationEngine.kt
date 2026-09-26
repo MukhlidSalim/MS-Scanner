@@ -8,6 +8,9 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
+import kotlin.math.atan2
+import kotlin.math.cos
+import kotlin.math.sin
 
 data class StrokePoint(val x: Float, val y: Float)
 
@@ -17,6 +20,22 @@ data class DrawPath(
     val strokeWidth: Float,
     val isHighlighter: Boolean = false,
     val isEraser: Boolean = false
+)
+
+enum class ShapeType {
+    ARROW,
+    RECTANGLE,
+    CIRCLE
+}
+
+data class DrawShape(
+    val type: ShapeType,
+    val startX: Float, // normalized 0..1
+    val startY: Float,
+    val endX: Float,
+    val endY: Float,
+    val color: Int,
+    val strokeWidth: Float = 4f
 )
 
 data class RedactionRect(
@@ -33,12 +52,11 @@ data class PlacedSignature(
     val scale: Float = 0.35f // relative to page width
 )
 
-
 data class PlacedText(
     val text: String,
     val x: Float, // 0f..1f normalized
     val y: Float, // 0f..1f normalized
-    val color: Int = android.graphics.Color.BLACK,
+    val color: Int = Color.BLACK,
     val textSize: Float = 48f
 )
 
@@ -54,7 +72,7 @@ object AnnotationEngine {
     }
 
     /**
-     * Permanently burns all annotations, signatures, and redaction boxes into the image bitmap
+     * Permanently burns all annotations, signatures, shapes, and redaction boxes into the image bitmap
      */
     fun burnAnnotationsIntoBitmap(
         baseBitmap: Bitmap,
@@ -62,6 +80,7 @@ object AnnotationEngine {
         redactions: List<RedactionRect>,
         placedSignatures: List<PlacedSignature>,
         placedTexts: List<PlacedText> = emptyList(),
+        shapes: List<DrawShape> = emptyList(),
         brightness: Float = 0f,
         contrast: Float = 1f
     ): Bitmap {
@@ -70,9 +89,9 @@ object AnnotationEngine {
         val w = output.width.toFloat()
         val h = output.height.toFloat()
 
-        val cm = android.graphics.ColorMatrix()
+        val cm = ColorMatrix()
         val scale = contrast
-        val translate = (-0.5f * scale + 0.5f) * 255f + (brightness * 255f / 100f) // normalized brightness to 0-255
+        val translate = (-0.5f * scale + 0.5f) * 255f + (brightness * 255f / 100f)
         val array = FloatArray(20)
         array[0] = scale; array[4] = translate
         array[6] = scale; array[9] = translate
@@ -87,12 +106,12 @@ object AnnotationEngine {
             if (dp.points.size < 2) continue
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = dp.color
-                strokeWidth = dp.strokeWidth * (w / 400f) // scale with image width
+                strokeWidth = dp.strokeWidth * (w / 400f)
                 style = Paint.Style.STROKE
                 strokeCap = Paint.Cap.ROUND
                 strokeJoin = Paint.Join.ROUND
                 if (dp.isHighlighter) {
-                    alpha = 110 // translucent for highlighting text underneath
+                    alpha = 110
                 }
                 if (dp.isEraser) {
                     color = Color.WHITE
@@ -106,7 +125,57 @@ object AnnotationEngine {
             canvas.drawPath(path, paint)
         }
 
-        // 2. Draw placed electronic signatures (transparent PNGs)
+        // 2. Draw geometric shapes (Arrow, Rectangle, Circle)
+        for (s in shapes) {
+            val sx = s.startX * w
+            val sy = s.startY * h
+            val ex = s.endX * w
+            val ey = s.endY * h
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = s.color
+                strokeWidth = s.strokeWidth * (w / 400f)
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+            }
+
+            when (s.type) {
+                ShapeType.RECTANGLE -> {
+                    val rect = RectF(minOf(sx, ex), minOf(sy, ey), maxOf(sx, ex), maxOf(sy, ey))
+                    canvas.drawRoundRect(rect, 8f, 8f, paint)
+                }
+                ShapeType.CIRCLE -> {
+                    val cx = (sx + ex) / 2f
+                    val cy = (sy + ey) / 2f
+                    val rx = kotlin.math.abs(ex - sx) / 2f
+                    val ry = kotlin.math.abs(ey - sy) / 2f
+                    val rect = RectF(cx - rx, cy - ry, cx + rx, cy + ry)
+                    canvas.drawOval(rect, paint)
+                }
+                ShapeType.ARROW -> {
+                    canvas.drawLine(sx, sy, ex, ey, paint)
+                    // Draw arrowhead
+                    val angle = atan2((ey - sy).toDouble(), (ex - sx).toDouble())
+                    val arrowLen = 28f * (w / 400f)
+                    val arrowAngle = Math.toRadians(25.0)
+
+                    val x1 = (ex - arrowLen * cos(angle - arrowAngle)).toFloat()
+                    val y1 = (ey - arrowLen * sin(angle - arrowAngle)).toFloat()
+                    val x2 = (ex - arrowLen * cos(angle + arrowAngle)).toFloat()
+                    val y2 = (ey - arrowLen * sin(angle + arrowAngle)).toFloat()
+
+                    val headPath = Path().apply {
+                        moveTo(ex, ey)
+                        lineTo(x1, y1)
+                        moveTo(ex, ey)
+                        lineTo(x2, y2)
+                    }
+                    canvas.drawPath(headPath, paint)
+                }
+            }
+        }
+
+        // 3. Draw placed electronic signatures (transparent PNGs)
         val sigPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         for (ps in placedSignatures) {
             val targetW = (w * ps.scale).toInt()
@@ -122,7 +191,7 @@ object AnnotationEngine {
             canvas.drawBitmap(ps.signatureBitmap, null, rect, sigPaint)
         }
 
-        // 3. Draw permanent blackout redaction boxes
+        // 4. Draw permanent blackout redaction boxes
         val redactPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.BLACK
             style = Paint.Style.FILL
@@ -132,16 +201,16 @@ object AnnotationEngine {
             canvas.drawRect(rectF, redactPaint)
         }
 
-
-        // 4. Draw placed texts
+        // 5. Draw placed texts
         val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             textAlign = Paint.Align.CENTER
         }
         for (pt in placedTexts) {
             textPaint.color = pt.color
-            textPaint.textSize = pt.textSize * (w / 1080f) // scale with image width
+            textPaint.textSize = pt.textSize * (w / 1080f)
             canvas.drawText(pt.text, pt.x * w, pt.y * h, textPaint)
         }
+
         return output
     }
 }

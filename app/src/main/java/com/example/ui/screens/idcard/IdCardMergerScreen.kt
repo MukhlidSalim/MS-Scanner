@@ -1,35 +1,40 @@
 package com.example.ui.screens.idcard
 
-import androidx.compose.ui.res.stringResource
-import com.example.R
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
-import androidx.compose.foundation.Canvas
+import android.graphics.RectF
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ViewAgenda
+import androidx.compose.material.icons.filled.ViewColumn
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.example.R
 import com.example.engine.cv.ImageProcessor
+import com.example.ui.theme.Emerald400
+import com.example.ui.theme.StudioCanvasBg
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.roundToInt
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,156 +46,201 @@ fun IdCardMergerScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
-    
+
     var frontBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var backBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    
-    var frontOffset by remember { mutableStateOf(Offset(50f, 100f)) }
-    var frontScale by remember { mutableStateOf(1f) }
-    
-    var backOffset by remember { mutableStateOf(Offset(50f, 600f)) }
-    var backScale by remember { mutableStateOf(1f) }
-    
+
+    var isSideBySide by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(frontImagePath, backImagePath) {
         withContext(Dispatchers.IO) {
-            frontBitmap = BitmapFactory.decodeFile(frontImagePath)
-            backBitmap = BitmapFactory.decodeFile(backImagePath)
+            frontBitmap = ImageProcessor.loadBitmapFromFile(frontImagePath, 1600)
+            backBitmap = ImageProcessor.loadBitmapFromFile(backImagePath, 1600)
         }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.txt_merge_id_card)) },
+                title = { Text("Merge ID Card", fontWeight = FontWeight.Bold) },
                 navigationIcon = {
-                    IconButton(onClick = onCancel) { Icon(Icons.Default.Close, stringResource(R.string.txt_cancel)) }
+                    IconButton(onClick = onCancel) {
+                        Icon(Icons.Default.Close, contentDescription = "Cancel")
+                    }
                 },
                 actions = {
-                    IconButton(onClick = {
-                        if (frontBitmap != null && backBitmap != null) {
+                    Button(
+                        onClick = {
                             isSaving = true
                             coroutineScope.launch {
-                                val resultPath = withContext(Dispatchers.IO) {
-                                    // A4 size @ 300dpi is ~ 2480x3508. We'll use 1240x1754 for memory safety
-                                    val outBitmap = Bitmap.createBitmap(1240, 1754, Bitmap.Config.ARGB_8888)
-                                    val canvas = Canvas(outBitmap)
-                                    canvas.drawColor(android.graphics.Color.WHITE)
-                                    
-                                    val paint = Paint().apply { isFilterBitmap = true }
-                                    
-                                    // Draw Front
-                                    canvas.save()
-                                    canvas.translate(frontOffset.x, frontOffset.y)
-                                    canvas.scale(frontScale, frontScale)
-                                    canvas.drawBitmap(frontBitmap!!, 0f, 0f, paint)
-                                    canvas.restore()
-                                    
-                                    // Draw Back
-                                    canvas.save()
-                                    canvas.translate(backOffset.x, backOffset.y)
-                                    canvas.scale(backScale, backScale)
-                                    canvas.drawBitmap(backBitmap!!, 0f, 0f, paint)
-                                    canvas.restore()
-                                    
-                                    ImageProcessor.saveBitmapToFile(context, outBitmap, "id_merged_")
-                                }
-                                onMerged(resultPath)
+                                val mergedPath = ImageProcessor.createIdCardCollage(
+                                    context = context,
+                                    frontPath = frontImagePath,
+                                    backPath = backImagePath,
+                                    outPrefix = "id_merged_",
+                                    isSideBySide = isSideBySide
+                                )
+                                isSaving = false
+                                onMerged(mergedPath)
                             }
+                        },
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.padding(end = 8.dp)
+                    ) {
+                        if (isSaving) {
+                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(18.dp))
+                        } else {
+                            Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(stringResource(R.string.txt_save), fontWeight = FontWeight.Bold)
                         }
-                    }) {
-                        if (isSaving) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp))
-                        else Icon(Icons.Default.Check, stringResource(R.string.txt_save))
                     }
-                }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
+        },
+        bottomBar = {
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding(),
+                color = MaterialTheme.colorScheme.surface,
+                tonalElevation = 6.dp
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 24.dp, vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceAround,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    FilterChip(
+                        selected = !isSideBySide,
+                        onClick = { isSideBySide = false },
+                        leadingIcon = { Icon(Icons.Default.ViewAgenda, contentDescription = null) },
+                        label = { Text("Top & Bottom", fontWeight = FontWeight.SemiBold) }
+                    )
+
+                    FilterChip(
+                        selected = isSideBySide,
+                        onClick = { isSideBySide = true },
+                        leadingIcon = { Icon(Icons.Default.ViewColumn, contentDescription = null) },
+                        label = { Text("Side by Side", fontWeight = FontWeight.SemiBold) }
+                    )
+                }
+            }
         }
-    ) { padding ->
-        Column(
+    ) { innerPadding ->
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .background(Color.LightGray)
+                .padding(innerPadding)
+                .background(StudioCanvasBg)
+                .padding(16.dp),
+            contentAlignment = Alignment.Center
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(
-                    selected = false,
-                    onClick = {
-                        frontOffset = Offset(50f, 100f)
-                        frontScale = 1f
-                        backOffset = Offset(50f, 600f)
-                        backScale = 1f
-                    },
-                    label = { Text(stringResource(R.string.txt_top_bottom)) }
-                )
-                FilterChip(
-                    selected = false,
-                    onClick = {
-                        frontOffset = Offset(50f, 300f)
-                        frontScale = 0.8f
-                        backOffset = Offset(650f, 300f)
-                        backScale = 0.8f
-                    },
-                    label = { Text(stringResource(R.string.txt_side_by_side)) }
-                )
-            }
-            
-            Spacer(modifier = Modifier.weight(1f))
-            
-            // A4 Canvas representation
-            Box(
-                modifier = Modifier.align(Alignment.CenterHorizontally)
-            ) {
+            val front = frontBitmap
+            val back = backBitmap
+
+            if (front != null && back != null) {
+                // A4 Sheet Preview Canvas
                 Box(
-                modifier = Modifier
-                    .size(width = 300.dp, height = 424.dp) // A4 ratio
-                    .background(Color.White)
-            ) {
-                if (frontBitmap != null) {
-                    androidx.compose.foundation.Image(
-                        bitmap = frontBitmap!!.asImageBitmap(),
-                        contentDescription = stringResource(R.string.desc_front),
-                        modifier = Modifier
-                            .offset { IntOffset(frontOffset.x.roundToInt(), frontOffset.y.roundToInt()) }
-                            .graphicsLayer(scaleX = frontScale, scaleY = frontScale)
-                            .pointerInput(Unit) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    frontScale *= zoom
-                                    frontOffset += pan
-                                }
+                    modifier = Modifier
+                        .fillMaxWidth(0.92f)
+                        .aspectRatio(1f / 1.414f) // A4 ratio
+                        .shadow(16.dp, RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.White)
+                        .border(1.dp, Color.LightGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .padding(16.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (!isSideBySide) {
+                        // Top & Bottom Layout
+                        Column(
+                            modifier = Modifier.fillMaxSize(),
+                            verticalArrangement = Arrangement.SpaceEvenly,
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            // Front Card
+                            Card(
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, Color.LightGray),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth(0.85f)
+                                    .aspectRatio(1.58f)
+                            ) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = front.asImageBitmap(),
+                                    contentDescription = "ID Front",
+                                    modifier = Modifier.fillMaxSize()
+                                )
                             }
-                    )
-                }
-                
-                if (backBitmap != null) {
-                    androidx.compose.foundation.Image(
-                        bitmap = backBitmap!!.asImageBitmap(),
-                        contentDescription = stringResource(R.string.desc_back),
-                        modifier = Modifier
-                            .offset { IntOffset(backOffset.x.roundToInt(), backOffset.y.roundToInt()) }
-                            .graphicsLayer(scaleX = backScale, scaleY = backScale)
-                            .pointerInput(Unit) {
-                                detectTransformGestures { _, pan, zoom, _ ->
-                                    backScale *= zoom
-                                    backOffset += pan
-                                }
+
+                            // Back Card
+                            Card(
+                                shape = RoundedCornerShape(8.dp),
+                                border = BorderStroke(1.dp, Color.LightGray),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth(0.85f)
+                                    .aspectRatio(1.58f)
+                            ) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = back.asImageBitmap(),
+                                    contentDescription = "ID Back",
+                                    modifier = Modifier.fillMaxSize()
+                                )
                             }
-                    )
+                        }
+                    } else {
+                        // Side by Side Layout
+                        Row(
+                            modifier = Modifier.fillMaxSize(),
+                            horizontalArrangement = Arrangement.SpaceEvenly,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            // Front Card
+                            Card(
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(1.dp, Color.LightGray),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 6.dp)
+                                    .aspectRatio(1.58f)
+                            ) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = front.asImageBitmap(),
+                                    contentDescription = "ID Front",
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+
+                            // Back Card
+                            Card(
+                                shape = RoundedCornerShape(6.dp),
+                                border = BorderStroke(1.dp, Color.LightGray),
+                                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(start = 6.dp)
+                                    .aspectRatio(1.58f)
+                            ) {
+                                androidx.compose.foundation.Image(
+                                    bitmap = back.asImageBitmap(),
+                                    contentDescription = "ID Back",
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
+                        }
+                    }
                 }
+            } else {
+                CircularProgressIndicator(color = Emerald400)
             }
-            }
-            
-            Spacer(modifier = Modifier.weight(1f))
-            
-            Text(
-                stringResource(R.string.txt_pinch_to_zoom__drag_to_mov),
-                modifier = Modifier.align(Alignment.CenterHorizontally).padding(16.dp),
-                color = Color.DarkGray
-            )
         }
     }
 }

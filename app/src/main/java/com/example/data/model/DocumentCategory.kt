@@ -11,13 +11,17 @@ enum class DocumentCategory(val displayNameEn: String, val displayNameAr: String
     OTHER("Document", "مستند")
 }
 
-enum class FilterType {
-    ORIGINAL,
-    MAGIC,
-    DOCUMENT,
-    BLACK_WHITE,
-    GRAYSCALE,
-    VIBRANT
+enum class FilterType(val displayNameEn: String, val displayNameAr: String) {
+    ORIGINAL("Original", "الأصلي"),
+    AUTO("Auto", "تلقائي"),
+    MAGIC("Magic", "سحري"),
+    COLOR("Color", "ملون"),
+    ENHANCED("Enhanced", "محسّن"),
+    DOCUMENT("Document", "مستند"),
+    TEXT("Text", "نص"),
+    BLACK_WHITE("B&W", "أبيض وأسود"),
+    GRAYSCALE("Grayscale", "تدرج رمادي"),
+    VIBRANT("Vibrant", "حيوي")
 }
 
 enum class PageSizePreset {

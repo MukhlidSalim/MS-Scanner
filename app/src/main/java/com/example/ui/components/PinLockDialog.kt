@@ -19,7 +19,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.theme.EmeraldLight
 
 @Composable
 fun PinLockScreen(
@@ -68,25 +67,28 @@ fun PinLockScreen(
         ) {
             Box(
                 modifier = Modifier
-                    .size(64.dp)
-                    .background(MaterialTheme.colorScheme.primaryContainer, CircleShape),
+                    .size(76.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f))
+                    .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = Icons.Default.Lock,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.size(32.dp)
+                    modifier = Modifier.size(36.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(24.dp))
             Text(
                 text = title,
-                style = MaterialTheme.typography.headlineSmall,
-                fontWeight = FontWeight.Bold
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
             )
-            Spacer(modifier = Modifier.height(6.dp))
+            Spacer(modifier = Modifier.height(8.dp))
             Text(
                 text = if (isError) "Incorrect PIN, please try again" else subtitle,
                 style = MaterialTheme.typography.bodyMedium,
@@ -95,24 +97,26 @@ fun PinLockScreen(
 
             Spacer(modifier = Modifier.height(36.dp))
 
-            // 4 Dots
-            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            // 4 Pin indicator Dots
+            Row(horizontalArrangement = Arrangement.spacedBy(22.dp)) {
                 for (i in 0 until 4) {
                     val filled = i < enteredDigits.length
                     Box(
                         modifier = Modifier
-                            .size(18.dp)
+                            .size(16.dp)
                             .clip(CircleShape)
                             .background(
                                 if (filled) {
-                                    if (isError) MaterialTheme.colorScheme.error else EmeraldLight
+                                    if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                                 } else {
                                     Color.Transparent
                                 }
                             )
                             .border(
                                 2.dp,
-                                if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.outline,
+                                if (isError) MaterialTheme.colorScheme.error
+                                else if (filled) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.outlineVariant,
                                 CircleShape
                             )
                     )
@@ -121,7 +125,7 @@ fun PinLockScreen(
 
             Spacer(modifier = Modifier.height(48.dp))
 
-            // Keypad (1..9, Backspace, 0)
+            // Keypad
             val keypad = listOf(
                 listOf("1", "2", "3"),
                 listOf("4", "5", "6"),
@@ -132,36 +136,49 @@ fun PinLockScreen(
             for (row in keypad) {
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(28.dp),
-                    modifier = Modifier.padding(vertical = 10.dp)
+                    modifier = Modifier.padding(vertical = 8.dp)
                 ) {
                     for (btn in row) {
                         if (btn.isBlank()) {
-                            Spacer(modifier = Modifier.size(68.dp))
+                            Spacer(modifier = Modifier.size(72.dp))
                         } else if (btn == "DEL") {
                             IconButton(
                                 onClick = { removeDigit() },
                                 modifier = Modifier
-                                    .size(68.dp)
+                                    .size(72.dp)
                                     .clip(CircleShape)
                                     .testTag("pin_del_btn")
                             ) {
-                                Icon(Icons.AutoMirrored.Filled.Backspace, contentDescription = "Delete")
+                                Icon(
+                                    Icons.AutoMirrored.Filled.Backspace,
+                                    contentDescription = "Delete",
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(28.dp)
+                                )
                             }
                         } else {
                             Surface(
                                 modifier = Modifier
-                                    .size(68.dp)
+                                    .size(72.dp)
                                     .clip(CircleShape)
                                     .clickable { addDigit(btn) }
                                     .testTag("pin_btn_$btn"),
                                 shape = CircleShape,
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f)
+                                color = MaterialTheme.colorScheme.surface,
+                                border = ButtonDefaults.outlinedButtonBorder.copy(
+                                    width = 1.dp,
+                                    brush = androidx.compose.ui.graphics.SolidColor(
+                                        MaterialTheme.colorScheme.outlineVariant
+                                    )
+                                ),
+                                shadowElevation = 1.dp
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Text(
                                         text = btn,
-                                        fontSize = 24.sp,
-                                        fontWeight = FontWeight.SemiBold
+                                        style = MaterialTheme.typography.headlineSmall,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface
                                     )
                                 }
                             }

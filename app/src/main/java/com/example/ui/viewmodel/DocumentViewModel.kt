@@ -417,6 +417,41 @@ class DocumentViewModel(
         }
     }
 
+    fun replacePage(pageId: Long, newRawPath: String, newProcessedPath: String) {
+        viewModelScope.launch {
+            val page = _uiState.value.activePages.find { it.id == pageId } ?: return@launch
+            val updatedPage = page.copy(
+                rawImagePath = newRawPath,
+                processedImagePath = newProcessedPath,
+                cropQuadJson = "",
+                rotationDegrees = 0
+            )
+            repository.updatePage(updatedPage)
+            qualityCache.remove(pageId)
+            loadDocument(page.documentId)
+        }
+    }
+
+    fun printActivePage(context: Context) {
+        val pages = _uiState.value.activePages
+        val idx = _uiState.value.selectedPageIndex
+        if (idx !in pages.indices) return
+        val page = pages[idx]
+        viewModelScope.launch {
+            val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath) ?: return@launch
+            withContext(Dispatchers.Main) {
+                try {
+                    val printHelper = androidx.print.PrintHelper(context).apply {
+                        scaleMode = androidx.print.PrintHelper.SCALE_MODE_FIT
+                    }
+                    printHelper.printBitmap("Document_Page_${idx + 1}", bmp)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
     fun deleteActivePage() {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
@@ -657,6 +692,7 @@ class DocumentViewModel(
         redactions: List<RedactionRect>,
         signatures: List<PlacedSignature>,
         placedTexts: List<com.example.engine.annotation.PlacedText> = emptyList(),
+        shapes: List<com.example.engine.annotation.DrawShape> = emptyList(),
         brightness: Float = 0f,
         contrast: Float = 1f
     ) {
@@ -667,7 +703,7 @@ class DocumentViewModel(
 
         viewModelScope.launch {
             val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath) ?: return@launch
-            val burned = AnnotationEngine.burnAnnotationsIntoBitmap(bmp, paths, redactions, signatures, placedTexts, brightness, contrast)
+            val burned = AnnotationEngine.burnAnnotationsIntoBitmap(bmp, paths, redactions, signatures, placedTexts, shapes, brightness, contrast)
             val newPath = ImageProcessor.saveBitmapToFile(context, burned, "ann_")
 
             // Free memory
