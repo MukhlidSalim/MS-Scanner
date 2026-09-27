@@ -48,7 +48,59 @@ enum class CardArrangement {
 
 object ImageProcessor {
 
-    suspend fun mergeToPdf(context: Context, images: List<Bitmap>): File = withContext(Dispatchers.IO) {
+    suspend fun mergeToPdf(context: Context, imagePaths: List<String>): File = withContext(Dispatchers.IO) {
+        val pdfDocument = android.graphics.pdf.PdfDocument()
+        val outputFile = File(context.cacheDir, "shared_document_${System.currentTimeMillis()}.pdf")
+        
+        try {
+            for ((index, path) in imagePaths.withIndex()) {
+                val bitmap = loadBitmapFromFile(path) ?: continue
+                
+                // A4 size in points (1/72 inch): 595 x 842
+                // We'll use the bitmap's aspect ratio to fit it within A4 size
+                val pageWidth = 595
+                val pageHeight = 842
+                
+                val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, index + 1).create()
+                val page = pdfDocument.startPage(pageInfo)
+                
+                val canvas = page.canvas
+                val paint = android.graphics.Paint().apply {
+                    isAntiAlias = true
+                    isFilterBitmap = true
+                }
+                
+                // Calculate scaling to maintain aspect ratio
+                val scale = minOf(
+                    pageWidth.toFloat() / bitmap.width,
+                    pageHeight.toFloat() / bitmap.height
+                )
+                
+                val scaledWidth = bitmap.width * scale
+                val scaledHeight = bitmap.height * scale
+                
+                // Center the image on the page
+                val left = (pageWidth - scaledWidth) / 2f
+                val top = (pageHeight - scaledHeight) / 2f
+                
+                val destRect = android.graphics.RectF(left, top, left + scaledWidth, top + scaledHeight)
+                canvas.drawBitmap(bitmap, null, destRect, paint)
+                
+                pdfDocument.finishPage(page)
+                bitmap.recycle() // CRITICAL: Free memory for each page immediately
+            }
+            
+            java.io.FileOutputStream(outputFile).use { out ->
+                pdfDocument.writeTo(out)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            pdfDocument.close()
+        }
+        
+        return@withContext outputFile
+    }
         val pdfDocument = android.graphics.pdf.PdfDocument()
         val outputFile = File(context.cacheDir, "shared_document_${System.currentTimeMillis()}.pdf")
         
