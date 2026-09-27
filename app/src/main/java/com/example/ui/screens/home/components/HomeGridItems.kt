@@ -73,9 +73,9 @@ fun DocumentGridItem(
                         .weight(1f)
                         .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                 ) {
-                    if (doc.thumbnailPath.isNotEmpty() && File(doc.thumbnailPath).exists()) {
+                    if (!doc.thumbnailPath.isNullOrEmpty() && File(doc.thumbnailPath!!).exists()) {
                         AsyncImage(
-                            model = File(doc.thumbnailPath),
+                            model = File(doc.thumbnailPath!!),
                             contentDescription = doc.title,
                             contentScale = ContentScale.Crop,
                             modifier = Modifier.fillMaxSize()

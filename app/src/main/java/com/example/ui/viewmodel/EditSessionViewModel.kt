@@ -87,7 +87,10 @@ class EditSessionViewModel(
                 if (idx == 0) {
                     val doc = repository.getDocumentById(page.documentId)
                     if (doc != null) {
-                        repository.updateDocument(doc.copy(thumbnailPath = newPath))
+                        // Delete old thumbnail if needed, though typically done in repo, here we just overwrite/create a new one
+                        doc.thumbnailPath?.let { try { java.io.File(it).delete() } catch(e: Exception) {} }
+                        val thumb = ImageProcessor.createThumbnail(context, newPath) ?: newPath
+                        repository.updateDocument(doc.copy(thumbnailPath = thumb))
                     }
                 }
             }
@@ -104,6 +107,18 @@ class EditSessionViewModel(
                 rotationDegrees = 0
             )
             repository.updatePage(updatedPage)
+            
+            // Update thumbnail if it's the first page
+            val idx = _uiState.value.activePages.indexOfFirst { it.id == pageId }
+            if (idx == 0) {
+                val doc = repository.getDocumentById(page.documentId)
+                if (doc != null) {
+                    doc.thumbnailPath?.let { try { java.io.File(it).delete() } catch(e: Exception) {} }
+                    val thumb = ImageProcessor.createThumbnail(context, newProcessedPath) ?: newProcessedPath
+                    repository.updateDocument(doc.copy(thumbnailPath = thumb))
+                }
+            }
+            
             qualityCache.remove(pageId)
             loadDocument(page.documentId)
         }

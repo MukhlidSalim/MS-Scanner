@@ -100,9 +100,9 @@ fun DocumentCard(
                         RoundedCornerShape(12.dp)
                     )
             ) {
-                if (document.thumbnailPath.isNotBlank() && File(document.thumbnailPath).exists()) {
+                if (!document.thumbnailPath.isNullOrBlank() && File(document.thumbnailPath!!).exists()) {
                     AsyncImage(
-                        model = File(document.thumbnailPath),
+                        model = File(document.thumbnailPath!!),
                         contentDescription = stringResource(R.string.txt_document_thumbnail),
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize()
