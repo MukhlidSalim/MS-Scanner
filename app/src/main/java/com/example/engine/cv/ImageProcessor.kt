@@ -122,137 +122,108 @@ object ImageProcessor {
      * Original Document Quad Corner Detection (renamed for orchestration)
      */
     private fun primaryMlKitDetection(bitmap: Bitmap): DocumentQuad {
+        return detectEdgesWithParams(bitmap, 0.25f, 0.03f)
+    }
+
+    private fun detectDocumentEdgesOpenCV(bitmap: Bitmap): DocumentQuad {
+        // Fallback with higher threshold and larger margin to ignore clutter
+        return detectEdgesWithParams(bitmap, 0.40f, 0.10f)
+    }
+
+    private fun detectEdgesWithParams(bitmap: Bitmap, thresholdFactor: Float, marginPct: Float): DocumentQuad {
         try {
-            val sampleW = 240
-            val sampleH = (sampleW * (bitmap.height.toFloat() / bitmap.width.toFloat())).toInt().coerceIn(180, 480)
+            // Scale down to a fixed reasonable size for processing speed (300-400px)
+            val maxDim = 400f
+            val scale = minOf(maxDim / bitmap.width, maxDim / bitmap.height)
+            val sampleW = (bitmap.width * scale).toInt().coerceAtLeast(1)
+            val sampleH = (bitmap.height * scale).toInt().coerceAtLeast(1)
             val sample = Bitmap.createScaledBitmap(bitmap, sampleW, sampleH, false)
             val pixels = IntArray(sampleW * sampleH)
             sample.getPixels(pixels, 0, sampleW, 0, 0, sampleW, sampleH)
             sample.recycle()
 
             val lum = FloatArray(pixels.size)
-            var totalLum = 0f
             for (i in pixels.indices) {
                 val p = pixels[i]
                 val r = (p shr 16) and 0xFF
                 val g = (p shr 8) and 0xFF
                 val b = p and 0xFF
-                val l = 0.299f * r + 0.587f * g + 0.114f * b
-                lum[i] = l
-                totalLum += l
+                lum[i] = 0.299f * r + 0.587f * g + 0.114f * b
             }
-            val avgLum = totalLum / pixels.size
 
-            // Compute Sobel-like horizontal and vertical gradient magnitudes
+            // Sobel Gradient
             val grad = FloatArray(pixels.size)
+            var maxGrad = 0f
+            var sumGrad = 0f
+            
             for (y in 1 until sampleH - 1) {
-                val rowIdx = y * sampleW
+                val row = y * sampleW
                 val prevRow = (y - 1) * sampleW
                 val nextRow = (y + 1) * sampleW
+                
                 for (x in 1 until sampleW - 1) {
-                    val gx = (lum[prevRow + x + 1] + 2f * lum[rowIdx + x + 1] + lum[nextRow + x + 1]) -
-                            (lum[prevRow + x - 1] + 2f * lum[rowIdx + x - 1] + lum[nextRow + x - 1])
+                    val idx = row + x
+                    val gx = (lum[prevRow + x + 1] + 2f * lum[row + x + 1] + lum[nextRow + x + 1]) -
+                             (lum[prevRow + x - 1] + 2f * lum[row + x - 1] + lum[nextRow + x - 1])
                     val gy = (lum[nextRow + x - 1] + 2f * lum[nextRow + x] + lum[nextRow + x + 1]) -
-                            (lum[prevRow + x - 1] + 2f * lum[prevRow + x] + lum[prevRow + x + 1])
-                    grad[rowIdx + x] = sqrt(gx * gx + gy * gy)
+                             (lum[prevRow + x - 1] + 2f * lum[prevRow + x] + lum[prevRow + x + 1])
+                    val g = kotlin.math.sqrt(gx * gx + gy * gy)
+                    grad[idx] = g
+                    sumGrad += g
+                    if (g > maxGrad) maxGrad = g
                 }
             }
-
-            // Find top boundary
-            var topY = (sampleH * 0.08f).toInt()
-            for (y in (sampleH * 0.05f).toInt() until (sampleH * 0.40f).toInt()) {
-                var rowGradSum = 0f
-                for (x in (sampleW * 0.20f).toInt() until (sampleW * 0.80f).toInt()) {
-                    rowGradSum += grad[y * sampleW + x]
-                }
-                if (rowGradSum > sampleW * 35f) {
-                    topY = y
-                    break
-                }
-            }
-
-            // Find bottom boundary
-            var bottomY = (sampleH * 0.92f).toInt()
-            for (y in (sampleH * 0.95f).toInt() downTo (sampleH * 0.60f).toInt()) {
-                var rowGradSum = 0f
-                for (x in (sampleW * 0.20f).toInt() until (sampleW * 0.80f).toInt()) {
-                    rowGradSum += grad[y * sampleW + x]
-                }
-                if (rowGradSum > sampleW * 35f) {
-                    bottomY = y
-                    break
-                }
-            }
-
-            // Find left boundary
-            var leftX = (sampleW * 0.08f).toInt()
-            for (x in (sampleW * 0.05f).toInt() until (sampleW * 0.40f).toInt()) {
-                var colGradSum = 0f
-                for (y in (sampleH * 0.20f).toInt() until (sampleH * 0.80f).toInt()) {
-                    colGradSum += grad[y * sampleW + x]
-                }
-                if (colGradSum > sampleH * 35f) {
-                    leftX = x
-                    break
-                }
-            }
-
-            // Find right boundary
-            var rightX = (sampleW * 0.92f).toInt()
-            for (x in (sampleW * 0.95f).toInt() downTo (sampleW * 0.60f).toInt()) {
-                var colGradSum = 0f
-                for (y in (sampleH * 0.20f).toInt() until (sampleH * 0.80f).toInt()) {
-                    colGradSum += grad[y * sampleW + x]
-                }
-                if (colGradSum > sampleH * 35f) {
-                    rightX = x
-                    break
-                }
-            }
-
-            // Normalize corners to 0..1 with safety margins to avoid text clipping
-            val tlX = (leftX.toFloat() / sampleW).coerceIn(0.04f, 0.22f)
-            val tlY = (topY.toFloat() / sampleH).coerceIn(0.04f, 0.22f)
-            val trX = (rightX.toFloat() / sampleW).coerceIn(0.78f, 0.96f)
-            val trY = (topY.toFloat() / sampleH).coerceIn(0.04f, 0.22f)
-            val brX = (rightX.toFloat() / sampleW).coerceIn(0.78f, 0.96f)
-            val brY = (bottomY.toFloat() / sampleH).coerceIn(0.78f, 0.96f)
-            val blX = (leftX.toFloat() / sampleW).coerceIn(0.04f, 0.22f)
-            val blY = (bottomY.toFloat() / sampleH).coerceIn(0.78f, 0.96f)
-
-            return DocumentQuad(
-                topLeft = PointF(tlX, tlY),
-                topRight = PointF(trX, trY),
-                bottomRight = PointF(brX, brY),
-                bottomLeft = PointF(blX, blY)
-            )
-        } catch (e: Exception) {
-            return DocumentQuad.defaultQuad()
-        }
-    }
-
-    private fun detectDocumentEdgesOpenCV(bitmap: Bitmap): DocumentQuad {
-        try {
-            // Robust Edge Detection Fallback (Kotlin Implementation of Canny-like logic)
-            val w = bitmap.width
-            val h = bitmap.height
-            val sampleW = 300
-            val sampleH = (h * sampleW / w)
-            val sample = Bitmap.createScaledBitmap(bitmap, sampleW, sampleH, false)
             
-            // Simplified Sobel / Edge detection logic
-            val quad = primaryMlKitDetection(sample) // Re-use the logic with different params or just return default for now if ML failed
+            val avgGrad = sumGrad / pixels.size
+            val threshold = avgGrad + (maxGrad - avgGrad) * thresholdFactor
             
-            return if (isQuadValid(quad)) quad else DocumentQuad.defaultQuad()
+            // Extract the 4 extreme corners using x+y and x-y optimization
+            var minSum = Float.MAX_VALUE // Top Left
+            var maxSum = Float.MIN_VALUE // Bottom Right
+            var minDiff = Float.MAX_VALUE // Bottom Left
+            var maxDiff = Float.MIN_VALUE // Top Right
+            
+            var tl = android.graphics.PointF(0.1f, 0.1f)
+            var tr = android.graphics.PointF(0.9f, 0.1f)
+            var bl = android.graphics.PointF(0.1f, 0.9f)
+            var br = android.graphics.PointF(0.9f, 0.9f)
+            
+            val marginX = sampleW * marginPct
+            val marginY = sampleH * marginPct
+            var foundEdges = false
+
+            for (y in 1 until sampleH - 1) {
+                val row = y * sampleW
+                for (x in 1 until sampleW - 1) {
+                    val g = grad[row + x]
+                    if (g > threshold) {
+                        if (x < marginX || x > sampleW - marginX || y < marginY || y > sampleH - marginY) continue
+                        
+                        foundEdges = true
+                        val sum = x.toFloat() + y.toFloat()
+                        val diff = x.toFloat() - y.toFloat()
+                        
+                        if (sum < minSum) { minSum = sum; tl = android.graphics.PointF(x.toFloat() / sampleW, y.toFloat() / sampleH) }
+                        if (sum > maxSum) { maxSum = sum; br = android.graphics.PointF(x.toFloat() / sampleW, y.toFloat() / sampleH) }
+                        if (diff > maxDiff) { maxDiff = diff; tr = android.graphics.PointF(x.toFloat() / sampleW, y.toFloat() / sampleH) }
+                        if (diff < minDiff) { minDiff = diff; bl = android.graphics.PointF(x.toFloat() / sampleW, y.toFloat() / sampleH) }
+                    }
+                }
+            }
+            
+            if (!foundEdges) return DocumentQuad.defaultQuad()
+
+            // To prevent picking up random noise far away, we can bring the points slightly inwards if they are completely weird,
+            // but isQuadValid will handle the sanity check.
+            
+            return DocumentQuad(tl, tr, br, bl)
         } catch (e: Exception) {
             return DocumentQuad.defaultQuad()
         }
     }
 
     /**
-     * Smooths quad corners over time using exponential moving average
-     */
-    fun smoothQuad(current: DocumentQuad, previous: DocumentQuad?, alpha: Float = 0.35f): DocumentQuad {
+     * fun smoothQuad(current: DocumentQuad, previous: DocumentQuad?, alpha: Float = 0.35f): DocumentQuad {
         if (previous == null) return current
         return DocumentQuad(
             topLeft = PointF(
@@ -382,27 +353,56 @@ object ImageProcessor {
     private fun applyMagicColor(src: Bitmap): Bitmap {
         val width = src.width
         val height = src.height
-        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(output)
-
-        val contrast = 1.40f
-        val brightness = 12f
-        val colorMatrix = ColorMatrix(
-            floatArrayOf(
-                contrast, 0f, 0f, 0f, brightness,
-                0f, contrast, 0f, 0f, brightness,
-                0f, 0f, contrast, 0f, brightness,
-                0f, 0f, 0f, 1f, 0f
-            )
-        )
-        val satMatrix = ColorMatrix()
-        satMatrix.setSaturation(1.25f)
-        colorMatrix.postConcat(satMatrix)
-
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-            colorFilter = ColorMatrixColorFilter(colorMatrix)
+        
+        // Adaptive Background Flattening (True Document Scanner Shadow Removal)
+        val sampleSize = 48
+        val scaleW = sampleSize
+        val scaleH = (sampleSize * (height.toFloat() / width)).toInt().coerceAtLeast(1)
+        val tiny = Bitmap.createScaledBitmap(src, scaleW, scaleH, true)
+        val bgMap = Bitmap.createScaledBitmap(tiny, width, height, true)
+        tiny.recycle()
+        
+        val srcPixels = IntArray(width * height)
+        val bgPixels = IntArray(width * height)
+        src.getPixels(srcPixels, 0, width, 0, 0, width, height)
+        bgMap.getPixels(bgPixels, 0, width, 0, 0, width, height)
+        bgMap.recycle()
+        
+        val outPixels = IntArray(width * height)
+        
+        for (i in srcPixels.indices) {
+            val p = srcPixels[i]
+            val sr = (p shr 16) and 0xFF
+            val sg = (p shr 8) and 0xFF
+            val sb = p and 0xFF
+            
+            val bp = bgPixels[i]
+            val br = (bp shr 16) and 0xFF
+            val bg = (bp shr 8) and 0xFF
+            val bb = bp and 0xFF
+            
+            // Normalize illumination by dividing by background map
+            var or = (sr * 255) / br.coerceAtLeast(1)
+            var og = (sg * 255) / bg.coerceAtLeast(1)
+            var ob = (sb * 255) / bb.coerceAtLeast(1)
+            
+            // Boost saturation slightly and increase contrast
+            val lum = 0.299f * or + 0.587f * og + 0.114f * ob
+            val sat = 1.25f
+            or = (lum + (or - lum) * sat).toInt()
+            og = (lum + (og - lum) * sat).toInt()
+            ob = (lum + (ob - lum) * sat).toInt()
+            
+            val contrast = 1.35f
+            or = (((or / 255f - 0.5f) * contrast + 0.5f) * 255).toInt()
+            og = (((og / 255f - 0.5f) * contrast + 0.5f) * 255).toInt()
+            ob = (((ob / 255f - 0.5f) * contrast + 0.5f) * 255).toInt()
+            
+            outPixels[i] = (0xFF shl 24) or (or.coerceIn(0, 255) shl 16) or (og.coerceIn(0, 255) shl 8) or ob.coerceIn(0, 255)
         }
-        canvas.drawBitmap(src, 0f, 0f, paint)
+        
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        output.setPixels(outPixels, 0, width, 0, 0, width, height)
         return output
     }
 
