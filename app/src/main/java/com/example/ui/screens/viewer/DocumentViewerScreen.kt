@@ -311,7 +311,7 @@ fun DocumentViewerScreen(
                                 if (selectedFiles.size == 1) {
                                     shareFile(context, selectedFiles.first())
                                 } else if (selectedFiles.isNotEmpty()) {
-                                    shareMultipleFiles(context, selectedFiles)
+                                    shareMultipleFiles(context, selectedFiles, coroutineScope)
                                 }
                             }) {
                                 Icon(
@@ -484,7 +484,7 @@ fun DocumentViewerScreen(
                                     onClick = {
                                         showOverflowMenu = false
                                         val allFiles = pages.map { File(it.processedImagePath) }
-                                        shareMultipleFiles(context, allFiles)
+                                        shareMultipleFiles(context, allFiles, coroutineScope)
                                     }
                                 )
                             }
@@ -532,7 +532,7 @@ fun DocumentViewerScreen(
                         if (selectedFiles.size == 1) {
                             shareFile(context, selectedFiles.first())
                         } else if (selectedFiles.isNotEmpty()) {
-                            shareMultipleFiles(context, selectedFiles)
+                            shareMultipleFiles(context, selectedFiles, coroutineScope)
                         }
                     },
                     onExportPdf = { showPdfExportDialog = true },
@@ -1397,16 +1397,21 @@ private fun shareFile(context: Context, file: File, mimeType: String = "image/jp
     } catch (e: Exception) {}
 }
 
-private fun shareMultipleFiles(context: Context, files: List<File>, mimeType: String = "image/jpeg") {
-    try {
-        val uris = files.map { FileProvider.getUriForFile(context, "${context.packageName}.provider", it) }
-        val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
-            type = mimeType
-            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+private fun shareMultipleFiles(context: Context, files: List<File>, scope: kotlinx.coroutines.CoroutineScope) {
+    scope.launch {
+        try {
+            val bitmaps = files.mapNotNull { file ->
+                com.example.engine.cv.ImageProcessor.loadBitmapFromFile(file.absolutePath)
+            }
+            if (bitmaps.isEmpty()) return@launch
+            
+            val pdfFile = com.example.engine.cv.ImageProcessor.mergeToPdf(context, bitmaps)
+            shareFile(context, pdfFile, "application/pdf")
+            
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
-        context.startActivity(Intent.createChooser(intent, "Share Pages via"))
-    } catch (e: Exception) {}
+    }
 }
 
 private fun exportToTxt(context: Context, page: PageEntity) {

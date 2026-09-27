@@ -99,6 +99,8 @@ fun EditSessionScreen(
     var showCropEditor by remember { mutableStateOf(false) }
     var applyToAll by remember { mutableStateOf(false) }
     var brightness by remember { mutableStateOf(0f) }
+    var hasUnsavedChanges by remember { mutableStateOf(false) }
+    var showDiscardDialog by remember { mutableStateOf(false) }
     var contrast by remember { mutableStateOf(1f) }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -115,6 +117,32 @@ fun EditSessionScreen(
         }
     }
 
+
+    androidx.activity.compose.BackHandler(enabled = hasUnsavedChanges) {
+        showDiscardDialog = true
+    }
+
+    if (showDiscardDialog) {
+        AlertDialog(
+            onDismissRequest = { showDiscardDialog = false },
+            title = { Text("تجاهل التعديلات؟") },
+            text = { Text("توجد تعديلات غير محفوظة، هل أنت متأكد من الخروج؟") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDiscardDialog = false
+                        if (sourceType != "EXISTING") onClearPending()
+                        else editViewModel.endEditingSession()
+                        onNavigateBack()
+                    }
+                ) { Text("تجاهل التعديلات والخروج", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardDialog = false }) { Text("متابعة التعديل") }
+            }
+        )
+    }
+
     if (showCropEditor) {
         val currentPage = pages.getOrNull(pagerState.currentPage)
         val imagePath = when (currentPage) {
@@ -129,8 +157,10 @@ fun EditSessionScreen(
                 onCropped = { newProcessedPath ->
                     if (sourceType == "EXISTING") {
                         editViewModel.updateEditingSessionPageProcessedImage(pagerState.currentPage, newProcessedPath)
+                        hasUnsavedChanges = true
                     } else {
                         onUpdatePendingPage(pagerState.currentPage, newProcessedPath)
+                        hasUnsavedChanges = true
                     }
                     showCropEditor = false
                 },
@@ -150,9 +180,13 @@ fun EditSessionScreen(
                     },
                     actions = {
                         TextButton(onClick = { 
-                            if (sourceType != "EXISTING") onClearPending()
-                            else editViewModel.endEditingSession()
-                            onNavigateBack() 
+                            if (hasUnsavedChanges) {
+                                showDiscardDialog = true
+                            } else {
+                                if (sourceType != "EXISTING") onClearPending()
+                                else editViewModel.endEditingSession()
+                                onNavigateBack() 
+                            }
                         }) { Text(stringResource(com.example.R.string.txt_cancel)) }
                         Button(
                             onClick = {

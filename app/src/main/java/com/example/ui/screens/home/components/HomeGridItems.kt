@@ -43,7 +43,8 @@ fun DocumentGridItem(
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
     onEditClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    onDeleteClick: () -> Unit = {}
 ) {
     Card(
         modifier = modifier
@@ -166,7 +167,7 @@ fun DocumentGridItem(
                             DropdownMenuItem(
                                 text = { Text("Delete") },
                                 leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                                onClick = { expanded = false } // TODO: Implement
+                                onClick = { expanded = false; onDeleteClick() }
                             )
                         }
                     }

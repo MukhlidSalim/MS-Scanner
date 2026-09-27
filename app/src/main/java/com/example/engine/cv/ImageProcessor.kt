@@ -48,6 +48,56 @@ enum class CardArrangement {
 
 object ImageProcessor {
 
+    suspend fun mergeToPdf(context: Context, images: List<Bitmap>): File = withContext(Dispatchers.IO) {
+        val pdfDocument = android.graphics.pdf.PdfDocument()
+        val outputFile = File(context.cacheDir, "shared_document_${System.currentTimeMillis()}.pdf")
+        
+        try {
+            for ((index, bitmap) in images.withIndex()) {
+                // A4 size in points (1/72 inch): 595 x 842
+                // We'll use the bitmap's aspect ratio to fit it within A4 size
+                val pageWidth = 595
+                val pageHeight = 842
+                
+                val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, index + 1).create()
+                val page = pdfDocument.startPage(pageInfo)
+                
+                val canvas = page.canvas
+                val paint = android.graphics.Paint().apply {
+                    isAntiAlias = true
+                    isFilterBitmap = true
+                }
+                
+                // Calculate scaling to maintain aspect ratio
+                val scale = minOf(
+                    pageWidth.toFloat() / bitmap.width,
+                    pageHeight.toFloat() / bitmap.height
+                )
+                
+                val scaledWidth = bitmap.width * scale
+                val scaledHeight = bitmap.height * scale
+                
+                // Center the image on the page
+                val left = (pageWidth - scaledWidth) / 2f
+                val top = (pageHeight - scaledHeight) / 2f
+                
+                val destRect = android.graphics.RectF(left, top, left + scaledWidth, top + scaledHeight)
+                canvas.drawBitmap(bitmap, null, destRect, paint)
+                
+                pdfDocument.finishPage(page)
+            }
+            
+            FileOutputStream(outputFile).use { out ->
+                pdfDocument.writeTo(out)
+            }
+        } finally {
+            pdfDocument.close()
+        }
+        
+        outputFile
+    }
+
+
     private val thumbnailCache = LruCache<String, Bitmap>(20)
 
     /**
@@ -935,11 +985,23 @@ object ImageProcessor {
         }
     }
 
-    suspend fun saveBitmapToFile(context: Context, bitmap: Bitmap, prefix: String = "scan_"): String = withContext(Dispatchers.IO) {
+    suspend fun saveBitmapToFile(
+        context: Context, 
+        bitmap: Bitmap, 
+        prefix: String = "scan_", 
+        isTextContent: Boolean = true
+    ): String = withContext(Dispatchers.IO) {
         val dir = File(context.filesDir, "scans").apply { if (!exists()) mkdirs() }
         val file = File(dir, "${prefix}${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}.jpg")
+        
+        // Auto-detect based on prefix if it's raw or photo
+        val actualIsText = isTextContent && !prefix.contains("raw", ignoreCase = true) && !prefix.contains("thumb", ignoreCase = true)
+        
+        // JPEG compression: 90 for text/documents, 75 for photos/raw images
+        val quality = if (actualIsText) 90 else 75
+        
         FileOutputStream(file).use { out ->
-            bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
         }
         file.absolutePath
     }

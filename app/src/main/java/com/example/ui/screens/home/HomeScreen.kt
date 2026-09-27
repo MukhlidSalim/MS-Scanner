@@ -314,6 +314,16 @@ fun HomeScreen(
         listViewModel.events.collect { event ->
             when (event) {
                 is com.example.ui.util.UiEvent.ShowSnackbar -> snackbarHostState.showSnackbar(event.message)
+                is com.example.ui.util.UiEvent.ShowSnackbarWithAction -> {
+                    val result = snackbarHostState.showSnackbar(
+                        message = event.message,
+                        actionLabel = event.actionLabel,
+                        duration = SnackbarDuration.Long
+                    )
+                    if (result == SnackbarResult.ActionPerformed) {
+                        event.action()
+                    }
+                }
                 is com.example.ui.util.UiEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
                 is com.example.ui.util.UiEvent.Error -> snackbarHostState.showSnackbar(event.message)
                 else -> {}
@@ -1040,7 +1050,7 @@ fun HomeScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        selectedDocIds.forEach { listViewModel.moveToTrash(it) }
+                        selectedDocIds.forEach { listViewModel.deleteDocument(it) }
                         selectionMode = false
                         selectedDocIds = emptySet()
                         showTrashDialog = false
