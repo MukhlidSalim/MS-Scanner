@@ -19,7 +19,8 @@ data class DocumentEntity(
     val suggestedTitle: String = "",
     val tagsCsv: String = "",
     val fileSizeFormatted: String = "",
-    val sizeBytes: Long = 0L
+    val sizeBytes: Long = 0L,
+    val ocrText: String = ""
 )
 
 @Entity(tableName = "pages")

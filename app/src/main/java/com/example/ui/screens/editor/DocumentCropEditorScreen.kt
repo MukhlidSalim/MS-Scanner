@@ -199,7 +199,9 @@ fun DocumentCropEditorScreen(
                     IconButton(onClick = {
                         pushHistory()
                         originalBitmap?.let { bmp ->
-                            quad = ImageProcessor.detectDocumentQuad(bmp)
+                            coroutineScope.launch {
+                                quad = ImageProcessor.detectDocumentQuad(bmp)
+                            }
                             rotationDegrees = 0
                             selectedFilter = FilterType.AUTO
                             brightness = 0f
@@ -272,7 +274,9 @@ fun DocumentCropEditorScreen(
                                 TextButton(onClick = {
                                     originalBitmap?.let { bmp ->
                                         pushHistory()
-                                        quad = ImageProcessor.detectDocumentQuad(bmp)
+                                        coroutineScope.launch {
+                                            quad = ImageProcessor.detectDocumentQuad(bmp)
+                                        }
                                     }
                                 }) {
                                     Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Emerald400)

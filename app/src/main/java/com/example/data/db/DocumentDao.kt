@@ -39,6 +39,7 @@ interface DocumentDao {
         WHERE d.isTrash = 0 AND (
             d.title LIKE '%' || :query || '%' 
             OR d.tagsCsv LIKE '%' || :query || '%' 
+            OR d.ocrText LIKE '%' || :query || '%'
             OR p.ocrText LIKE '%' || :query || '%'
         )
         ORDER BY d.updatedAt DESC

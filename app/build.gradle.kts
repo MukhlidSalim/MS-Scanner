@@ -121,6 +121,7 @@ dependencies {
   implementation(libs.moshi.kotlin)
   implementation(libs.okhttp)
   implementation(libs.play.services.mlkit.document.scanner)
+  implementation(libs.gms.module.install)
   implementation(libs.play.services.mlkit.text.recognition)
 // implementation(libs.text.recognition.arabic)
   implementation(libs.retrofit)

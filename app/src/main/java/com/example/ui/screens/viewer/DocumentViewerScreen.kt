@@ -88,6 +88,7 @@ fun DocumentViewerScreen(
     onNavigateToCrop: (Long, Long) -> Unit,
     onNavigateToOcr: (Long, Long) -> Unit,
     onNavigateToAnnotate: (Long, Long) -> Unit,
+    onNavigateToEditSession: (String, Long) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -165,30 +166,8 @@ fun DocumentViewerScreen(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
     ) { uris ->
         if (uris.isNotEmpty()) {
-            coroutineScope.launch {
-                val newPages = uris.map { uri ->
-                    async { // Scope already provided by coroutineScope.launch
-                        withContext(Dispatchers.IO) {
-                            val stream = context.contentResolver.openInputStream(uri)
-                            val bmp = BitmapFactory.decodeStream(stream)
-                            stream?.close()
-                            if (bmp != null) {
-                                val raw = ImageProcessor.saveBitmapToFile(context, bmp, "add_raw_")
-                                val proc = ImageProcessor.applyFilter(bmp, FilterType.AUTO)
-                                val procPath = ImageProcessor.saveBitmapToFile(context, proc, "add_proc_")
-                                if (bmp != proc) bmp.recycle()
-                                proc.recycle()
-                                Pair(raw, procPath)
-                            } else null
-                        }
-                    }
-                }.awaitAll().filterNotNull()
-                
-                if (newPages.isNotEmpty()) {
-                    viewModel.addPagesToCurrentDocument(newPages)
-                    Toast.makeText(context, "Added ${newPages.size} pages", Toast.LENGTH_SHORT).show()
-                }
-            }
+            viewModel.setImportedUrisPendingEdit(uris)
+            onNavigateToEditSession("IMPORT", docId)
         }
     }
 
@@ -368,6 +347,11 @@ fun DocumentViewerScreen(
                             shareFile(context, File(activePage.processedImagePath))
                         }) {
                             Icon(Icons.Default.Share, contentDescription = stringResource(R.string.desc_share_page))
+                        }
+
+                        // Edit Session Button
+                        IconButton(onClick = { onNavigateToEditSession("EXISTING", docId) }) {
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = "Edit All Pages", tint = Emerald400)
                         }
 
                         Box {

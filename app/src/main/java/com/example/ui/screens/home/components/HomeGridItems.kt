@@ -42,6 +42,7 @@ fun DocumentGridItem(
     selectionMode: Boolean,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
+    onEditClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
     Card(
@@ -144,6 +145,14 @@ fun DocumentGridItem(
                             onDismissRequest = { expanded = false },
                             shape = RoundedCornerShape(14.dp)
                         ) {
+                            DropdownMenuItem(
+                                text = { Text("Edit") },
+                                leadingIcon = { Icon(Icons.Default.AutoFixHigh, null, tint = Emerald400) },
+                                onClick = { 
+                                    expanded = false
+                                    onEditClick()
+                                }
+                            )
                             DropdownMenuItem(
                                 text = { Text("Rename") },
                                 leadingIcon = { Icon(Icons.Default.Edit, null) },

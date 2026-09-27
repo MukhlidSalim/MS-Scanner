@@ -62,8 +62,13 @@ data class DocumentUiState(
     val defaultPdfCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH,
     val selectedCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH,
     val ocrLanguage: com.example.engine.ocr.OcrLanguage = com.example.engine.ocr.OcrLanguage.AUTO,
+    val pagesPendingEdit: List<Pair<String, String>> = emptyList(),
+    val importedUrisPending: List<Uri> = emptyList(),
     val sortMode: SortMode = SortMode.NEWEST,
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    val detectedCategory: DocumentCategory = DocumentCategory.OTHER,
+    val detectedOcrText: String = "",
+    val showFavoritesOnly: Boolean = false
 )
 
 class DocumentViewModel(
@@ -86,7 +91,8 @@ class DocumentViewModel(
         val folder: String = "ALL",
         val category: DocumentCategory = DocumentCategory.ALL,
         val query: String = "",
-        val sort: SortMode = SortMode.NEWEST
+        val sort: SortMode = SortMode.NEWEST,
+        val showFavorites: Boolean = false
     )
     private val filterTrigger = MutableStateFlow(FilterState())
     private val qualityCache = mutableMapOf<Long, QualityReport>()
@@ -213,6 +219,9 @@ class DocumentViewModel(
                 if (filter.folder != "ALL") {
                     filtered = filtered.filter { it.folderName == filter.folder }
                 }
+                if (filter.showFavorites) {
+                    filtered = filtered.filter { it.isFavorite }
+                }
                 if (filter.query.isNotBlank()) {
                     filtered = filtered.filter { it.title.contains(filter.query, ignoreCase = true) }
                 }
@@ -256,21 +265,77 @@ class DocumentViewModel(
         }
     }
 
-    fun importPagesAsDocument(pages: List<Pair<String, String>>, onComplete: (Long) -> Unit) {
+    fun updatePendingPageProcessedImage(index: Int, newPath: String) {
+        val pages = _uiState.value.pagesPendingEdit.toMutableList()
+        if (index in pages.indices) {
+            val old = pages[index]
+            pages[index] = Pair(old.first, newPath)
+            _uiState.update { it.copy(pagesPendingEdit = pages) }
+        }
+    }
+
+    fun updateEditingSessionPageProcessedImage(index: Int, newPath: String) {
+        val pages = _uiState.value.editingSessionPages.toMutableList()
+        if (index in pages.indices) {
+            val old = pages[index]
+            pages[index] = old.copy(processedImagePath = newPath)
+            _uiState.update { it.copy(editingSessionPages = pages) }
+        }
+    }
+
+    fun importPagesAsDocument(pages: List<Pair<String, String>>, title: String = "", onComplete: (Long) -> Unit) {
         viewModelScope.launch {
             val folder = if (_uiState.value.selectedFolder == "ALL") "Default" else _uiState.value.selectedFolder
             val docId = repository.createDocumentWithPages(
-                title = "Imported Doc",
+                title = title,
                 folderName = folder,
+                category = _uiState.value.detectedCategory.name,
+                ocrText = _uiState.value.detectedOcrText,
                 pages = pages
             )
             refreshStorageStats()
+            // Reset detected data for next use
+            _uiState.update { it.copy(detectedCategory = DocumentCategory.OTHER, detectedOcrText = "") }
             onComplete(docId)
         }
     }
 
     fun addPagesToPendingSession(pages: List<Pair<String, String>>) {
         _uiState.update { it.copy(pendingPages = it.pendingPages + pages) }
+    }
+
+    fun setPagesPendingEdit(pages: List<Pair<String, String>>) {
+        _uiState.update { it.copy(pagesPendingEdit = pages) }
+    }
+
+    fun setImportedUrisPendingEdit(uris: List<Uri>) {
+        _uiState.update { it.copy(importedUrisPending = uris, pagesPendingEdit = emptyList()) }
+        processImportedUris(uris)
+    }
+
+    private fun processImportedUris(uris: List<Uri>) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _uiState.update { it.copy(isLoading = true) }
+            val processedPages = mutableListOf<Pair<String, String>>()
+            for (uri in uris) {
+                try {
+                    val stream = context.contentResolver.openInputStream(uri)
+                    val bmp = android.graphics.BitmapFactory.decodeStream(stream)
+                    stream?.close()
+                    if (bmp != null) {
+                        val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "import_raw_")
+                        val proc = ImageProcessor.applyFilter(bmp, FilterType.MAGIC)
+                        val procPath = ImageProcessor.saveBitmapToFile(context, proc, "import_proc_")
+                        processedPages.add(Pair(rawPath, procPath))
+                        if (bmp != proc) bmp.recycle()
+                        proc.recycle()
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+            _uiState.update { it.copy(pagesPendingEdit = processedPages, isLoading = false) }
+        }
     }
 
     fun rotateEditingSessionPage(index: Int, clockwise: Boolean) {
@@ -294,7 +359,7 @@ class DocumentViewModel(
     }
 
     fun rotatePendingPage(index: Int, clockwise: Boolean) {
-        val pages = _uiState.value.pendingPages.toMutableList()
+        val pages = _uiState.value.pagesPendingEdit.toMutableList()
         if (index !in pages.indices) return
         val pagePair = pages[index]
         viewModelScope.launch {
@@ -305,18 +370,18 @@ class DocumentViewModel(
                 rotated.recycle()
                 bmp.recycle()
                 pages[index] = Pair(pagePair.first, newPath)
-                _uiState.update { it.copy(pendingPages = pages) }
+                _uiState.update { it.copy(pagesPendingEdit = pages) }
             }
         }
     }
 
     fun clearPendingPages() {
-        _uiState.update { it.copy(pendingPages = emptyList()) }
+        _uiState.update { it.copy(pendingPages = emptyList(), pagesPendingEdit = emptyList(), importedUrisPending = emptyList()) }
     }
 
     fun commitPendingPagesToDocument(docId: Long, onComplete: () -> Unit) {
         viewModelScope.launch {
-            val pages = _uiState.value.pendingPages
+            val pages = _uiState.value.pagesPendingEdit
             if (pages.isEmpty()) return@launch
             
             // Add to repository
@@ -371,6 +436,37 @@ class DocumentViewModel(
     }
 
     
+    fun setCategory(category: DocumentCategory) {
+        _uiState.update { it.copy(detectedCategory = category) }
+    }
+
+    /**
+     * Automatically analyze the first page of a pending document to detect category and OCR text.
+     */
+    fun analyzePendingFirstPage() {
+        val pages = _uiState.value.pagesPendingEdit
+        if (pages.isEmpty()) return
+        
+        viewModelScope.launch {
+            try {
+                val firstPage = pages.first()
+                val bmp = ImageProcessor.loadBitmapFromFile(firstPage.second, 1200)
+                if (bmp != null) {
+                    val result = DocumentAiEngine.performOfflineOcr(bmp)
+                    _uiState.update { 
+                        it.copy(
+                            detectedCategory = result.detectedCategory,
+                            detectedOcrText = result.fullText
+                        )
+                    }
+                    bmp.recycle()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     fun renameFolder(oldName: String, newName: String) {
         viewModelScope.launch {
             repository.renameFolder(oldName, newName)
@@ -417,6 +513,12 @@ class DocumentViewModel(
     fun filterByCategory(cat: DocumentCategory) {
         _uiState.update { it.copy(selectedCategory = cat) }
         filterTrigger.value = filterTrigger.value.copy(category = cat)
+    }
+
+    fun toggleFavoritesFilter() {
+        val newValue = !_uiState.value.showFavoritesOnly
+        _uiState.update { it.copy(showFavoritesOnly = newValue) }
+        filterTrigger.value = filterTrigger.value.copy(showFavorites = newValue)
     }
 
     fun loadDocument(docId: Long) {
@@ -563,6 +665,7 @@ class DocumentViewModel(
                 title = newTitle,
                 folderName = _uiState.value.selectedFolder.takeIf { it != "ALL" } ?: "Default",
                 category = "OTHER",
+                ocrText = "",
                 pages = allPages.map { Pair(it.rawImagePath, it.processedImagePath) }
             )
             refreshStorageStats()
@@ -986,13 +1089,17 @@ class DocumentViewModel(
 
                 // If document doesn't have a good title yet, suggest the AI one
                 val doc = _uiState.value.activeDocument
-                if (doc != null && doc.title.startsWith("Doc_") && result.suggestedTitle.isNotBlank()) {
-                    repository.updateDocument(
-                        doc.copy(
-                            title = result.suggestedTitle,
-                            category = result.detectedCategory.name
+                if (doc != null) {
+                    val needsUpdate = doc.title.startsWith("Doc_") || doc.category == DocumentCategory.OTHER.name
+                    if (needsUpdate) {
+                        repository.updateDocument(
+                            doc.copy(
+                                title = if (doc.title.startsWith("Doc_") && result.suggestedTitle.isNotBlank()) result.suggestedTitle else doc.title,
+                                category = result.detectedCategory.name,
+                                ocrText = result.fullText
+                            )
                         )
-                    )
+                    }
                 }
             } else {
                 _uiState.update { it.copy(isOcrLoading = false) }

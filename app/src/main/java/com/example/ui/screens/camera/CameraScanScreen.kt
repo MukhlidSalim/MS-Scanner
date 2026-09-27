@@ -60,6 +60,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.core.content.FileProvider
 import com.example.R
 import com.example.data.model.FilterType
@@ -71,6 +73,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import coil.compose.AsyncImage
+import androidx.compose.ui.layout.ContentScale
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -128,6 +132,29 @@ fun CameraScanScreen(
     }
 
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
+    
+    // Lifecycle observer to trigger camera rebind on resume (prevents preview freeze)
+    var resumedCount by remember { mutableStateOf(0) }
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                resumedCount++
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    // Dedicated executor for image analysis to prevent thread leaks and multiple bindings
+    val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    DisposableEffect(analysisExecutor) {
+        onDispose {
+            analysisExecutor.shutdown()
+        }
+    }
+
     var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
@@ -160,6 +187,8 @@ fun CameraScanScreen(
     var isDocumentStable by remember { mutableStateOf(false) }
     var stabilityCount by remember { mutableStateOf(0) }
     var autoCaptureProgress by remember { mutableStateOf(0f) }
+    var countdownRemaining by remember { mutableStateOf<Int?>(null) }
+    var isCountdownCancelled by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
     var captureCooldown by remember { mutableStateOf(false) }
 
@@ -175,6 +204,9 @@ fun CameraScanScreen(
 
     // Shutter animation flash
     var showFlashEffect by remember { mutableStateOf(false) }
+
+    // Capture Review State
+    var reviewPage by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val vibrator = remember {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -385,7 +417,8 @@ fun CameraScanScreen(
     }
 
     // Reactive CameraX binding with robust fallback
-    LaunchedEffect(hasCameraPermission, cameraSelector, previewViewRef) {
+    // Explicitly rebind on resumedCount changes to ensure fresh preview state after returning to the screen
+    LaunchedEffect(hasCameraPermission, cameraSelector, previewViewRef, resumedCount) {
         val pView = previewViewRef
         if (!hasCameraPermission || pView == null) return@LaunchedEffect
 
@@ -416,7 +449,7 @@ fun CameraScanScreen(
                 var prevSamples: FloatArray? = null
                 var frameIndex = 0
 
-                imageAnalysis.setAnalyzer(Executors.newSingleThreadExecutor()) { imageProxy ->
+                imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
                     try {
                         val currentMode = scanMode
                         val rawQuad = when (currentMode) {
@@ -495,15 +528,13 @@ fun CameraScanScreen(
                         coroutineScope.launch(Dispatchers.Main) {
                             detectedQuad = smoothed
                             if (isSteady && frameIndex > 8) {
-                                stabilityCount = (stabilityCount + 1).coerceAtMost(15)
-                                if (stabilityCount >= 5) {
+                                stabilityCount = (stabilityCount + 1).coerceAtMost(25)
+                                if (stabilityCount >= 20) {
                                     isDocumentStable = true
                                 }
                             } else {
-                                stabilityCount = (stabilityCount - 1).coerceAtLeast(0)
-                                if (stabilityCount == 0) {
-                                    isDocumentStable = false
-                                }
+                                stabilityCount = 0
+                                isDocumentStable = false
                             }
                         }
                     } catch (e: Exception) {
@@ -642,7 +673,7 @@ fun CameraScanScreen(
                                 when (scanMode) {
                                     ScanCameraMode.DOCUMENT -> {
                                         isCapturing = false
-                                        onDocumentCaptured(listOf(Pair(rawPath, procPath)))
+                                        reviewPage = Pair(rawPath, procPath)
                                     }
                                     ScanCameraMode.PASSPORT -> {
                                         if (!isPassportFrontDone) {
@@ -717,23 +748,35 @@ fun CameraScanScreen(
     }
 
     // Auto Capture countdown
-    LaunchedEffect(isDocumentStable, isAutoCaptureEnabled, isCapturing, captureCooldown) {
-        if (isAutoCaptureEnabled && isDocumentStable && !isCapturing && !captureCooldown) {
+    LaunchedEffect(isDocumentStable, isAutoCaptureEnabled, isCapturing, captureCooldown, isCountdownCancelled) {
+        if (isAutoCaptureEnabled && isDocumentStable && !isCapturing && !captureCooldown && !isCountdownCancelled) {
             autoCaptureProgress = 0f
-            val steps = 10
-            for (step in 1..steps) {
-                delay(70)
-                if (!isDocumentStable || isCapturing || captureCooldown) {
+            val totalDuration = 2500L
+            val intervals = 5 // 2500 / 500 = 5 steps
+            val stepDuration = totalDuration / intervals
+
+            for (i in intervals downTo 1) {
+                // Approximate countdown in seconds or just use steps
+                countdownRemaining = i 
+                autoCaptureProgress = (intervals - i + 1).toFloat() / intervals.toFloat()
+                delay(stepDuration)
+                if (!isDocumentStable || isCapturing || captureCooldown || isCountdownCancelled) {
+                    countdownRemaining = null
                     autoCaptureProgress = 0f
                     return@LaunchedEffect
                 }
-                autoCaptureProgress = step.toFloat() / steps.toFloat()
             }
-            if (isDocumentStable && !isCapturing && !captureCooldown) {
+
+            countdownRemaining = null
+            if (isDocumentStable && !isCapturing && !captureCooldown && !isCountdownCancelled) {
                 capturePhoto()
             }
         } else {
+            countdownRemaining = null
             autoCaptureProgress = 0f
+            if (!isDocumentStable) {
+                isCountdownCancelled = false
+            }
         }
     }
 
@@ -909,6 +952,127 @@ fun CameraScanScreen(
                 exit = fadeOut(animationSpec = tween(200))
             ) {
                 Box(modifier = Modifier.fillMaxSize().background(Color.White))
+            }
+
+            // Countdown Overlay
+            countdownRemaining?.let { _ ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.35f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        // Display a visual indicator of the countdown
+                        Box(contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(
+                                progress = { autoCaptureProgress },
+                                modifier = Modifier.size(120.dp),
+                                color = Emerald400,
+                                strokeWidth = 8.dp,
+                                trackColor = Color.White.copy(alpha = 0.3f)
+                            )
+                            Text(
+                                text = if (isArabic) "جاري التصوير..." else "Capturing...",
+                                color = Color.White,
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(32.dp))
+                        
+                        Button(
+                            onClick = { isCountdownCancelled = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                            shape = RoundedCornerShape(24.dp),
+                            modifier = Modifier
+                                .height(56.dp)
+                                .padding(horizontal = 24.dp)
+                                .testTag("cancel_autocapture_button")
+                        ) {
+                            Icon(Icons.Default.Close, contentDescription = null)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = if (isArabic) "إلغاء التلقائي" else "Cancel Auto",
+                                fontSize = 18.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Capture Review Overlay (Single Page)
+            reviewPage?.let { page ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.9f))
+                        .clickable(enabled = false) {},
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = if (isArabic) "مراجعة الصورة" else "Review Capture",
+                            color = Color.White,
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        Card(
+                            modifier = Modifier.weight(1f).aspectRatio(0.707f),
+                            shape = RoundedCornerShape(12.dp),
+                            elevation = CardDefaults.cardElevation(8.dp)
+                        ) {
+                            AsyncImage(
+                                model = File(page.second),
+                                contentDescription = null,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize().background(Color.DarkGray)
+                            )
+                        }
+                        
+                        Spacer(modifier = Modifier.height(24.dp))
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = { 
+                                    try { File(page.first).delete(); File(page.second).delete() } catch(e:Exception){}
+                                    reviewPage = null 
+                                },
+                                modifier = Modifier.weight(1f),
+                                border = BorderStroke(1.dp, Color.White),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                            ) {
+                                Icon(Icons.Default.Refresh, null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(if (isArabic) "إعادة تصوير" else "Retake")
+                            }
+                            
+                            Button(
+                                onClick = { 
+                                    onDocumentCaptured(listOf(page))
+                                    reviewPage = null
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black)
+                            ) {
+                                Icon(Icons.Default.Check, null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(if (isArabic) "استخدام" else "Confirm")
+                            }
+                        }
+                    }
+                }
             }
 
             // Top Controls Bar

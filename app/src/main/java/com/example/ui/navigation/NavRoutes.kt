@@ -33,7 +33,7 @@ sealed class Screen(val route: String) {
 
     object Settings : Screen("settings")
     
-    object EditSession : Screen("edit_session/{docId}") {
-        fun createRoute(docId: Long) = "edit_session/$docId"
+    object EditSession : Screen("edit_session/{sourceType}/{docId}") {
+        fun createRoute(sourceType: String, docId: Long = 0L) = "edit_session/$sourceType/$docId"
     }
 }

@@ -59,6 +59,7 @@ class DocumentRepository(
         title: String,
         folderName: String = "Default",
         category: String = "OTHER",
+        ocrText: String = "",
         pages: List<Pair<String, String>> // (rawImagePath, processedImagePath)
     ): Long = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
@@ -66,6 +67,7 @@ class DocumentRepository(
             title = title.ifBlank { "Doc_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date(now))}" },
             folderName = folderName,
             category = category,
+            ocrText = ocrText,
             createdAt = now,
             updatedAt = now,
             pageCount = pages.size,

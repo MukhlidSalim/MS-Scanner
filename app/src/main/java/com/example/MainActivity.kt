@@ -122,14 +122,17 @@ fun DocScanApp(
             composable(Screen.Home.route) {
                 HomeScreen(
                     viewModel = docViewModel,
-                    onNavigateToScan = { modeStr ->
-                        navController.navigate(Screen.CameraScan.createRoute(mode = modeStr))
+                    onNavigateToSettings = {
+                        navController.navigate(Screen.Settings.route)
                     },
                     onNavigateToDocument = { docId ->
                         navController.navigate(Screen.DocumentViewer.createRoute(docId))
                     },
-                    onNavigateToSettings = {
-                        navController.navigate(Screen.Settings.route)
+                    onNavigateToScan = { modeStr ->
+                        navController.navigate(Screen.CameraScan.createRoute(mode = modeStr))
+                    },
+                    onNavigateToEditSession = { sourceType, docId ->
+                        navController.navigate(Screen.EditSession.createRoute(sourceType, docId))
                     }
                 )
             }
@@ -176,13 +179,13 @@ fun DocScanApp(
                                 docViewModel.replacePage(replacePageId, firstPage.first, firstPage.second)
                             }
                             navController.popBackStack()
-                        } else if (docId > 0L) {
-                            docViewModel.addPagesToCurrentDocument(pages)
-                            navController.popBackStack()
                         } else {
-                            docViewModel.importPagesAsDocument(pages) { newDocId ->
-                                navController.navigate(Screen.DocumentViewer.createRoute(newDocId)) {
+                            docViewModel.setPagesPendingEdit(pages)
+                            navController.navigate(Screen.EditSession.createRoute("CAMERA", docId)) {
+                                if (docId == 0L) {
                                     popUpTo(Screen.Home.route)
+                                } else {
+                                    popUpTo(Screen.DocumentViewer.createRoute(docId))
                                 }
                             }
                         }
@@ -225,16 +228,12 @@ fun DocScanApp(
                     backImagePath = back,
                     isPassportMode = isPassport,
                     onMerged = { mergedPath ->
-                        if (targetDocId > 0L) {
-                            docViewModel.addPagesToCurrentDocument(listOf(Pair(front, mergedPath)))
-                            navController.navigate(Screen.DocumentViewer.createRoute(targetDocId)) {
+                        docViewModel.setPagesPendingEdit(listOf(Pair(front, mergedPath)))
+                        navController.navigate(Screen.EditSession.createRoute("CAMERA", targetDocId)) {
+                            if (targetDocId > 0L) {
                                 popUpTo(Screen.DocumentViewer.route)
-                            }
-                        } else {
-                            docViewModel.importPagesAsDocument(listOf(Pair(front, mergedPath))) { newDocId ->
-                                navController.navigate(Screen.DocumentViewer.createRoute(newDocId)) {
-                                    popUpTo(Screen.Home.route)
-                                }
+                            } else {
+                                popUpTo(Screen.Home.route)
                             }
                         }
                     },
@@ -267,6 +266,9 @@ fun DocScanApp(
                     },
                     onNavigateToAnnotate = { dId, pageId ->
                         navController.navigate(Screen.Annotate.createRoute(dId, pageId))
+                    },
+                    onNavigateToEditSession = { sourceType, dId ->
+                        navController.navigate(Screen.EditSession.createRoute(sourceType, dId))
                     }
                 )
             }
@@ -348,15 +350,22 @@ fun DocScanApp(
             // Edit Session Screen
             composable(
                 route = Screen.EditSession.route,
-                arguments = listOf(navArgument("docId") { type = NavType.LongType })
+                arguments = listOf(
+                    navArgument("sourceType") { type = NavType.StringType },
+                    navArgument("docId") { type = NavType.LongType }
+                )
             ) { backStackEntry ->
+                val sourceType = backStackEntry.arguments?.getString("sourceType") ?: "CAMERA"
                 val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
                 EditSessionScreen(
                     viewModel = docViewModel,
+                    sourceType = sourceType,
                     docId = docId,
                     onNavigateBack = { navController.popBackStack() },
-                    onNavigateToFinish = {
-                        navController.popBackStack(Screen.DocumentViewer.createRoute(docId), inclusive = false)
+                    onNavigateToFinish = { newDocId ->
+                        navController.navigate(Screen.DocumentViewer.createRoute(newDocId)) {
+                            popUpTo(Screen.Home.route) { inclusive = false }
+                        }
                     }
                 )
             }

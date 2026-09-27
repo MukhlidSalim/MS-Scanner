@@ -56,6 +56,7 @@ import com.example.ui.screens.home.components.FolderGridItem
 import com.example.ui.screens.home.components.NewFolderDialog
 import com.example.ui.screens.home.components.RenameDocumentsDialog
 import com.example.engine.updater.UpdateCheckState
+import com.example.ScannerApplication
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.DocumentViewModel
@@ -77,7 +78,7 @@ fun HomeScreen(
     onNavigateToSettings: () -> Unit,
     onNavigateToDocument: (Long) -> Unit,
     onNavigateToScan: (String) -> Unit = {},
-    onNavigateToEditSession: () -> Unit = {}
+    onNavigateToEditSession: (String, Long) -> Unit = { _, _ -> }
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -107,26 +108,8 @@ fun HomeScreen(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
-            coroutineScope.launch {
-                val pages = mutableListOf<Pair<String, String>>()
-                for (uri in uris) {
-                    val stream = context.contentResolver.openInputStream(uri)
-                    val bmp = android.graphics.BitmapFactory.decodeStream(stream)
-                    stream?.close()
-                    if (bmp != null) {
-                        val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "import_raw_")
-                        val proc = ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
-                        val procPath = ImageProcessor.saveBitmapToFile(context, proc, "import_proc_")
-                        pages.add(Pair(rawPath, procPath))
-                        if (bmp != proc) bmp.recycle()
-                        proc.recycle()
-                    }
-                }
-                if (pages.isNotEmpty()) {
-                    viewModel.addPagesToPendingSession(pages)
-                    onNavigateToEditSession()
-                }
-            }
+            viewModel.setImportedUrisPendingEdit(uris)
+            onNavigateToEditSession("IMPORT", 0L)
         }
     }
 
@@ -170,8 +153,8 @@ fun HomeScreen(
                         val procPath = ImageProcessor.saveBitmapToFile(context, proc, "scan_proc_")
                         if (bmp != proc) bmp.recycle()
                         proc.recycle()
-                        viewModel.addPagesToPendingSession(listOf(Pair(rawPath, procPath)))
-                        onNavigateToEditSession()
+                        viewModel.setPagesPendingEdit(listOf(Pair(rawPath, procPath)))
+                        onNavigateToEditSession("CAMERA", 0L)
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
@@ -222,8 +205,8 @@ fun HomeScreen(
                             }
                         }
                         if (processedPages.isNotEmpty()) {
-                            viewModel.addPagesToPendingSession(processedPages)
-                            onNavigateToEditSession()
+                            viewModel.setPagesPendingEdit(processedPages)
+                            onNavigateToEditSession("IMPORT", 0L)
                         }
                     }
                 }
@@ -238,13 +221,19 @@ fun HomeScreen(
         val activity = context as? Activity
         if (activity != null) {
             try {
-                val dynOptions = GmsDocumentScannerOptions.Builder()
-                    .setGalleryImportAllowed(true)
-                    .setPageLimit(limit)
-                    .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
-                    .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
-                    .build()
-                GmsDocumentScanning.getClient(dynOptions).getStartScanIntent(activity)
+                // Use the pre-warmed scanner from Application if available to prevent redundant creation
+                // Otherwise fallback to creating a new one with specific limit
+                val scanner = ScannerApplication.getScanner() ?: run {
+                    val dynOptions = GmsDocumentScannerOptions.Builder()
+                        .setGalleryImportAllowed(true)
+                        .setPageLimit(limit)
+                        .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+                        .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+                        .build()
+                    GmsDocumentScanning.getClient(dynOptions)
+                }
+
+                scanner.getStartScanIntent(activity)
                     .addOnSuccessListener { intentSender ->
                         try {
                             scannerLauncher.launch(
@@ -269,13 +258,15 @@ fun HomeScreen(
     }
 
     // Handle Back Press for Folder & Selection Mode
-    BackHandler(enabled = selectionMode || uiState.selectedFolder != "ALL" || showSearch) {
+    BackHandler(enabled = selectionMode || uiState.selectedFolder != "ALL" || showSearch || uiState.showFavoritesOnly) {
         if (selectionMode) {
             selectionMode = false
             selectedDocIds = emptySet()
         } else if (showSearch) {
             showSearch = false
             viewModel.onSearchQueryChanged("")
+        } else if (uiState.showFavoritesOnly) {
+            viewModel.toggleFavoritesFilter()
         } else if (uiState.selectedFolder != "ALL") {
             viewModel.filterByFolder("ALL")
         }
@@ -437,9 +428,8 @@ fun HomeScreen(
                                         val path = ImageProcessor.saveBitmapToFile(context, blankBmp, "blank_")
                                         blankBmp.recycle()
                                         withContext(Dispatchers.Main) {
-                                            viewModel.importPagesAsDocument(listOf(Pair(path, path))) { newDocId ->
-                                                onNavigateToDocument(newDocId)
-                                            }
+                                            viewModel.setPagesPendingEdit(listOf(Pair(path, path)))
+                                            onNavigateToEditSession("CAMERA", 0L)
                                         }
                                     }
                                 }
@@ -491,8 +481,8 @@ fun HomeScreen(
 
                 // Home
                 NavigationBarItem(
-                    selected = true,
-                    onClick = { /* Already Home */ },
+                    selected = !uiState.showFavoritesOnly,
+                    onClick = { if (uiState.showFavoritesOnly) viewModel.toggleFavoritesFilter() },
                     icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
                     label = { Text(stringResource(R.string.nav_home)) },
                     colors = navItemColors
@@ -519,9 +509,14 @@ fun HomeScreen(
                 )
                 // Favorites
                 NavigationBarItem(
-                    selected = false,
-                    onClick = { /* Navigate to Favorites */ },
-                    icon = { Icon(Icons.Default.StarBorder, contentDescription = "Favorites") },
+                    selected = uiState.showFavoritesOnly,
+                    onClick = { viewModel.toggleFavoritesFilter() },
+                    icon = { 
+                        Icon(
+                            imageVector = if (uiState.showFavoritesOnly) Icons.Default.Star else Icons.Default.StarBorder, 
+                            contentDescription = "Favorites"
+                        ) 
+                    },
                     label = { Text(stringResource(R.string.nav_favorites)) },
                     colors = navItemColors
                 )
@@ -579,7 +574,7 @@ fun HomeScreen(
             val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
 
             // Category Chips Row (Filtering)
-            if (!selectionMode && uiState.searchQuery.isEmpty()) {
+            if (!selectionMode && uiState.searchQuery.isEmpty() && !uiState.showFavoritesOnly) {
                 CategoryChipsRow(
                     selectedCategory = uiState.selectedCategory,
                     onCategorySelected = { viewModel.filterByCategory(it) }
@@ -587,7 +582,7 @@ fun HomeScreen(
             }
 
             // Folder Filter Strip
-            if (folders.isNotEmpty() && !selectionMode && uiState.searchQuery.isEmpty()) {
+            if (folders.isNotEmpty() && !selectionMode && uiState.searchQuery.isEmpty() && !uiState.showFavoritesOnly) {
                 FolderChipsRow(
                     folders = folders,
                     selectedFolder = uiState.selectedFolder,
@@ -598,7 +593,10 @@ fun HomeScreen(
                 )
             }
 
-            if (uiState.documents.isEmpty() && folders.isEmpty() && uiState.searchQuery.isEmpty()) {
+            val isEmpty = uiState.documents.isEmpty() && folders.isEmpty() && uiState.searchQuery.isEmpty() && !uiState.showFavoritesOnly
+            val isFavoritesEmpty = uiState.documents.isEmpty() && uiState.showFavoritesOnly
+
+            if (isEmpty || isFavoritesEmpty) {
                 // Luxury Clean Empty State
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
@@ -614,7 +612,7 @@ fun HomeScreen(
                             contentAlignment = Alignment.Center
                         ) {
                             Icon(
-                                imageVector = Icons.Default.DocumentScanner,
+                                imageVector = if (uiState.showFavoritesOnly) Icons.Default.StarBorder else Icons.Default.DocumentScanner,
                                 contentDescription = null,
                                 modifier = Modifier.size(46.dp),
                                 tint = MaterialTheme.colorScheme.primary
@@ -622,28 +620,30 @@ fun HomeScreen(
                         }
                         Spacer(modifier = Modifier.height(24.dp))
                         Text(
-                            text = stringResource(R.string.txt_no_documents),
+                            text = if (uiState.showFavoritesOnly) (if (isArabic) "لا توجد مستندات مفضلة" else "No Favorite Documents") else stringResource(R.string.txt_no_documents),
                             style = MaterialTheme.typography.titleLarge,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onBackground
                         )
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
-                            text = stringResource(R.string.txt_no_documents_body),
+                            text = if (uiState.showFavoritesOnly) (if (isArabic) "اضغط على أيقونة النجمة في المستندات لتمييزها كمفضلة" else "Tap the star icon on documents to mark them as favorites") else stringResource(R.string.txt_no_documents_body),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
-                        Spacer(modifier = Modifier.height(28.dp))
-                        Button(
-                            onClick = { showCameraSheet = true },
-                            shape = RoundedCornerShape(22.dp),
-                            contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                        ) {
-                            Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(stringResource(R.string.txt_start_scanning), fontWeight = FontWeight.Bold)
+                        if (!uiState.showFavoritesOnly) {
+                            Spacer(modifier = Modifier.height(28.dp))
+                            Button(
+                                onClick = { showCameraSheet = true },
+                                shape = RoundedCornerShape(22.dp),
+                                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(stringResource(R.string.txt_start_scanning), fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }
@@ -655,8 +655,8 @@ fun HomeScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
-                    // Folders (Only show in ALL view or when searching)
-                    if ((uiState.selectedFolder == "ALL" || uiState.searchQuery.isNotEmpty()) && folders.isNotEmpty()) {
+                    // Folders (Only show in ALL view or when searching, and hide if showing favorites only)
+                    if ((uiState.selectedFolder == "ALL" || uiState.searchQuery.isNotEmpty()) && folders.isNotEmpty() && !uiState.showFavoritesOnly) {
                         val filteredFolders = folders.filter { it.contains(uiState.searchQuery, ignoreCase = true) }
                         items(filteredFolders) { folder ->
                             FolderGridItem(
@@ -681,6 +681,9 @@ fun HomeScreen(
                                 } else {
                                     onNavigateToDocument(doc.id)
                                 }
+                            },
+                            onEditClick = {
+                                onNavigateToEditSession("EXISTING", doc.id)
                             },
                             onLongClick = {
                                 selectionMode = true
@@ -788,7 +791,8 @@ fun HomeScreen(
                     ),
                     modifier = Modifier.fillMaxWidth().clickable {
                         showCameraSheet = false
-                        onNavigateToScan("DOCUMENT")
+                        // Use ML Kit GmsDocumentScanner for Auto Document mode
+                        launchScanner(20)
                     }
                 ) {
                     Row(

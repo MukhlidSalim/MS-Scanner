@@ -7,6 +7,7 @@ import com.example.data.model.DocumentCategory
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -19,7 +20,7 @@ import java.text.SimpleDateFormat
 import java.util.*
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
-import kotlin.coroutines.suspendCoroutine
+import kotlin.coroutines.resumeWithException
 
 data class ExtractedField(
     val labelEn: String,
@@ -52,9 +53,10 @@ object DocumentAiEngine {
     /**
      * Offline OCR text extractor using ML Kit Text Recognition
      */
-    suspend fun performOfflineOcr(bitmap: Bitmap): DocumentAnalysisResult = suspendCoroutine { continuation ->
+    suspend fun performOfflineOcr(bitmap: Bitmap): DocumentAnalysisResult = suspendCancellableCoroutine { continuation ->
+        // Use default client (GMS version)
         val recognizer = TextRecognition.getClient()
-        val image = InputImage.fromBitmap(bitmap, 0)
+        val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bitmap, 0)
 
         recognizer.process(image)
             .addOnSuccessListener { text ->
@@ -65,22 +67,32 @@ object DocumentAiEngine {
                 fields.add(ExtractedField("Date Scanned", "تاريخ المسح", dateStr))
                 fields.add(ExtractedField("Resolution", "الدقة", "${bitmap.width}x${bitmap.height} px"))
 
+                val fullText = text.text
+                val lowerText = fullText.lowercase(Locale.ROOT)
+
                 val aspect = bitmap.width.toFloat() / bitmap.height.toFloat()
+                
+                // Prioritize text-based classification, fallback to aspect ratio
                 val category = when {
+                    fullText.isNotBlank() && (lowerText.contains("فاتورة") || lowerText.contains("invoice")) -> DocumentCategory.INVOICE
+                    fullText.isNotBlank() && (lowerText.contains("هوية") || lowerText.contains("id")) -> DocumentCategory.ID_CARD
+                    fullText.isNotBlank() && (lowerText.contains("عقد") || lowerText.contains("contract")) -> DocumentCategory.CONTRACT
                     aspect in 1.4f..1.8f || aspect in 0.55f..0.7f -> DocumentCategory.ID_CARD
                     aspect < 0.45f -> DocumentCategory.RECEIPT
                     else -> DocumentCategory.OTHER
                 }
 
                 val suggestedTitle = when (category) {
+                    DocumentCategory.INVOICE -> "Invoice - $dateStr"
                     DocumentCategory.ID_CARD -> "ID Card - $dateStr"
+                    DocumentCategory.CONTRACT -> "Contract - $dateStr"
                     DocumentCategory.RECEIPT -> "Receipt - $dateStr"
                     else -> "Document - $dateStr"
                 }
 
                 continuation.resume(
                     DocumentAnalysisResult(
-                        fullText = text.text,
+                        fullText = fullText,
                         suggestedTitle = suggestedTitle,
                         detectedCategory = category,
                         fields = fields,
@@ -90,7 +102,6 @@ object DocumentAiEngine {
                 )
             }
             .addOnFailureListener {
-                // Fallback to simple placeholder if ML Kit fails
                 val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
                 continuation.resume(
                     DocumentAnalysisResult(
@@ -103,6 +114,10 @@ object DocumentAiEngine {
                     )
                 )
             }
+        
+        continuation.invokeOnCancellation {
+            recognizer.close()
+        }
     }
 
     /**
