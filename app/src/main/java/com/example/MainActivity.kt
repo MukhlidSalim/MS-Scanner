@@ -10,8 +10,15 @@ import androidx.work.*
 import java.util.concurrent.TimeUnit
 import com.example.engine.updater.UpdateCheckWorker
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.ui.unit.dp
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material.icons.Icons
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
@@ -41,13 +48,55 @@ import com.example.ui.screens.ocr.OcrScreen
 import com.example.ui.screens.settings.SettingsScreen
 import com.example.ui.screens.viewer.DocumentViewerScreen
 import com.example.ui.theme.DocScanTheme
-import com.example.ui.viewmodel.DocumentViewModel
+import com.example.ui.viewmodel.CameraViewModel
+import com.example.ui.viewmodel.DocumentListViewModel
+import com.example.ui.viewmodel.EditSessionViewModel
+
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import com.example.data.repository.AppPreferences
+
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+
+class MainViewModel : ViewModel() {
+    private val _isAuthenticated = MutableStateFlow(false)
+    val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
+
+    private var _isPromptShowing = false
+    val isPromptShowing: Boolean get() = _isPromptShowing
+
+    fun setAuthenticated(value: Boolean) {
+        _isAuthenticated.value = value
+    }
+
+    fun setPromptShowing(value: Boolean) {
+        _isPromptShowing = value
+    }
+}
 
 class MainActivity : AppCompatActivity() {
+
+    private lateinit var prefs: AppPreferences
+    private lateinit var mainViewModel: MainViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        
+        prefs = AppPreferences(applicationContext)
+        mainViewModel = ViewModelProvider(this)[MainViewModel::class.java]
+
+        // Initial state: if biometric is NOT enabled, we are already "authenticated"
+        if (!prefs.biometricEnabled) {
+            mainViewModel.setAuthenticated(true)
+        }
 
         val updateWorkRequest = PeriodicWorkRequestBuilder<UpdateCheckWorker>(24, TimeUnit.HOURS)
             .setConstraints(
@@ -66,38 +115,125 @@ class MainActivity : AppCompatActivity() {
         val repository = DocumentRepository(applicationContext, database.documentDao())
 
         setContent {
-            val docViewModel = remember { DocumentViewModel(applicationContext, repository) }
-            val docUiState by docViewModel.uiState.collectAsState()
+            val cameraViewModel = remember { CameraViewModel(applicationContext, repository) }
+            val listViewModel = remember { DocumentListViewModel(applicationContext, repository) }
+            val editViewModel = remember { EditSessionViewModel(applicationContext, repository) }
 
-            val isDarkTheme = when (docUiState.themeMode) {
+            val listUiState by listViewModel.uiState.collectAsState()
+
+            val isDarkTheme = when (listUiState.themeMode) {
                 "Light" -> false
                 "Dark" -> true
                 else -> isSystemInDarkTheme()
             }
 
+            val isAuthenticated by mainViewModel.isAuthenticated.collectAsState()
+
             DocScanTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    DocScanApp(
-                        docViewModel = docViewModel
-                    )
+                    if (isAuthenticated) {
+                        DocScanApp(
+                            cameraViewModel = cameraViewModel,
+                            listViewModel = listViewModel,
+                            editViewModel = editViewModel
+                        )
+                    } else {
+                        // Showing a lock icon while waiting for biometric authentication
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = androidx.compose.ui.Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Lock,
+                                contentDescription = "Locked",
+                                modifier = Modifier.size(64.dp),
+                                tint = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (prefs.biometricEnabled && !mainViewModel.isAuthenticated.value) {
+            showBiometricPrompt()
+        }
+    }
+
+    private fun showBiometricPrompt() {
+        if (mainViewModel.isPromptShowing) return
+
+        val biometricManager = BiometricManager.from(this)
+        val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        
+        when (biometricManager.canAuthenticate(authenticators)) {
+            BiometricManager.BIOMETRIC_SUCCESS -> { /* Proceed */ }
+            else -> {
+                // If biometric is not available or enrolled, we fallback to authenticated 
+                // to prevent locking the user out, or you could fallback to PIN.
+                mainViewModel.setAuthenticated(true)
+                return
+            }
+        }
+
+        mainViewModel.setPromptShowing(true)
+        val executor = ContextCompat.getMainExecutor(this)
+        val biometricPrompt = BiometricPrompt(this, executor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    super.onAuthenticationError(errorCode, errString)
+                    mainViewModel.setPromptShowing(false)
+                    // If user cancels, we stay locked.
+                }
+
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    super.onAuthenticationSucceeded(result)
+                    mainViewModel.setAuthenticated(true)
+                    mainViewModel.setPromptShowing(false)
+                }
+
+                override fun onAuthenticationFailed() {
+                    super.onAuthenticationFailed()
+                    // Keep trying or stay locked
+                }
+            })
+
+        val promptInfo = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("DocScan Pro Lock")
+            .setSubtitle("Authenticate to access your documents")
+            .setAllowedAuthenticators(authenticators)
+            .build()
+
+        biometricPrompt.authenticate(promptInfo)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Reset authentication state when app goes to background if biometric is enabled
+        if (prefs.biometricEnabled) {
+            mainViewModel.setAuthenticated(false)
         }
     }
 }
 
 @Composable
 fun DocScanApp(
-    docViewModel: DocumentViewModel
+    cameraViewModel: CameraViewModel,
+    listViewModel: DocumentListViewModel,
+    editViewModel: EditSessionViewModel
 ) {
     val navController = rememberNavController()
-    val docUiState by docViewModel.uiState.collectAsState()
+    val listUiState by listViewModel.uiState.collectAsState()
+    val editUiState by editViewModel.uiState.collectAsState()
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
-                docViewModel.lockApp()
+                listViewModel.lockApp()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -106,11 +242,11 @@ fun DocScanApp(
         }
     }
 
-    if (docUiState.isAppLocked) {
+    if (listUiState.isAppLocked) {
         PinLockScreen(
             title = "DocScan Pro Locked",
             subtitle = "Enter 4-digit PIN to access documents",
-            onPinEntered = { entered -> docViewModel.verifyPin(entered) },
+            onPinEntered = { entered -> listViewModel.verifyPin(entered) },
             onSuccess = { /* unmasked by verifyPin */ }
         )
     } else {
@@ -121,7 +257,9 @@ fun DocScanApp(
             // Home Screen
             composable(Screen.Home.route) {
                 HomeScreen(
-                    viewModel = docViewModel,
+                    listViewModel = listViewModel,
+                    onPagesCaptured = { pages -> cameraViewModel.setPagesPendingEdit(pages) },
+                    onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
                     onNavigateToSettings = {
                         navController.navigate(Screen.Settings.route)
                     },
@@ -176,11 +314,11 @@ fun DocScanApp(
                         if (replacePageId > 0L) {
                             val firstPage = pages.firstOrNull()
                             if (firstPage != null) {
-                                docViewModel.replacePage(replacePageId, firstPage.first, firstPage.second)
+                                editViewModel.replacePage(replacePageId, firstPage.first, firstPage.second)
                             }
                             navController.popBackStack()
                         } else {
-                            docViewModel.setPagesPendingEdit(pages)
+                            cameraViewModel.setPagesPendingEdit(pages)
                             navController.navigate(Screen.EditSession.createRoute("CAMERA", docId)) {
                                 if (docId == 0L) {
                                     popUpTo(Screen.Home.route)
@@ -228,7 +366,7 @@ fun DocScanApp(
                     backImagePath = back,
                     isPassportMode = isPassport,
                     onMerged = { mergedPath ->
-                        docViewModel.setPagesPendingEdit(listOf(Pair(front, mergedPath)))
+                        cameraViewModel.setPagesPendingEdit(listOf(Pair(front, mergedPath)))
                         navController.navigate(Screen.EditSession.createRoute("CAMERA", targetDocId)) {
                             if (targetDocId > 0L) {
                                 popUpTo(Screen.DocumentViewer.route)
@@ -251,7 +389,8 @@ fun DocScanApp(
                 val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
                 DocumentViewerScreen(
                     docId = docId,
-                    viewModel = docViewModel,
+                    viewModel = editViewModel,
+                    onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
                     onNavigateBack = {
                         navController.popBackStack()
                     },
@@ -282,13 +421,13 @@ fun DocScanApp(
                 )
             ) { backStackEntry ->
                 val pageId = backStackEntry.arguments?.getLong("pageId") ?: 0L
-                val activePage = docUiState.activePages.find { it.id == pageId }
+                val activePage = editUiState.activePages.find { it.id == pageId }
                 val imagePath = activePage?.rawImagePath ?: activePage?.processedImagePath ?: ""
 
                 DocumentCropEditorScreen(
                     imagePath = imagePath,
                     onCropped = { newProcessedPath ->
-                        docViewModel.updateActivePageProcessedImage(newProcessedPath)
+                        editViewModel.updateActivePageProcessedImage(newProcessedPath)
                         navController.popBackStack()
                     },
                     onCancel = {
@@ -310,7 +449,7 @@ fun DocScanApp(
                 OcrScreen(
                     docId = docId,
                     pageId = pageId,
-                    viewModel = docViewModel,
+                    viewModel = editViewModel,
                     onNavigateBack = {
                         navController.popBackStack()
                     }
@@ -330,7 +469,7 @@ fun DocScanApp(
                 AnnotationScreen(
                     docId = docId,
                     pageId = pageId,
-                    viewModel = docViewModel,
+                    viewModel = editViewModel,
                     onNavigateBack = {
                         navController.popBackStack()
                     }
@@ -340,7 +479,7 @@ fun DocScanApp(
             // Settings Screen
             composable(Screen.Settings.route) {
                 SettingsScreen(
-                    viewModel = docViewModel,
+                    viewModel = listViewModel,
                     onNavigateBack = {
                         navController.popBackStack()
                     }
@@ -357,8 +496,20 @@ fun DocScanApp(
             ) { backStackEntry ->
                 val sourceType = backStackEntry.arguments?.getString("sourceType") ?: "CAMERA"
                 val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
+                val cameraUiState by cameraViewModel.uiState.collectAsState()
+                val listUiState by listViewModel.uiState.collectAsState()
+
                 EditSessionScreen(
-                    viewModel = docViewModel,
+                    editViewModel = editViewModel,
+                    pagesPendingEdit = cameraUiState.pagesPendingEdit,
+                    cameraIsLoading = cameraUiState.isLoading,
+                    onUpdatePendingPage = { idx, path -> cameraViewModel.updatePendingPageProcessedImage(idx, path) },
+                    onRotatePendingPage = { idx, cw -> cameraViewModel.rotatePendingPage(idx, cw) },
+                    onAnalyzePending = { cameraViewModel.analyzePendingFirstPage() },
+                    onCommitPending = { dId, onDone -> cameraViewModel.commitPendingPagesToDocument(dId, onDone) },
+                    onImportPages = { title, folder, onDone -> cameraViewModel.importPagesAsDocument(title, folder, onDone) },
+                    onClearPending = { cameraViewModel.clearPendingPages() },
+                    selectedFolder = listUiState.selectedFolder,
                     sourceType = sourceType,
                     docId = docId,
                     onNavigateBack = { navController.popBackStack() },

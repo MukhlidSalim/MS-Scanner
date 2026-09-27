@@ -39,4 +39,8 @@ class AppPreferences(context: Context) {
     var ignoredUpdateVersion: String
         get() = prefs.getString("ignored_update_version", "") ?: ""
         set(value) = prefs.edit().putString("ignored_update_version", value).apply()
+
+    var biometricEnabled: Boolean
+        get() = prefs.getBoolean("biometric_enabled", false)
+        set(value) = prefs.edit().putBoolean("biometric_enabled", value).apply()
 }

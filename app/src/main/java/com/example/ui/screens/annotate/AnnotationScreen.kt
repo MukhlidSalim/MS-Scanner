@@ -42,7 +42,7 @@ import com.example.engine.annotation.*
 import com.example.engine.cv.ImageProcessor
 import com.example.ui.theme.EmeraldLight
 import com.example.ui.theme.StudioCanvasBg
-import com.example.ui.viewmodel.DocumentViewModel
+import com.example.ui.viewmodel.EditSessionViewModel
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -74,7 +74,7 @@ sealed class AnnotationAction {
 fun AnnotationScreen(
     docId: Long,
     pageId: Long,
-    viewModel: DocumentViewModel,
+    viewModel: EditSessionViewModel,
     onNavigateBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -144,8 +144,22 @@ fun AnnotationScreen(
         }
     }
 
+    val snackbarHostState = remember { SnackbarHostState() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is com.example.ui.util.UiEvent.Error -> snackbarHostState.showSnackbar(event.message)
+                is com.example.ui.util.UiEvent.ShowToast -> android.widget.Toast.makeText(context, event.message, android.widget.Toast.LENGTH_SHORT).show()
+                else -> {}
+            }
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.txt_sign___annotate), fontWeight = FontWeight.Bold) },

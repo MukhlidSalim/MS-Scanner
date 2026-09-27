@@ -1,7 +1,10 @@
 package com.example.ui.screens.home
 
+import android.Manifest
 import android.app.Activity
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -43,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.DocumentEntity
@@ -59,7 +63,7 @@ import com.example.engine.updater.UpdateCheckState
 import com.example.ScannerApplication
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.*
-import com.example.ui.viewmodel.DocumentViewModel
+import com.example.ui.viewmodel.DocumentListViewModel
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
@@ -74,18 +78,20 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
-    viewModel: DocumentViewModel,
+    listViewModel: DocumentListViewModel,
+    onPagesCaptured: (List<Pair<String, String>>) -> Unit = {},
+    onImportedUris: (List<Uri>) -> Unit = {},
     onNavigateToSettings: () -> Unit,
     onNavigateToDocument: (Long) -> Unit,
     onNavigateToScan: (String) -> Unit = {},
     onNavigateToEditSession: (String, Long) -> Unit = { _, _ -> }
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by listViewModel.uiState.collectAsState()
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
-    val updateCheckState by viewModel.updateCheckState.collectAsState()
-    val updateDownloadState by viewModel.updateDownloadState.collectAsState()
+    val updateCheckState by listViewModel.updateCheckState.collectAsState()
+    val updateDownloadState by listViewModel.updateDownloadState.collectAsState()
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedDocIds by remember { mutableStateOf(setOf<Long>()) }
@@ -104,12 +110,42 @@ fun HomeScreen(
     
     var tempCameraFile by remember { mutableStateOf<File?>(null) }
 
+    // Gallery/Media Permission Logic
+    val galleryPermission = if (Build.VERSION.SDK_INT >= 33) {
+        Manifest.permission.READ_MEDIA_IMAGES
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
-            viewModel.setImportedUrisPendingEdit(uris)
+            onImportedUris(uris)
             onNavigateToEditSession("IMPORT", 0L)
+        }
+    }
+
+    val galleryPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        } else {
+            Toast.makeText(
+                context,
+                if (isArabic) "إذن الاستوديو مطلوب لاستيراد الصور" else "Gallery permission required to import photos",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    val launchGalleryImport = {
+        val permissionCheck = ContextCompat.checkSelfPermission(context, galleryPermission)
+        if (permissionCheck == PackageManager.PERMISSION_GRANTED) {
+            photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        } else {
+            galleryPermissionLauncher.launch(galleryPermission)
         }
     }
 
@@ -153,7 +189,7 @@ fun HomeScreen(
                         val procPath = ImageProcessor.saveBitmapToFile(context, proc, "scan_proc_")
                         if (bmp != proc) bmp.recycle()
                         proc.recycle()
-                        viewModel.setPagesPendingEdit(listOf(Pair(rawPath, procPath)))
+                        onPagesCaptured(listOf(Pair(rawPath, procPath)))
                         onNavigateToEditSession("CAMERA", 0L)
                     }
                 } catch (e: Exception) {
@@ -169,7 +205,7 @@ fun HomeScreen(
             tempCameraFile = file
             val uri = androidx.core.content.FileProvider.getUriForFile(
                 context,
-                "${context.packageName}.fileprovider",
+                "${context.packageName}.provider",
                 file
             )
             takePictureLauncher.launch(uri)
@@ -205,7 +241,7 @@ fun HomeScreen(
                             }
                         }
                         if (processedPages.isNotEmpty()) {
-                            viewModel.setPagesPendingEdit(processedPages)
+                            onPagesCaptured(processedPages)
                             onNavigateToEditSession("IMPORT", 0L)
                         }
                     }
@@ -264,15 +300,29 @@ fun HomeScreen(
             selectedDocIds = emptySet()
         } else if (showSearch) {
             showSearch = false
-            viewModel.onSearchQueryChanged("")
+            listViewModel.onSearchQueryChanged("")
         } else if (uiState.showFavoritesOnly) {
-            viewModel.toggleFavoritesFilter()
+            listViewModel.toggleFavoritesFilter()
         } else if (uiState.selectedFolder != "ALL") {
-            viewModel.filterByFolder("ALL")
+            listViewModel.filterByFolder("ALL")
+        }
+    }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        listViewModel.events.collect { event ->
+            when (event) {
+                is com.example.ui.util.UiEvent.ShowSnackbar -> snackbarHostState.showSnackbar(event.message)
+                is com.example.ui.util.UiEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                is com.example.ui.util.UiEvent.Error -> snackbarHostState.showSnackbar(event.message)
+                else -> {}
+            }
         }
     }
 
     Scaffold(
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             if (selectionMode) {
                 TopAppBar(
@@ -294,7 +344,7 @@ fun HomeScreen(
                     actions = {
                         if (selectedDocIds.size >= 2) {
                             IconButton(onClick = {
-                                viewModel.mergeDocuments(selectedDocIds.toList())
+                                listViewModel.mergeDocuments(selectedDocIds.toList())
                                 selectionMode = false
                                 selectedDocIds = emptySet()
                             }) {
@@ -307,7 +357,7 @@ fun HomeScreen(
                             Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "Move")
                         }
                         IconButton(onClick = {
-                            viewModel.shareDocumentsAsPdf(context, selectedDocIds.toList())
+                            listViewModel.shareDocumentsAsPdf(context, selectedDocIds.toList())
                             selectionMode = false
                             selectedDocIds = emptySet()
                         }) {
@@ -323,7 +373,7 @@ fun HomeScreen(
                         IconButton(onClick = {
                             val docId = selectedDocIds.firstOrNull()
                             if (docId != null) {
-                                viewModel.printDocumentById(context, docId)
+                                listViewModel.printDocumentById(context, docId)
                                 selectionMode = false
                                 selectedDocIds = emptySet()
                             }
@@ -408,7 +458,7 @@ fun HomeScreen(
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.desc_import_photos)) },
                                 leadingIcon = { Icon(Icons.Default.PhotoLibrary, null) },
-                                onClick = { expanded = false; photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
+                                onClick = { expanded = false; launchGalleryImport() }
                             )
                             HorizontalDivider()
                             DropdownMenuItem(
@@ -428,7 +478,7 @@ fun HomeScreen(
                                         val path = ImageProcessor.saveBitmapToFile(context, blankBmp, "blank_")
                                         blankBmp.recycle()
                                         withContext(Dispatchers.Main) {
-                                            viewModel.setPagesPendingEdit(listOf(Pair(path, path)))
+                                            onPagesCaptured(listOf(Pair(path, path)))
                                             onNavigateToEditSession("CAMERA", 0L)
                                         }
                                     }
@@ -482,7 +532,7 @@ fun HomeScreen(
                 // Home
                 NavigationBarItem(
                     selected = !uiState.showFavoritesOnly,
-                    onClick = { if (uiState.showFavoritesOnly) viewModel.toggleFavoritesFilter() },
+                    onClick = { listViewModel.setShowFavoritesOnly(false) },
                     icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
                     label = { Text(stringResource(R.string.nav_home)) },
                     colors = navItemColors
@@ -491,9 +541,7 @@ fun HomeScreen(
                 NavigationBarItem(
                     selected = false,
                     onClick = {
-                        // Need a way to handle photo picker callback here to add to pending session
-                        // For now just note it needs update
-                        photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        launchGalleryImport()
                     },
                     icon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Import") },
                     label = { Text(stringResource(R.string.txt_import)) },
@@ -510,7 +558,7 @@ fun HomeScreen(
                 // Favorites
                 NavigationBarItem(
                     selected = uiState.showFavoritesOnly,
-                    onClick = { viewModel.toggleFavoritesFilter() },
+                    onClick = { listViewModel.setShowFavoritesOnly(true) },
                     icon = { 
                         Icon(
                             imageVector = if (uiState.showFavoritesOnly) Icons.Default.Star else Icons.Default.StarBorder, 
@@ -541,7 +589,7 @@ fun HomeScreen(
             if (!selectionMode) {
                 OutlinedTextField(
                     value = uiState.searchQuery,
-                    onValueChange = { viewModel.onSearchQueryChanged(it) },
+                    onValueChange = { listViewModel.onSearchQueryChanged(it) },
                     placeholder = {
                         Text(
                             text = stringResource(R.string.search_hint),
@@ -565,7 +613,7 @@ fun HomeScreen(
                 )
             }
             
-            val displayDocs = if (uiState.selectedFolder == "ALL" && uiState.searchQuery.isEmpty()) {
+            val displayDocs = if (uiState.selectedFolder == "ALL" && uiState.searchQuery.isEmpty() && !uiState.showFavoritesOnly) {
                 uiState.documents.filter { it.folderName == "Default" || it.folderName == "ALL" }
             } else {
                 uiState.documents
@@ -577,7 +625,7 @@ fun HomeScreen(
             if (!selectionMode && uiState.searchQuery.isEmpty() && !uiState.showFavoritesOnly) {
                 CategoryChipsRow(
                     selectedCategory = uiState.selectedCategory,
-                    onCategorySelected = { viewModel.filterByCategory(it) }
+                    onCategorySelected = { listViewModel.filterByCategory(it) }
                 )
             }
 
@@ -586,10 +634,10 @@ fun HomeScreen(
                 FolderChipsRow(
                     folders = folders,
                     selectedFolder = uiState.selectedFolder,
-                    onFolderSelected = { viewModel.filterByFolder(it) },
+                    onFolderSelected = { listViewModel.filterByFolder(it) },
                     onCreateFolderClick = { showNewFolderDialog = true },
-                    onRenameFolder = { oldName, newName -> viewModel.renameFolder(oldName, newName) },
-                    onDeleteFolder = { viewModel.deleteFolder(it) }
+                    onRenameFolder = { oldName, newName -> listViewModel.renameFolder(oldName, newName) },
+                    onDeleteFolder = { listViewModel.deleteFolder(it) }
                 )
             }
 
@@ -662,7 +710,7 @@ fun HomeScreen(
                             FolderGridItem(
                                 folderName = folder,
                                 documentCount = uiState.documents.count { it.folderName == folder },
-                                onClick = { viewModel.filterByFolder(folder) },
+                                onClick = { listViewModel.filterByFolder(folder) },
                                 onRenameClick = { renameFolderTarget = folder; newFolderRename = folder }
                             )
                         }
@@ -700,7 +748,7 @@ fun HomeScreen(
         show = showNewFolderDialog,
         onDismiss = { showNewFolderDialog = false },
         onConfirm = { name ->
-            viewModel.filterByFolder(name)
+            listViewModel.filterByFolder(name)
             newFolderNameInput = ""
         }
     )
@@ -709,7 +757,7 @@ fun HomeScreen(
         show = showRenameDialog,
         onDismiss = { showRenameDialog = false },
         onConfirm = { name ->
-            viewModel.renameDocuments(renameDocIds, name)
+            listViewModel.renameDocuments(renameDocIds, name)
             selectionMode = false
             selectedDocIds = emptySet()
         }
@@ -748,9 +796,9 @@ fun HomeScreen(
                 Button(
                     onClick = {
                         if (selectedDocIds.isNotEmpty()) {
-                            selectedDocIds.forEach { viewModel.changeDocumentFolder(it, selectedFolderDest) }
+                            selectedDocIds.forEach { listViewModel.changeDocumentFolder(it, selectedFolderDest) }
                         } else {
-                            viewModel.changeDocumentFolder(docToMove!!, selectedFolderDest)
+                            listViewModel.changeDocumentFolder(docToMove!!, selectedFolderDest)
                         }
                         docToMove = null
                         selectionMode = false
@@ -968,7 +1016,7 @@ fun HomeScreen(
                 Button(
                     onClick = {
                         if (newFolderRename.isNotBlank()) {
-                            viewModel.renameFolder(renameFolderTarget!!, newFolderRename)
+                            listViewModel.renameFolder(renameFolderTarget!!, newFolderRename)
                         }
                         renameFolderTarget = null
                     },
@@ -992,7 +1040,7 @@ fun HomeScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        selectedDocIds.forEach { viewModel.moveToTrash(it) }
+                        selectedDocIds.forEach { listViewModel.moveToTrash(it) }
                         selectionMode = false
                         selectedDocIds = emptySet()
                         showTrashDialog = false

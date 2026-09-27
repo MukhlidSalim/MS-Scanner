@@ -68,17 +68,10 @@ object DocumentAiEngine {
                 fields.add(ExtractedField("Resolution", "الدقة", "${bitmap.width}x${bitmap.height} px"))
 
                 val fullText = text.text
-                val lowerText = fullText.lowercase(Locale.ROOT)
-
-                val aspect = bitmap.width.toFloat() / bitmap.height.toFloat()
-                
-                // Prioritize text-based classification, fallback to aspect ratio
                 val category = when {
-                    fullText.isNotBlank() && (lowerText.contains("فاتورة") || lowerText.contains("invoice")) -> DocumentCategory.INVOICE
-                    fullText.isNotBlank() && (lowerText.contains("هوية") || lowerText.contains("id")) -> DocumentCategory.ID_CARD
-                    fullText.isNotBlank() && (lowerText.contains("عقد") || lowerText.contains("contract")) -> DocumentCategory.CONTRACT
-                    aspect in 1.4f..1.8f || aspect in 0.55f..0.7f -> DocumentCategory.ID_CARD
-                    aspect < 0.45f -> DocumentCategory.RECEIPT
+                    fullText.contains("فاتورة") || fullText.contains("invoice", ignoreCase = true) -> DocumentCategory.INVOICE
+                    fullText.contains("هوية") || fullText.contains("ID", ignoreCase = false) || fullText.contains("id", ignoreCase = false) -> DocumentCategory.ID_CARD
+                    fullText.contains("عقد") || fullText.contains("contract", ignoreCase = true) -> DocumentCategory.CONTRACT
                     else -> DocumentCategory.OTHER
                 }
 

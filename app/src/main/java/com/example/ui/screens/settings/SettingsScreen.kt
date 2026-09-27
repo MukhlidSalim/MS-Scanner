@@ -35,7 +35,7 @@ import kotlinx.coroutines.flow.collectLatest
 import com.example.ui.theme.CyanScan
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.EmeraldLight
-import com.example.ui.viewmodel.DocumentViewModel
+import com.example.ui.viewmodel.DocumentListViewModel
 import com.example.data.model.CompressionPreset
 import com.example.data.model.PageSizePreset
 import com.example.BuildConfig
@@ -46,7 +46,7 @@ import com.example.engine.updater.UpdateDownloadState
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
-    viewModel: DocumentViewModel,
+    viewModel: DocumentListViewModel,
     onNavigateBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -63,9 +63,22 @@ fun SettingsScreen(
     
     val updateCheckState by viewModel.updateCheckState.collectAsState()
     val updateDownloadState by viewModel.updateDownloadState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is com.example.ui.util.UiEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                is com.example.ui.util.UiEvent.ShowSnackbar -> snackbarHostState.showSnackbar(event.message)
+                is com.example.ui.util.UiEvent.Error -> snackbarHostState.showSnackbar(event.message)
+                else -> {}
+            }
+        }
+    }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.txt_settings___privacy), fontWeight = FontWeight.Bold) },
@@ -261,12 +274,6 @@ fun SettingsScreen(
                         uri?.let { viewModel.restoreBackup(it) }
                     }
                     
-                    LaunchedEffect(Unit) {
-                        viewModel.backupEvent.collectLatest { msg ->
-                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                        }
-                    }
-                    
                     if (uiState.isLoading) {
                         CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
                     }
@@ -350,6 +357,23 @@ fun SettingsScreen(
                         ) {
                             Text(stringResource(R.string.txt_disable_pin_lock))
                         }
+                    }
+
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text("Biometric Lock", fontWeight = FontWeight.SemiBold)
+                            Text("Use fingerprint or face to unlock", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        Switch(
+                            checked = uiState.biometricEnabled,
+                            onCheckedChange = { viewModel.toggleBiometric(it) }
+                        )
                     }
                 }
             }

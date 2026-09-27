@@ -31,14 +31,14 @@ import androidx.compose.ui.unit.sp
 import com.example.ui.theme.CyanScan
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.EmeraldLight
-import com.example.ui.viewmodel.DocumentViewModel
+import com.example.ui.viewmodel.EditSessionViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OcrScreen(
     docId: Long,
     pageId: Long,
-    viewModel: DocumentViewModel,
+    viewModel: EditSessionViewModel,
     onNavigateBack: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -52,8 +52,21 @@ fun OcrScreen(
 
     var selectedTab by remember { mutableStateOf(0) } // 0: AI Structured Data, 1: Full Text
 
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is com.example.ui.util.UiEvent.Error -> snackbarHostState.showSnackbar(event.message)
+                is com.example.ui.util.UiEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                else -> {}
+            }
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = { Text(stringResource(R.string.txt_ocr___document_ai), fontWeight = FontWeight.Bold) },

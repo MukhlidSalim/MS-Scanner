@@ -252,6 +252,13 @@ fun CameraScanScreen(
         }
     }
 
+    // Gallery/Media Permission Logic
+    val galleryPermission = if (Build.VERSION.SDK_INT >= 33) {
+        Manifest.permission.READ_MEDIA_IMAGES
+    } else {
+        Manifest.permission.READ_EXTERNAL_STORAGE
+    }
+
     // Gallery Picker as instant fallback & import option
     val galleryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
@@ -313,6 +320,29 @@ fun CameraScanScreen(
                     isCapturing = false
                 }
             }
+        }
+    }
+
+    val galleryPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            galleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        } else {
+            Toast.makeText(
+                context,
+                if (isArabic) "إذن الاستوديو مطلوب لاستيراد الصور" else "Gallery permission required to import photos",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    val launchGalleryImport = {
+        val permissionCheck = ContextCompat.checkSelfPermission(context, galleryPermission)
+        if (permissionCheck == PackageManager.PERMISSION_GRANTED) {
+            galleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        } else {
+            galleryPermissionLauncher.launch(galleryPermission)
         }
     }
 
@@ -405,14 +435,14 @@ fun CameraScanScreen(
             tempCameraFile = file
             val uri = FileProvider.getUriForFile(
                 context,
-                "${context.packageName}.fileprovider",
+                "${context.packageName}.provider",
                 file
             )
             tempCameraUri = uri
             systemCameraLauncher.launch(uri)
         } catch (e: Exception) {
             e.printStackTrace()
-            galleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+            launchGalleryImport()
         }
     }
 
@@ -789,7 +819,7 @@ fun CameraScanScreen(
             PermissionRationaleScreen(
                 isArabic = isArabic,
                 onGrantPermission = { permissionLauncher.launch(Manifest.permission.CAMERA) },
-                onSelectFromGallery = { galleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onSelectFromGallery = { launchGalleryImport() },
                 onNavigateBack = onNavigateBack
             )
         } else {
@@ -1301,11 +1331,7 @@ fun CameraScanScreen(
                 ) {
                     // Left action: Import from Gallery
                     IconButton(
-                        onClick = {
-                            galleryPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
+                        onClick = { launchGalleryImport() },
                         modifier = Modifier
                             .size(50.dp)
                             .background(Color.White.copy(alpha = 0.15f), CircleShape)

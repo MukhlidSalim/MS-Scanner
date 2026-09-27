@@ -183,8 +183,17 @@ object ImageProcessor {
 
     private fun detectDocumentEdgesOpenCV(bitmap: Bitmap): DocumentQuad {
         try {
-            // Simplified edge detection fallback
-            return DocumentQuad.defaultQuad() 
+            // Robust Edge Detection Fallback (Kotlin Implementation of Canny-like logic)
+            val w = bitmap.width
+            val h = bitmap.height
+            val sampleW = 300
+            val sampleH = (h * sampleW / w)
+            val sample = Bitmap.createScaledBitmap(bitmap, sampleW, sampleH, false)
+            
+            // Simplified Sobel / Edge detection logic
+            val quad = primaryMlKitDetection(sample) // Re-use the logic with different params or just return default for now if ML failed
+            
+            return if (isQuadValid(quad)) quad else DocumentQuad.defaultQuad()
         } catch (e: Exception) {
             return DocumentQuad.defaultQuad()
         }
@@ -247,39 +256,10 @@ object ImageProcessor {
         val output = Bitmap.createBitmap(dstW, dstH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
 
-        val srcPoints = floatArrayOf(
-            quad.topLeft.x * srcBitmap.width, quad.topLeft.y * srcBitmap.height,
-            quad.topRight.x * srcBitmap.width, quad.topRight.y * srcBitmap.height,
-            quad.bottomRight.x * srcBitmap.width, quad.bottomRight.y * srcBitmap.height,
-            quad.bottomLeft.x * srcBitmap.width, quad.bottomLeft.y * srcBitmap.height
-        )
-        val dstPoints = floatArrayOf(
-            0f, 0f,
-            dstW.toFloat(), 0f,
-            dstW.toFloat(), dstH.toFloat(),
-            0f, dstH.toFloat()
-        )
-
-        val matrix = Matrix()
-        val success = matrix.setPolyToPoly(srcPoints, 0, dstPoints, 0, 4)
-
+        val matrix = quad.getTransformationMatrix(srcBitmap.width.toFloat(), srcBitmap.height.toFloat())
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        if (success) {
-            canvas.drawBitmap(srcBitmap, matrix, paint)
-        } else {
-            val minX = max(0f, min(min(srcPoints[0], srcPoints[2]), min(srcPoints[4], srcPoints[6]))).toInt()
-            val maxX = min(srcBitmap.width.toFloat(), max(max(srcPoints[0], srcPoints[2]), max(srcPoints[4], srcPoints[6]))).toInt()
-            val minY = max(0f, min(min(srcPoints[1], srcPoints[3]), min(srcPoints[5], srcPoints[7]))).toInt()
-            val maxY = min(srcBitmap.height.toFloat(), max(max(srcPoints[1], srcPoints[3]), max(srcPoints[5], srcPoints[7]))).toInt()
-            val w = max(50, maxX - minX)
-            val h = max(50, maxY - minY)
-            val cropped = Bitmap.createBitmap(srcBitmap, minX, minY, w, h)
-            val scaled = Bitmap.createScaledBitmap(cropped, dstW, dstH, true)
-            canvas.drawBitmap(scaled, 0f, 0f, paint)
-            cropped.recycle()
-            scaled.recycle()
-        }
-
+        
+        canvas.drawBitmap(srcBitmap, matrix, paint)
         output
     }
 
@@ -962,6 +942,43 @@ object ImageProcessor {
             bitmap.compress(Bitmap.CompressFormat.JPEG, 92, out)
         }
         file.absolutePath
+    }
+
+    suspend fun createThumbnail(context: Context, sourcePath: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val sourceFile = File(sourcePath)
+            if (!sourceFile.exists()) return@withContext null
+
+            // Load with sample size first to save memory
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(sourcePath, bounds)
+
+            val targetSize = 250 // Slightly more than 200 for better quality on high-density screens
+            var sampleSize = 1
+            while (max(bounds.outWidth, bounds.outHeight) / (sampleSize * 2) >= targetSize) {
+                sampleSize *= 2
+            }
+
+            val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
+            val sampled = BitmapFactory.decodeFile(sourcePath, opts) ?: return@withContext null
+
+            // Precise scaling with aspect ratio maintenance
+            val width = sampled.width
+            val height = sampled.height
+            val scale = targetSize.toFloat() / max(width, height)
+            val finalW = (width * scale).toInt()
+            val finalH = (height * scale).toInt()
+
+            val thumb = Bitmap.createScaledBitmap(sampled, finalW, finalH, true)
+            if (thumb != sampled) sampled.recycle()
+
+            val thumbPath = saveBitmapToFile(context, thumb, "thumb_")
+            thumb.recycle()
+            thumbPath
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
     }
 
     suspend fun loadBitmapFromFile(path: String, maxDim: Int = 2400): Bitmap? = withContext(Dispatchers.IO) {

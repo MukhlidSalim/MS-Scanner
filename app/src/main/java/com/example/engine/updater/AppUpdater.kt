@@ -82,7 +82,7 @@ object AppUpdater {
     private fun installApk(context: Context) {
         val file = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "MS_Scanner_Update.apk")
         if (file.exists()) {
-            val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
             val intent = Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(uri, "application/vnd.android.package-archive")
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION

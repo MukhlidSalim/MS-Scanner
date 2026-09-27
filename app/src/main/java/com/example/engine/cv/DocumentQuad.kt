@@ -46,6 +46,14 @@ data class DocumentQuad(
         }
     }
 
+    fun sortCorners(): DocumentQuad {
+        val points = listOf(topLeft, topRight, bottomRight, bottomLeft)
+        val sortedByY = points.sortedBy { it.y }
+        val topHalf = sortedByY.take(2).sortedBy { it.x }
+        val bottomHalf = sortedByY.takeLast(2).sortedByDescending { it.x }
+        return DocumentQuad(topHalf[0], topHalf[1], bottomHalf[0], bottomHalf[1])
+    }
+
     fun toJson(): String {
         return JSONObject().apply {
             put("tlX", topLeft.x.toDouble())
@@ -66,6 +74,21 @@ data class DocumentQuad(
             bottomRight.x * width, bottomRight.y * height,
             bottomLeft.x * width, bottomLeft.y * height
         )
+    }
+
+    fun getTransformationMatrix(srcWidth: Float, srcHeight: Float): android.graphics.Matrix {
+        val sorted = sortCorners()
+        val (dstW, dstH) = sorted.targetDimensions(srcWidth, srcHeight)
+        val srcPoints = sorted.toAbsolutePoints(srcWidth, srcHeight)
+        val dstPoints = floatArrayOf(
+            0f, 0f,
+            dstW.toFloat(), 0f,
+            dstW.toFloat(), dstH.toFloat(),
+            0f, dstH.toFloat()
+        )
+        val matrix = android.graphics.Matrix()
+        matrix.setPolyToPoly(srcPoints, 0, dstPoints, 0, 4)
+        return matrix
     }
 
     fun targetDimensions(width: Float, height: Float): Pair<Int, Int> {

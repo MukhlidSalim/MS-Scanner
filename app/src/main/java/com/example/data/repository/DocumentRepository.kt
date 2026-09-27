@@ -50,6 +50,7 @@ class DocumentRepository(
     fun getAllSignatures(): Flow<List<SignatureEntity>> = documentDao.getAllSignatures()
 
     suspend fun getDocumentById(id: Long): DocumentEntity? = documentDao.getDocumentById(id)
+    suspend fun getPageById(id: Long): PageEntity? = documentDao.getPageById(id)
     suspend fun getPagesList(docId: Long): List<PageEntity> = documentDao.getPagesListForDocument(docId)
 
     /**
@@ -63,6 +64,13 @@ class DocumentRepository(
         pages: List<Pair<String, String>> // (rawImagePath, processedImagePath)
     ): Long = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
+        
+        // Generate thumbnail from first page's processed image
+        val firstPagePath = pages.firstOrNull()?.second ?: pages.firstOrNull()?.first
+        val thumbPath = firstPagePath?.let { 
+            com.example.engine.cv.ImageProcessor.createThumbnail(context, it)
+        }
+
         val doc = DocumentEntity(
             title = title.ifBlank { "Doc_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date(now))}" },
             folderName = folderName,
@@ -71,7 +79,7 @@ class DocumentRepository(
             createdAt = now,
             updatedAt = now,
             pageCount = pages.size,
-            thumbnailPath = pages.firstOrNull()?.second ?: pages.firstOrNull()?.first ?: ""
+            thumbnailPath = thumbPath
         )
         val docId = documentDao.insertDocument(doc)
 
@@ -151,10 +159,19 @@ class DocumentRepository(
                     documentDao.updatePage(p.copy(pageIndex = idx))
                 }
             }
+            
+            // Delete old thumbnail if it exists
+            doc.thumbnailPath?.let { try { File(it).delete() } catch (_: Exception) {} }
+            
+            // Generate new thumbnail from new first page
+            val newThumbPath = remaining.firstOrNull()?.processedImagePath?.let {
+                com.example.engine.cv.ImageProcessor.createThumbnail(context, it)
+            }
+
             documentDao.updateDocument(
                 doc.copy(
                     pageCount = remaining.size,
-                    thumbnailPath = remaining.firstOrNull()?.processedImagePath ?: "",
+                    thumbnailPath = newThumbPath,
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -167,9 +184,17 @@ class DocumentRepository(
         }
         val doc = documentDao.getDocumentById(docId)
         if (doc != null) {
+            // Delete old thumbnail
+            doc.thumbnailPath?.let { try { File(it).delete() } catch (_: Exception) {} }
+            
+            // Generate new thumbnail from new first page
+            val newThumbPath = reorderedPages.firstOrNull()?.processedImagePath?.let {
+                com.example.engine.cv.ImageProcessor.createThumbnail(context, it)
+            }
+
             documentDao.updateDocument(
                 doc.copy(
-                    thumbnailPath = reorderedPages.firstOrNull()?.processedImagePath ?: doc.thumbnailPath,
+                    thumbnailPath = newThumbPath,
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -194,6 +219,10 @@ class DocumentRepository(
     }
 
     suspend fun deleteDocumentPermanently(id: Long) = withContext(Dispatchers.IO) {
+        val doc = documentDao.getDocumentById(id)
+        // Delete thumbnail
+        doc?.thumbnailPath?.let { try { File(it).delete() } catch (_: Exception) {} }
+        
         val pages = documentDao.getPagesListForDocument(id)
         pages.forEach { p ->
             try { File(p.rawImagePath).delete() } catch (_: Exception) {}
@@ -206,6 +235,9 @@ class DocumentRepository(
     suspend fun emptyTrash() = withContext(Dispatchers.IO) {
         val trashDocs = documentDao.getTrashDocumentsList()
         trashDocs.forEach { doc ->
+            // Delete thumbnail
+            doc.thumbnailPath?.let { try { File(it).delete() } catch (_: Exception) {} }
+            
             val pages = documentDao.getPagesListForDocument(doc.id)
             pages.forEach { p ->
                 try { File(p.rawImagePath).delete() } catch (_: Exception) {}

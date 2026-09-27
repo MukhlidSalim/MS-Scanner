@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import java.io.File
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
@@ -72,17 +73,17 @@ import com.example.ui.theme.Emerald400
 import com.example.ui.theme.EmeraldLight
 import com.example.ui.theme.StudioCanvasBg
 import com.example.ui.theme.WarningAmber
-import com.example.ui.viewmodel.DocumentViewModel
+import com.example.ui.viewmodel.EditSessionViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DocumentViewerScreen(
     docId: Long,
-    viewModel: DocumentViewModel,
+    viewModel: EditSessionViewModel,
+    onImportedUris: (List<Uri>) -> Unit = {},
     onNavigateBack: () -> Unit,
     onNavigateToScan: (Long, Long) -> Unit, // docId, replacePageId
     onNavigateToCrop: (Long, Long) -> Unit,
@@ -166,7 +167,7 @@ fun DocumentViewerScreen(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
     ) { uris ->
         if (uris.isNotEmpty()) {
-            viewModel.setImportedUrisPendingEdit(uris)
+            onImportedUris(uris)
             onNavigateToEditSession("IMPORT", docId)
         }
     }
@@ -195,8 +196,22 @@ fun DocumentViewerScreen(
         }
     }
 
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is com.example.ui.util.UiEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                is com.example.ui.util.UiEvent.ShowSnackbar -> snackbarHostState.showSnackbar(event.message)
+                is com.example.ui.util.UiEvent.Error -> Toast.makeText(context, event.message, Toast.LENGTH_LONG).show()
+                else -> {}
+            }
+        }
+    }
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
                 title = {
@@ -922,7 +937,7 @@ fun DocumentViewerScreen(
         ReorderPagesScreen(
             pages = pages,
             onSave = { newOrder ->
-                viewModel.reorderPages(newOrder)
+                viewModel.updatePagesOrder(newOrder)
                 showReorderDialog = false
             },
             onCancel = { showReorderDialog = false }
@@ -1029,7 +1044,7 @@ fun DocumentViewerScreen(
                         onClick = {
                             val activeFilterStr = pages.getOrNull(pagerState.currentPage)?.filterType ?: FilterType.AUTO.name
                             val activeFilter = try { FilterType.valueOf(activeFilterStr) } catch(e: Exception) { FilterType.AUTO }
-                            viewModel.applyFilterToAllPages(context, activeFilter)
+                            viewModel.applyFilterToAllPages(docId, activeFilter)
                             showFilterSheet = false
                         },
                         shape = RoundedCornerShape(14.dp),
@@ -1372,7 +1387,7 @@ fun DocumentViewerScreen(
 
 private fun shareFile(context: Context, file: File, mimeType: String = "image/jpeg") {
     try {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
         val intent = Intent(Intent.ACTION_SEND).apply {
             type = mimeType
             putExtra(Intent.EXTRA_STREAM, uri)
@@ -1384,7 +1399,7 @@ private fun shareFile(context: Context, file: File, mimeType: String = "image/jp
 
 private fun shareMultipleFiles(context: Context, files: List<File>, mimeType: String = "image/jpeg") {
     try {
-        val uris = files.map { FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it) }
+        val uris = files.map { FileProvider.getUriForFile(context, "${context.packageName}.provider", it) }
         val intent = Intent(Intent.ACTION_SEND_MULTIPLE).apply {
             type = mimeType
             putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))

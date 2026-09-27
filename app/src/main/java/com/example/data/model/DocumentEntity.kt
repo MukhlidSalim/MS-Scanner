@@ -2,6 +2,7 @@ package com.example.data.model
 
 import androidx.room.Entity
 import androidx.room.PrimaryKey
+import androidx.room.ColumnInfo
 
 @Entity(tableName = "documents")
 data class DocumentEntity(
@@ -15,7 +16,7 @@ data class DocumentEntity(
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis(),
     val pageCount: Int = 1,
-    val thumbnailPath: String = "",
+    val thumbnailPath: String? = null,
     val suggestedTitle: String = "",
     val tagsCsv: String = "",
     val fileSizeFormatted: String = "",
@@ -23,7 +24,18 @@ data class DocumentEntity(
     val ocrText: String = ""
 )
 
-@Entity(tableName = "pages")
+@Entity(
+    tableName = "pages",
+    foreignKeys = [
+        androidx.room.ForeignKey(
+            entity = DocumentEntity::class,
+            parentColumns = ["id"],
+            childColumns = ["documentId"],
+            onDelete = androidx.room.ForeignKey.CASCADE
+        )
+    ],
+    indices = [androidx.room.Index("documentId")]
+)
 data class PageEntity(
     @PrimaryKey(autoGenerate = true)
     val id: Long = 0,

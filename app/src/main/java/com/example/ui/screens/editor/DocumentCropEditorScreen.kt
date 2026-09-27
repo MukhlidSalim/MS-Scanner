@@ -44,6 +44,8 @@ import com.example.R
 import com.example.data.model.FilterType
 import com.example.engine.cv.DocumentQuad
 import com.example.engine.cv.ImageProcessor
+import com.example.engine.cv.ImageProcessingWorker
+import androidx.work.*
 import com.example.ui.theme.CyanScan
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.StudioCanvasBg
@@ -121,12 +123,30 @@ fun DocumentCropEditorScreen(
     var showBoundary by remember { mutableStateOf(true) }
 
     LaunchedEffect(imagePath) {
-        withContext(Dispatchers.IO) {
-            val bmp = ImageProcessor.loadBitmapFromFile(imagePath, 2048)
+        val workManager = WorkManager.getInstance(context)
+        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
+            .setInputData(workDataOf(
+                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_DETECT_QUAD,
+                ImageProcessingWorker.KEY_IMAGE_PATH to imagePath
+            ))
+            .build()
+        
+        workManager.enqueue(workRequest)
+        
+        coroutineScope.launch {
+            val bmp = withContext(Dispatchers.IO) { ImageProcessor.loadBitmapFromFile(imagePath, 2048) }
             originalBitmap = bmp
             currentBitmap = bmp
-            if (bmp != null) {
-                quad = ImageProcessor.detectDocumentQuad(bmp)
+        }
+
+        coroutineScope.launch {
+            workManager.getWorkInfoByIdFlow(workRequest.id).collect { workInfo ->
+                if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
+                    val quadJson = workInfo.outputData.getString(ImageProcessingWorker.KEY_QUAD_JSON)
+                    if (quadJson != null) {
+                        quad = DocumentQuad.fromJson(quadJson)
+                    }
+                }
             }
         }
     }
@@ -215,27 +235,36 @@ fun DocumentCropEditorScreen(
                     // Save Button
                     Button(
                         onClick = {
-                            val bmp = originalBitmap ?: return@Button
+                            val workManager = WorkManager.getInstance(context)
+                            val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
+                                .setInputData(workDataOf(
+                                    ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_EDIT_PROCESS,
+                                    ImageProcessingWorker.KEY_IMAGE_PATH to imagePath,
+                                    ImageProcessingWorker.KEY_QUAD_JSON to quad.toJson(),
+                                    ImageProcessingWorker.KEY_ROTATION_DEGREES to rotationDegrees,
+                                    ImageProcessingWorker.KEY_FILTER_TYPE to selectedFilter.name,
+                                    ImageProcessingWorker.KEY_BRIGHTNESS to brightness,
+                                    ImageProcessingWorker.KEY_CONTRAST to contrast,
+                                    ImageProcessingWorker.KEY_SHARPEN to isSharpenEnabled
+                                ))
+                                .build()
+
                             isProcessing = true
+                            workManager.enqueue(workRequest)
+
                             coroutineScope.launch {
-                                val rotated = if (rotationDegrees != 0) ImageProcessor.rotateBitmap(bmp, rotationDegrees) else bmp
-                                val warped = ImageProcessor.warpPerspective(rotated, quad)
-                                val filtered = ImageProcessor.applyFilter(warped, selectedFilter)
-                                val enhanced = if (brightness != 0f || contrast != 1f || isSharpenEnabled) {
-                                    val adj = ImageProcessor.adjustEnhancements(filtered, brightness, contrast, isSharpenEnabled)
-                                    filtered.recycle()
-                                    adj
-                                } else {
-                                    filtered
+                                workManager.getWorkInfoByIdFlow(workRequest.id).collect { workInfo ->
+                                    if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
+                                        val newPath = workInfo.outputData.getString(ImageProcessingWorker.KEY_RESULT_PATH)
+                                        isProcessing = false
+                                        if (newPath != null) {
+                                            onCropped(newPath)
+                                        }
+                                    } else if (workInfo?.state == WorkInfo.State.FAILED) {
+                                        isProcessing = false
+                                        // Should show error
+                                    }
                                 }
-
-                                val newPath = ImageProcessor.saveBitmapToFile(context, enhanced, "edit_proc_")
-
-                                if (rotated != bmp && rotated != warped) rotated.recycle()
-                                if (warped != bmp) warped.recycle()
-                                enhanced.recycle()
-                                isProcessing = false
-                                onCropped(newPath)
                             }
                         },
                         shape = RoundedCornerShape(12.dp),
@@ -272,10 +301,24 @@ fun DocumentCropEditorScreen(
                             ) {
                                 // Auto Detect
                                 TextButton(onClick = {
-                                    originalBitmap?.let { bmp ->
-                                        pushHistory()
-                                        coroutineScope.launch {
-                                            quad = ImageProcessor.detectDocumentQuad(bmp)
+                                    pushHistory()
+                                    val workManager = WorkManager.getInstance(context)
+                                    val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
+                                        .setInputData(workDataOf(
+                                            ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_DETECT_QUAD,
+                                            ImageProcessingWorker.KEY_IMAGE_PATH to imagePath
+                                        ))
+                                        .build()
+                                    
+                                    workManager.enqueue(workRequest)
+                                    coroutineScope.launch {
+                                        workManager.getWorkInfoByIdFlow(workRequest.id).collect { workInfo ->
+                                            if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
+                                                val quadJson = workInfo.outputData.getString(ImageProcessingWorker.KEY_QUAD_JSON)
+                                                if (quadJson != null) {
+                                                    quad = DocumentQuad.fromJson(quadJson)
+                                                }
+                                            }
                                         }
                                     }
                                 }) {

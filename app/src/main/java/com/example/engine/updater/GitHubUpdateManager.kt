@@ -240,7 +240,7 @@ class GitHubUpdateManager(private val context: Context) {
     fun launchInstallApk(apkFile: File) {
         val uri = FileProvider.getUriForFile(
             context,
-            "${context.packageName}.fileprovider",
+            "${context.packageName}.provider",
             apkFile
         )
 
