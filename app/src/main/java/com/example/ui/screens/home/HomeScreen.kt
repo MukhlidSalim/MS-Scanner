@@ -106,6 +106,7 @@ fun HomeScreen(
     var renameFolderTarget by remember { mutableStateOf<String?>(null) }
     var newFolderRename by remember { mutableStateOf("") }
     var showNewFolderDialog by remember { mutableStateOf(false) }
+    var showSortSheet by remember { mutableStateOf(false) }
     var newFolderNameInput by remember { mutableStateOf("") }
     
     var tempCameraFile by remember { mutableStateOf<File?>(null) }
@@ -438,7 +439,7 @@ fun HomeScreen(
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.txt_sort)) },
                                 leadingIcon = { Icon(Icons.Default.Sort, null) },
-                                onClick = { expanded = false; /* TODO: Show sort dialog */ }
+                                onClick = { expanded = false; showSortSheet = true }
                             )
                             HorizontalDivider()
                             // Launcher for PDF import
@@ -1067,6 +1068,73 @@ fun HomeScreen(
                 }
             }
         )
+    }
+
+
+    if (showSortSheet) {
+        ModalBottomSheet(onDismissRequest = { showSortSheet = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(stringResource(R.string.txt_sort), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                val currentSort = listUiState.sortMode
+                
+                val sortOptions = listOf(
+                    com.example.ui.viewmodel.SortOrder.DATE_CREATED to "تاريخ الإنشاء (أحدث)",
+                    com.example.ui.viewmodel.SortOrder.DATE_MODIFIED to "تاريخ التعديل (أحدث)",
+                    com.example.ui.viewmodel.SortOrder.NAME to "الاسم (أ-ي)",
+                    com.example.ui.viewmodel.SortOrder.SIZE to "الحجم (الأكبر)"
+                )
+                
+                sortOptions.forEach { (order, label) ->
+                    val isSelected = currentSort == order
+                    Surface(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 4.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
+                        onClick = {
+                            listViewModel.setSortMode(order)
+                            showSortSheet = false
+                        }
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(16.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                imageVector = when (order) {
+                                    com.example.ui.viewmodel.SortOrder.DATE_CREATED -> Icons.Default.DateRange
+                                    com.example.ui.viewmodel.SortOrder.DATE_MODIFIED -> Icons.Default.Update
+                                    com.example.ui.viewmodel.SortOrder.NAME -> Icons.Default.SortByAlpha
+                                    com.example.ui.viewmodel.SortOrder.SIZE -> Icons.Default.FormatSize
+                                },
+                                contentDescription = null,
+                                tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                            Spacer(modifier = Modifier.width(16.dp))
+                            Text(
+                                text = label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                            )
+                            if (isSelected) {
+                                Spacer(modifier = Modifier.weight(1f))
+                                Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(32.dp))
+            }
+        }
     }
 
     // GitHub In-App Update Dialog

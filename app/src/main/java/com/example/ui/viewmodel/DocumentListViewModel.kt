@@ -1,12 +1,19 @@
 package com.example.ui.viewmodel
 
+enum class SortOrder {
+    DATE_CREATED,
+    DATE_MODIFIED,
+    NAME,
+    SIZE
+}
+
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.BuildConfig
 import com.example.data.model.DocumentCategory
 import com.example.data.model.DocumentEntity
-import com.example.data.model.SortMode
+
 import com.example.data.repository.AppPreferences
 import com.example.data.repository.DocumentRepository
 import com.example.data.repository.StorageStats
@@ -27,7 +34,7 @@ data class DocumentListUiState(
     val selectedFolder: String = "ALL",
     val selectedCategory: DocumentCategory = DocumentCategory.ALL,
     val searchQuery: String = "",
-    val sortMode: SortMode = SortMode.NEWEST,
+    val sortMode: SortOrder = SortOrder.DATE_MODIFIED,
     val showFavoritesOnly: Boolean = false,
     val storageStats: StorageStats? = null,
     val isAppLocked: Boolean = false,
@@ -65,7 +72,7 @@ class DocumentListViewModel(
         val folder: String = "ALL",
         val category: DocumentCategory = DocumentCategory.ALL,
         val query: String = "",
-        val sort: SortMode = SortMode.NEWEST,
+        val sort: SortOrder = SortOrder.DATE_MODIFIED,
         val showFavorites: Boolean = false
     )
     private val filterTrigger = MutableStateFlow(FilterState())
@@ -144,7 +151,7 @@ class DocumentListViewModel(
         filterTrigger.value = filterTrigger.value.copy(query = query)
     }
 
-    fun setSortMode(mode: SortMode) {
+    fun setSortMode(mode: SortOrder) {
         _uiState.update { it.copy(sortMode = mode) }
         filterTrigger.value = filterTrigger.value.copy(sort = mode)
     }
@@ -165,15 +172,15 @@ class DocumentListViewModel(
         setShowFavoritesOnly(newValue)
     }
 
-    private fun applySorting(docs: List<DocumentEntity>, mode: SortMode): List<DocumentEntity> {
-        return when (mode) {
-            SortMode.NEWEST -> docs.sortedByDescending { it.updatedAt }
-            SortMode.OLDEST -> docs.sortedBy { it.updatedAt }
-            SortMode.NAME_AZ -> docs.sortedBy { it.title.lowercase() }
-            SortMode.NAME_ZA -> docs.sortedByDescending { it.title.lowercase() }
-            SortMode.SIZE_LARGEST -> docs.sortedByDescending { it.sizeBytes }
-            SortMode.PAGE_COUNT -> docs.sortedByDescending { it.pageCount }
-        }
+    private fun applySorting(docs: List<DocumentEntity>, mode: SortOrder): List<DocumentEntity> {
+        return docs.sortedWith(
+            when (mode) {
+                SortOrder.DATE_CREATED -> compareByDescending { it.createdAt }
+                SortOrder.DATE_MODIFIED -> compareByDescending { it.updatedAt }
+                SortOrder.NAME -> compareBy { it.title.lowercase() }
+                SortOrder.SIZE -> compareByDescending { it.sizeBytes }
+            }
+        )
     }
 
     fun toggleFavorite(docId: Long) {

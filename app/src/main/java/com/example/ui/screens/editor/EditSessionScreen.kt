@@ -274,10 +274,10 @@ fun EditSessionScreen(
                         }
                         
                         Text("Brightness")
-                        Slider(value = brightness, onValueChange = { brightness = it }, valueRange = -1f..1f)
+                        Slider(value = brightness, onValueChange = { brightness = it; hasUnsavedChanges = true }, valueRange = -1f..1f)
                         
                         Text("Contrast")
-                        Slider(value = contrast, onValueChange = { contrast = it }, valueRange = 0f..2f)
+                        Slider(value = contrast, onValueChange = { contrast = it; hasUnsavedChanges = true }, valueRange = 0f..2f)
                         
                         Text("PDF Compression")
                         Row(
