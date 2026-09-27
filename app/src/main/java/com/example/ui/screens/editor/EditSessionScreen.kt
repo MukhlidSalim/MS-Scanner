@@ -18,19 +18,23 @@ import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Crop
 import androidx.compose.material.icons.filled.Title
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.ui.graphics.Color
 import coil.compose.AsyncImage
 import java.io.File
-import androidx.compose.foundation.pager.rememberPagerState
-import androidx.compose.foundation.pager.HorizontalPager
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.ui.semantics.Role
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.example.ui.theme.Emerald400
+import com.example.engine.cv.ImageProcessor
+import com.example.data.model.FilterType
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -102,9 +106,108 @@ fun EditSessionScreen(
     var hasUnsavedChanges by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
     var contrast by remember { mutableStateOf(1f) }
+    var isApplyingAdjustment by remember { mutableStateOf(false) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+    val isArabic = remember { Locale.getDefault().language == "ar" }
+
+    fun applyCurrentAdjustments() {
+        val targetIndices = if (applyToAll) (0 until pages.size).toList() else listOf(pagerState.currentPage)
+        isApplyingAdjustment = true
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                for (idx in targetIndices) {
+                    val pageItem = pages.getOrNull(idx) ?: continue
+                    val rawPath = when (pageItem) {
+                        is com.example.data.model.PageEntity -> pageItem.rawImagePath.ifBlank { pageItem.processedImagePath }
+                        is Pair<*, *> -> (pageItem as Pair<String, String>).first
+                        else -> ""
+                    }
+                    if (rawPath.isNotEmpty()) {
+                        val bmp = ImageProcessor.loadBitmapFromFile(rawPath)
+                        if (bmp != null) {
+                            val adjusted = ImageProcessor.adjustEnhancements(bmp, brightness * 50f, contrast, false)
+                            val newPath = ImageProcessor.saveBitmapToFile(context, adjusted, "adj_proc_")
+                            if (adjusted != bmp) adjusted.recycle()
+                            bmp.recycle()
+
+                            withContext(Dispatchers.Main) {
+                                if (sourceType == "EXISTING") {
+                                    editViewModel.updateEditingSessionPageProcessedImage(idx, newPath)
+                                } else {
+                                    onUpdatePendingPage(idx, newPath)
+                                }
+                            }
+                        }
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    hasUnsavedChanges = true
+                    isApplyingAdjustment = false
+                    android.widget.Toast.makeText(
+                        context,
+                        if (isArabic) "تم تطبيق التعديلات بنجاح" else "Adjustments applied successfully",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    isApplyingAdjustment = false
+                }
+            }
+        }
+    }
+
+    fun applyQuickFilter(filter: FilterType) {
+        val targetIndices = if (applyToAll) (0 until pages.size).toList() else listOf(pagerState.currentPage)
+        isApplyingAdjustment = true
+        coroutineScope.launch(Dispatchers.IO) {
+            try {
+                for (idx in targetIndices) {
+                    val pageItem = pages.getOrNull(idx) ?: continue
+                    val rawPath = when (pageItem) {
+                        is com.example.data.model.PageEntity -> pageItem.rawImagePath.ifBlank { pageItem.processedImagePath }
+                        is Pair<*, *> -> (pageItem as Pair<String, String>).first
+                        else -> ""
+                    }
+                    if (rawPath.isNotEmpty()) {
+                        val bmp = ImageProcessor.loadBitmapFromFile(rawPath)
+                        if (bmp != null) {
+                            val filtered = ImageProcessor.applyFilter(bmp, filter)
+                            val newPath = ImageProcessor.saveBitmapToFile(context, filtered, "filter_proc_")
+                            if (filtered != bmp) filtered.recycle()
+                            bmp.recycle()
+
+                            withContext(Dispatchers.Main) {
+                                if (sourceType == "EXISTING") {
+                                    editViewModel.updateEditingSessionPageProcessedImage(idx, newPath)
+                                } else {
+                                    onUpdatePendingPage(idx, newPath)
+                                }
+                            }
+                        }
+                    }
+                }
+                withContext(Dispatchers.Main) {
+                    hasUnsavedChanges = true
+                    isApplyingAdjustment = false
+                    android.widget.Toast.makeText(
+                        context,
+                        if (isArabic) "تم تطبيق الفلتر بنجاح" else "Filter applied successfully",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                withContext(Dispatchers.Main) {
+                    isApplyingAdjustment = false
+                }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) {
         editViewModel.events.collect { event ->
@@ -176,7 +279,7 @@ fun EditSessionScreen(
                 TopAppBar(
                     title = { 
                         val current = if (pages.isEmpty()) 0 else pagerState.currentPage + 1
-                        Text("Review Pages ($current/${pages.size})") 
+                        Text(if (isArabic) "مراجعة الصفحات ($current/${pages.size})" else "Review Pages ($current/${pages.size})") 
                     },
                     actions = {
                         TextButton(onClick = { 
@@ -218,7 +321,7 @@ fun EditSessionScreen(
                 }
             } else if (pages.isEmpty()) {
                 Box(modifier = Modifier.padding(padding).fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text("No pages to display")
+                    Text(if (isArabic) "لا توجد صفحات للعرض" else "No pages to display")
                 }
             } else {
                 Column(modifier = Modifier.padding(padding).fillMaxSize()) {
@@ -227,7 +330,7 @@ fun EditSessionScreen(
                         OutlinedTextField(
                             value = documentTitle,
                             onValueChange = { documentTitle = it },
-                            label = { Text("Document Title") },
+                            label = { Text(if (isArabic) "اسم المستند" else "Document Title") },
                             leadingIcon = { Icon(Icons.Default.Title, null) },
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                             singleLine = true
@@ -265,21 +368,111 @@ fun EditSessionScreen(
                             .padding(16.dp)
                             .verticalScroll(rememberScrollState())
                     ) {
+                        // Quick Filters
+                        Text(
+                            text = if (isArabic) "فلاتر الألوان السريعة" else "Quick Color Filters",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                            modifier = Modifier.padding(bottom = 6.dp)
+                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = false,
+                                onClick = { applyQuickFilter(FilterType.AUTO) },
+                                label = { Text(if (isArabic) "تلقائي" else "Auto") }
+                            )
+                            FilterChip(
+                                selected = false,
+                                onClick = { applyQuickFilter(FilterType.MAGIC) },
+                                label = { Text(if (isArabic) "ألوان سحرية" else "Magic Color") }
+                            )
+                            FilterChip(
+                                selected = false,
+                                onClick = { applyQuickFilter(FilterType.DOCUMENT) },
+                                label = { Text(if (isArabic) "مستند نقي" else "Clean") }
+                            )
+                            FilterChip(
+                                selected = false,
+                                onClick = { applyQuickFilter(FilterType.BLACK_WHITE) },
+                                label = { Text(if (isArabic) "أبيض وأسود" else "B&W") }
+                            )
+                        }
+
+                        Divider(modifier = Modifier.padding(vertical = 8.dp))
+
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.padding(bottom = 8.dp)
                         ) {
                             Checkbox(checked = applyToAll, onCheckedChange = { applyToAll = it })
-                            Text("Apply adjustments to all pages")
+                            Text(if (isArabic) "تطبيق التعديلات على جميع الصفحات" else "Apply adjustments to all pages")
                         }
                         
-                        Text("Brightness")
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(if (isArabic) "السطوع" else "Brightness")
+                            Text(String.format(Locale.US, "%.0f%%", brightness * 100))
+                        }
                         Slider(value = brightness, onValueChange = { brightness = it; hasUnsavedChanges = true }, valueRange = -1f..1f)
                         
-                        Text("Contrast")
-                        Slider(value = contrast, onValueChange = { contrast = it; hasUnsavedChanges = true }, valueRange = 0f..2f)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(if (isArabic) "التباين" else "Contrast")
+                            Text(String.format(Locale.US, "%.1fx", contrast))
+                        }
+                        Slider(value = contrast, onValueChange = { contrast = it; hasUnsavedChanges = true }, valueRange = 0.5f..2.5f)
+
+                        // Action buttons for sliders
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    brightness = 0f
+                                    contrast = 1f
+                                    applyCurrentAdjustments()
+                                },
+                                modifier = Modifier.weight(1f),
+                                enabled = !isApplyingAdjustment
+                            ) {
+                                Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(if (isArabic) "إعادة تعيين" else "Reset")
+                            }
+
+                            Button(
+                                onClick = { applyCurrentAdjustments() },
+                                modifier = Modifier.weight(1.4f),
+                                enabled = !isApplyingAdjustment
+                            ) {
+                                if (isApplyingAdjustment) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(16.dp),
+                                        color = MaterialTheme.colorScheme.onPrimary,
+                                        strokeWidth = 2.dp
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                } else {
+                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                }
+                                Text(if (isArabic) "تطبيق التعديلات" else "Apply")
+                            }
+                        }
+
+                        Divider(modifier = Modifier.padding(vertical = 8.dp))
                         
-                        Text("PDF Compression")
+                        Text(if (isArabic) "ضغط ملف الـ PDF" else "PDF Compression")
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceEvenly
@@ -293,7 +486,7 @@ fun EditSessionScreen(
                             }
                         }
 
-                        Text("OCR Language")
+                        Text(if (isArabic) "لغة استخراج النص (OCR)" else "OCR Language")
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                             horizontalArrangement = Arrangement.SpaceEvenly
@@ -319,7 +512,7 @@ fun EditSessionScreen(
                                     onRotatePendingPage(pagerState.currentPage, false)
                                 }
                             }) {
-                                Icon(Icons.Default.RotateLeft, contentDescription = "Rotate Left")
+                                Icon(Icons.Default.RotateLeft, contentDescription = if (isArabic) "تدوير لليسار" else "Rotate Left")
                             }
                             
                             Spacer(modifier = Modifier.width(16.dp))
@@ -330,7 +523,7 @@ fun EditSessionScreen(
                             ) {
                                 Icon(Icons.Default.Crop, contentDescription = null)
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("Crop & Adjust")
+                                Text(if (isArabic) "قص وضبط احترافي" else "Crop & Adjust")
                             }
 
                             Spacer(modifier = Modifier.width(16.dp))
@@ -342,7 +535,7 @@ fun EditSessionScreen(
                                     onRotatePendingPage(pagerState.currentPage, true)
                                 }
                             }) {
-                                Icon(Icons.Default.RotateRight, contentDescription = "Rotate Right")
+                                Icon(Icons.Default.RotateRight, contentDescription = if (isArabic) "تدوير لليمين" else "Rotate Right")
                             }
                         }
                     }

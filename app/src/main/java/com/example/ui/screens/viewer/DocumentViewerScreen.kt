@@ -64,6 +64,7 @@ import com.example.engine.pdf.PdfEngine
 import com.example.engine.pdf.PdfExportConfig
 import com.example.ui.components.MergePagesDialog
 import com.example.ui.components.PageActionsBottomSheet
+import com.example.ui.components.PdfViewerOverlay
 import com.example.ui.components.ScanActionButton
 import com.example.ui.screens.viewer.components.SelectionActionBar
 import com.example.ui.theme.*
@@ -135,6 +136,7 @@ fun DocumentViewerScreen(
 
     var isGridView by remember { mutableStateOf(true) } // Images inside documents are always grid by default
     var showPdfExportDialog by remember { mutableStateOf(false) }
+    var previewPdfFile by remember { mutableStateOf<File?>(null) }
     var isSharingMultiple by remember { mutableStateOf(false) }
     var showFilterSheet by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
@@ -1273,7 +1275,7 @@ fun DocumentViewerScreen(
                                 selectionMode = false
                                 selectedPageIds = emptySet()
                             }
-                            shareFile(context, generatedPdf, "application/pdf")
+                            previewPdfFile = generatedPdf
                         }
                     },
                     shape = RoundedCornerShape(12.dp),
@@ -1382,6 +1384,14 @@ fun DocumentViewerScreen(
                     ).show()
                 }
             }
+        )
+    }
+
+    // In-App PDF Review Overlay before sharing via FileProvider
+    previewPdfFile?.let { file ->
+        PdfViewerOverlay(
+            pdfFile = file,
+            onDismiss = { previewPdfFile = null }
         )
     }
 }

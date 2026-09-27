@@ -379,7 +379,14 @@ class EditSessionViewModel(
                 pageSize = _uiState.value.defaultPdfPageSize,
                 compression = _uiState.value.defaultPdfCompression
             )
-            val pairs = allPages.map { Pair(it.rawImagePath, it.processedImagePath) }
+            val pairs = allPages.map { page ->
+                val img = if (page.processedImagePath.isNotBlank() && File(page.processedImagePath).exists()) {
+                    page.processedImagePath
+                } else {
+                    page.rawImagePath
+                }
+                Pair(img, page.ocrText)
+            }
             val pdfFile = PdfEngine.generatePdf(context, pairs, config)
             
             _uiState.update { it.copy(isExportingPdf = false, exportedPdfFile = pdfFile) }
@@ -413,7 +420,7 @@ class EditSessionViewModel(
                     val result = if (useDeepAi && com.example.BuildConfig.GEMINI_API_KEY.isNotEmpty()) {
                         DocumentAiEngine.analyzeWithGemini(bmp)
                     } else {
-                        DocumentAiEngine.performOfflineOcr(bmp)
+                        DocumentAiEngine.performOfflineOcr(bmp, _uiState.value.ocrLanguage)
                     }
                     _uiState.update { it.copy(ocrResult = result, isOcrLoading = false) }
                     bmp.recycle()
@@ -597,7 +604,14 @@ class EditSessionViewModel(
                 return@launch
             }
             
-            val pairs = targetPages.map { Pair(it.rawImagePath, it.processedImagePath) }
+            val pairs = targetPages.map { page ->
+                val img = if (page.processedImagePath.isNotBlank() && File(page.processedImagePath).exists()) {
+                    page.processedImagePath
+                } else {
+                    page.rawImagePath
+                }
+                Pair(img, page.ocrText)
+            }
             val pdfFile = PdfEngine.generatePdf(context, pairs, config)
             
             _uiState.update { it.copy(isExportingPdf = false, exportedPdfFile = pdfFile) }

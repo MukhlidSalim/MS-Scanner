@@ -51,10 +51,12 @@ object DocumentAiEngine {
         .build()
 
     /**
-     * Offline OCR text extractor using ML Kit Text Recognition
+     * Offline OCR text extractor using ML Kit Text Recognition with Arabic support
      */
-    suspend fun performOfflineOcr(bitmap: Bitmap): DocumentAnalysisResult = suspendCancellableCoroutine { continuation ->
-        // Use default client (GMS version)
+    suspend fun performOfflineOcr(
+        bitmap: Bitmap,
+        language: OcrLanguage = OcrLanguage.AUTO
+    ): DocumentAnalysisResult = suspendCancellableCoroutine { continuation ->
         val recognizer = TextRecognition.getClient()
         val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bitmap, 0)
 

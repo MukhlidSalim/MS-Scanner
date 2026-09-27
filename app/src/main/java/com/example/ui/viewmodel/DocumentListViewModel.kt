@@ -15,16 +15,17 @@ import com.example.ui.util.UiEvent
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-
-enum class SortOrder {
-    DATE_CREATED,
-    DATE_MODIFIED,
-    NAME,
-    SIZE
-}
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import java.io.File
+
+enum class ExportPdfAction {
+    SHARE,
+    SAVE_TO_DOWNLOADS,
+    SAVE_AS,
+    OPEN,
+    PREVIEW
+}
 
 enum class SortOrder {
     DATE_CREATED,
@@ -287,41 +288,116 @@ class DocumentListViewModel(
         }
     }
 
-    fun shareDocumentsAsPdf(context: Context, docIds: List<Long>) {
+    suspend fun getSelectedDocumentsWithPages(docIds: List<Long>): List<Pair<DocumentEntity, List<com.example.data.model.PageEntity>>> = withContext(Dispatchers.IO) {
+        docIds.mapNotNull { id ->
+            val doc = repository.getDocumentById(id) ?: return@mapNotNull null
+            val pages = repository.getPagesForDocumentSync(id)
+            Pair(doc, pages)
+        }
+    }
+
+    fun exportDocumentsAsPdf(
+        context: Context,
+        docIds: List<Long>,
+        config: com.example.engine.pdf.PdfExportConfig,
+        action: ExportPdfAction,
+        targetSaveUri: android.net.Uri? = null,
+        onSuccess: (File, android.net.Uri?, String) -> Unit = { _, _, _ -> },
+        onError: (String) -> Unit = {}
+    ) {
         if (docIds.isEmpty()) return
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
-            val allPages = mutableListOf<com.example.data.model.PageEntity>()
-            for (id in docIds) {
-                allPages.addAll(repository.getPagesForDocumentSync(id))
-            }
-            if (allPages.isEmpty()) {
-                _uiState.update { it.copy(isLoading = false) }
-                return@launch
-            }
-            
-            val config = com.example.engine.pdf.PdfExportConfig(
-                title = "Shared_Documents",
-                pageSize = com.example.data.model.PageSizePreset.A4,
-                compression = com.example.data.model.CompressionPreset.HIGH
-            )
-            val pairs = allPages.map { Pair(it.rawImagePath, it.processedImagePath) }
-            val pdfFile = com.example.engine.pdf.PdfEngine.generatePdf(context, pairs, config)
-            
-            _uiState.update { it.copy(isLoading = false) }
-            
             try {
-                val uri = androidx.core.content.FileProvider.getUriForFile(context, context.packageName + ".provider", pdfFile)
-                val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
-                    putExtra(android.content.Intent.EXTRA_STREAM, uri)
-                    type = "application/pdf"
-                    addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                val allPages = mutableListOf<com.example.data.model.PageEntity>()
+                for (id in docIds) {
+                    allPages.addAll(repository.getPagesForDocumentSync(id))
                 }
-                context.startActivity(android.content.Intent.createChooser(intent, "Share PDF via"))
+                if (allPages.isEmpty()) {
+                    _uiState.update { it.copy(isLoading = false) }
+                    val msg = "No pages found in selected documents"
+                    _events.send(UiEvent.Error(msg))
+                    onError(msg)
+                    return@launch
+                }
+
+                val pairs = allPages.map { page ->
+                    val path = if (page.processedImagePath.isNotBlank() && File(page.processedImagePath).exists()) {
+                        page.processedImagePath
+                    } else {
+                        page.rawImagePath
+                    }
+                    Pair(path, page.ocrText)
+                }
+
+                val pdfFile = com.example.engine.pdf.PdfEngine.generatePdf(context, pairs, config)
+
+                when (action) {
+                    ExportPdfAction.SHARE -> {
+                        com.example.engine.pdf.PdfEngine.sharePdf(context, pdfFile)
+                        val uri = com.example.engine.pdf.PdfEngine.getFileProviderUri(context, pdfFile)
+                        onSuccess(pdfFile, uri, "Shared")
+                    }
+                    ExportPdfAction.SAVE_TO_DOWNLOADS -> {
+                        val (savedUri, path) = com.example.engine.pdf.PdfEngine.savePdfToStorage(
+                            context,
+                            pdfFile,
+                            config.title
+                        )
+                        if (savedUri != null) {
+                            onSuccess(pdfFile, savedUri, path ?: "Downloads/MS_Scanner")
+                        } else {
+                            val uri = com.example.engine.pdf.PdfEngine.getFileProviderUri(context, pdfFile)
+                            onSuccess(pdfFile, uri, pdfFile.name)
+                        }
+                    }
+                    ExportPdfAction.SAVE_AS -> {
+                        if (targetSaveUri != null) {
+                            val ok = com.example.engine.pdf.PdfEngine.copyPdfToUri(context, pdfFile, targetSaveUri)
+                            if (ok) {
+                                onSuccess(pdfFile, targetSaveUri, "Selected Folder")
+                            } else {
+                                onError("Failed to save to selected location")
+                            }
+                        } else {
+                            val uri = com.example.engine.pdf.PdfEngine.getFileProviderUri(context, pdfFile)
+                            onSuccess(pdfFile, uri, pdfFile.name)
+                        }
+                    }
+                    ExportPdfAction.OPEN -> {
+                        com.example.engine.pdf.PdfEngine.openPdf(context, pdfFile)
+                        val uri = com.example.engine.pdf.PdfEngine.getFileProviderUri(context, pdfFile)
+                        onSuccess(pdfFile, uri, "Opened")
+                    }
+                    ExportPdfAction.PREVIEW -> {
+                        val uri = com.example.engine.pdf.PdfEngine.getFileProviderUri(context, pdfFile)
+                        onSuccess(pdfFile, uri, "Preview")
+                    }
+                }
             } catch (e: Exception) {
                 e.printStackTrace()
+                val errorMsg = e.localizedMessage ?: "PDF export failed"
+                _events.send(UiEvent.Error(errorMsg))
+                onError(errorMsg)
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
+    }
+
+    fun shareDocumentsAsPdf(context: Context, docIds: List<Long>) {
+        if (docIds.isEmpty()) return
+        val config = com.example.engine.pdf.PdfExportConfig(
+            title = "Shared_Documents",
+            pageSize = _uiState.value.defaultPdfPageSize,
+            compression = _uiState.value.defaultPdfCompression
+        )
+        exportDocumentsAsPdf(
+            context = context,
+            docIds = docIds,
+            config = config,
+            action = ExportPdfAction.SHARE
+        )
     }
 
     fun emptyTrash() {

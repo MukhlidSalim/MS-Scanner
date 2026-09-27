@@ -259,63 +259,80 @@ fun CameraScanScreen(
         Manifest.permission.READ_EXTERNAL_STORAGE
     }
 
-    // Gallery Picker as instant fallback & import option
-    val galleryPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        if (uri != null) {
+    // Multi-Image Gallery Picker as instant fallback & batch import option
+    val multipleGalleryPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 30)
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
             coroutineScope.launch {
                 isCapturing = true
                 try {
-                    val stream = context.contentResolver.openInputStream(uri)
-                    val bmp = BitmapFactory.decodeStream(stream)
-                    stream?.close()
-                    if (bmp != null) {
-                        val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "import_raw_")
-                        val quad = ImageProcessor.detectDocumentQuad(bmp)
-                        val procBmp = try {
-                            val warped = ImageProcessor.warpPerspective(bmp, quad)
-                            val filtered = ImageProcessor.applyFilter(warped, FilterType.AUTO)
-                            if (warped != bmp && warped != filtered) warped.recycle()
-                            filtered
-                        } catch (e: Exception) {
-                            ImageProcessor.applyFilter(bmp, FilterType.AUTO)
+                    val importedList = mutableListOf<Pair<String, String>>()
+                    for (uri in uris) {
+                        val stream = context.contentResolver.openInputStream(uri)
+                        val bmp = BitmapFactory.decodeStream(stream)
+                        stream?.close()
+                        if (bmp != null) {
+                            val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "import_raw_")
+                            val quad = ImageProcessor.detectDocumentQuad(bmp)
+                            val procBmp = try {
+                                val warped = ImageProcessor.warpPerspective(bmp, quad)
+                                val filtered = ImageProcessor.applyFilter(warped, FilterType.AUTO)
+                                if (warped != bmp && warped != filtered) warped.recycle()
+                                filtered
+                            } catch (e: Exception) {
+                                ImageProcessor.applyFilter(bmp, FilterType.AUTO)
+                            }
+                            val procPath = ImageProcessor.saveBitmapToFile(context, procBmp, "import_proc_")
+                            if (procBmp != bmp) procBmp.recycle()
+                            bmp.recycle()
+                            importedList.add(Pair(rawPath, procPath))
                         }
-                        val procPath = ImageProcessor.saveBitmapToFile(context, procBmp, "import_proc_")
-                        if (procBmp != bmp) procBmp.recycle()
-                        bmp.recycle()
+                    }
 
+                    if (importedList.isNotEmpty()) {
                         triggerHapticFeedback()
                         when (scanMode) {
                             ScanCameraMode.DOCUMENT -> {
-                                onDocumentCaptured(listOf(Pair(rawPath, procPath)))
-                            }
-                            ScanCameraMode.PASSPORT -> {
-                                if (!isPassportFrontDone) {
-                                    passportFrontPath = procPath
-                                    isPassportFrontDone = true
-                                } else {
-                                    val front = passportFrontPath ?: procPath
-                                    onPassportCaptured?.invoke(front, procPath) ?: onIdCardCaptured(front, procPath)
-                                }
+                                onDocumentCaptured(importedList)
                             }
                             ScanCameraMode.BATCH -> {
-                                batchPages.add(Pair(rawPath, procPath))
+                                batchPages.addAll(importedList)
+                            }
+                            ScanCameraMode.PASSPORT -> {
+                                if (importedList.size >= 2) {
+                                    onPassportCaptured?.invoke(importedList[0].second, importedList[1].second)
+                                        ?: onIdCardCaptured(importedList[0].second, importedList[1].second)
+                                } else {
+                                    val first = importedList[0].second
+                                    if (!isPassportFrontDone) {
+                                        passportFrontPath = first
+                                        isPassportFrontDone = true
+                                    } else {
+                                        val front = passportFrontPath ?: first
+                                        onPassportCaptured?.invoke(front, first) ?: onIdCardCaptured(front, first)
+                                    }
+                                }
                             }
                             ScanCameraMode.ID_CARD -> {
-                                if (!isIdCardFrontDone) {
-                                    idCardFrontPath = procPath
-                                    isIdCardFrontDone = true
+                                if (importedList.size >= 2) {
+                                    onIdCardCaptured(importedList[0].second, importedList[1].second)
                                 } else {
-                                    val front = idCardFrontPath ?: procPath
-                                    onIdCardCaptured(front, procPath)
+                                    val first = importedList[0].second
+                                    if (!isIdCardFrontDone) {
+                                        idCardFrontPath = first
+                                        isIdCardFrontDone = true
+                                    } else {
+                                        val front = idCardFrontPath ?: first
+                                        onIdCardCaptured(front, first)
+                                    }
                                 }
                             }
                         }
                     }
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    Toast.makeText(context, if (isArabic) "فشل استيراد الصورة" else "Failed to import image", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, if (isArabic) "فشل استيراد الصور" else "Failed to import photos", Toast.LENGTH_SHORT).show()
                 } finally {
                     isCapturing = false
                 }
@@ -323,23 +340,8 @@ fun CameraScanScreen(
         }
     }
 
-    val galleryPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            galleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-        } else {
-            Toast.makeText(
-                context,
-                if (isArabic) "إذن الاستوديو مطلوب لاستيراد الصور" else "Gallery permission required to import photos",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-    }
-
     val launchGalleryImport = {
-        // Photo Picker does not require permissions!
-        galleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+        multipleGalleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
     // System Camera fallback launcher

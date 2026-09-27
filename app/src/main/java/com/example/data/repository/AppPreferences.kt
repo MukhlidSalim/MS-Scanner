@@ -43,4 +43,8 @@ class AppPreferences(context: Context) {
     var biometricEnabled: Boolean
         get() = prefs.getBoolean("biometric_enabled", false)
         set(value) = prefs.edit().putBoolean("biometric_enabled", value).apply()
+
+    var hasPromptedDefaultPdfApp: Boolean
+        get() = prefs.getBoolean("has_prompted_default_pdf", false)
+        set(value) = prefs.edit().putBoolean("has_prompted_default_pdf", value).apply()
 }

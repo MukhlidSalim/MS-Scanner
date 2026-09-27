@@ -21,30 +21,10 @@ class ScannerApplication : Application() {
         
         applicationScope.launch {
             try {
-                // Pre-check and install the required ML Kit Document Scanner module
-                val moduleInstallClient = ModuleInstall.getClient(this@ScannerApplication)
-                val scannerClient = GmsDocumentScanning.getClient(GmsDocumentScannerOptions.Builder().build())
-                
-                val moduleInstallRequest = ModuleInstallRequest.newBuilder()
-                    .addApi(scannerClient)
-                    .build()
-
-                moduleInstallClient.areModulesAvailable(scannerClient)
-                    .addOnSuccessListener { response ->
-                        if (!response.areModulesAvailable()) {
-                            Log.d("ScannerApp", "Installing scanner module...")
-                            moduleInstallClient.installModules(moduleInstallRequest)
-                                .addOnSuccessListener { Log.d("ScannerApp", "Scanner module installed.") }
-                                .addOnFailureListener { e -> Log.e("ScannerApp", "Failed to install module", e) }
-                        }
-                    }
-                    .addOnFailureListener { e -> Log.e("ScannerApp", "Failed to check modules", e) }
-
-                Log.d("ScannerApp", "Starting GmsDocumentScanner warm-up...")
+                // Safely attempt scanner warm-up without crashing
                 initializeScanner()
-                Log.d("ScannerApp", "GmsDocumentScanner warm-up completed.")
-            } catch (e: Exception) {
-                Log.e("ScannerApp", "Error in application initialization", e)
+            } catch (e: Throwable) {
+                Log.w("ScannerApp", "Scanner warm-up skipped: ${e.message}")
             }
         }
     }
@@ -52,13 +32,18 @@ class ScannerApplication : Application() {
     @Synchronized
     private fun initializeScanner() {
         if (scannerInstance == null) {
-            val options = GmsDocumentScannerOptions.Builder()
-                .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
-                .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
-                .setGalleryImportAllowed(true)
-                .build()
-            
-            scannerInstance = GmsDocumentScanning.getClient(options)
+            try {
+                val options = GmsDocumentScannerOptions.Builder()
+                    .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
+                    .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
+                    .setGalleryImportAllowed(true)
+                    .build()
+                
+                scannerInstance = GmsDocumentScanning.getClient(options)
+            } catch (e: Throwable) {
+                Log.w("ScannerApp", "Could not initialize GmsDocumentScanning: ${e.message}")
+                scannerInstance = null
+            }
         }
     }
 

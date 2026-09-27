@@ -225,7 +225,9 @@ object ImageProcessor {
     }
 
     /**
-     * fun smoothQuad(current: DocumentQuad, previous: DocumentQuad?, alpha: Float = 0.35f): DocumentQuad {
+     * Smooths quad corners over time using exponential moving average
+     */
+    fun smoothQuad(current: DocumentQuad, previous: DocumentQuad?, alpha: Float = 0.35f): DocumentQuad {
         if (previous == null) return current
         return DocumentQuad(
             topLeft = PointF(

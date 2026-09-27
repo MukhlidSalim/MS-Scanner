@@ -1,12 +1,19 @@
 package com.example.engine.pdf
 
+import android.content.ContentValues
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.pdf.PdfDocument
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import androidx.core.content.FileProvider
 import com.example.data.model.CompressionPreset
 import com.example.data.model.PageSizePreset
 import com.example.engine.cv.ImageProcessor
@@ -208,5 +215,228 @@ object PdfEngine {
         }
 
         outputFile
+    }
+
+    /**
+     * Get a secure FileProvider URI for a PDF file
+     */
+    fun getFileProviderUri(context: Context, file: File): Uri {
+        return FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.provider",
+            file
+        )
+    }
+
+    /**
+     * Share a PDF file via standard Android ACTION_SEND intent with FileProvider
+     */
+    fun sharePdf(context: Context, pdfFile: File, chooserTitle: String = "Share PDF via") {
+        try {
+            val uri = getFileProviderUri(context, pdfFile)
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "application/pdf"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                putExtra(Intent.EXTRA_SUBJECT, pdfFile.nameWithoutExtension)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(intent, chooserTitle)
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Open and view a PDF file in an external viewer using ACTION_VIEW with FileProvider
+     */
+    fun openPdf(context: Context, pdfFile: File, chooserTitle: String = "Open PDF with") {
+        try {
+            val uri = getFileProviderUri(context, pdfFile)
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, "application/pdf")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            val chooser = Intent.createChooser(intent, chooserTitle)
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(chooser)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    /**
+     * Save PDF file to the public Downloads / MS_Scanner folder
+     * Returns Pair(Uri?, DisplayPath?)
+     */
+    fun savePdfToStorage(
+        context: Context,
+        pdfFile: File,
+        displayName: String
+    ): Pair<Uri?, String?> {
+        val safeName = if (displayName.endsWith(".pdf", ignoreCase = true)) {
+            displayName
+        } else {
+            "$displayName.pdf"
+        }.replace("[^a-zA-Z0-9._\\-\\s]".toRegex(), "_").trim().ifBlank { "Exported_Document.pdf" }
+
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val contentValues = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
+                    put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/MS_Scanner")
+                }
+                val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
+                    ?: return Pair(null, null)
+
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    pdfFile.inputStream().use { input ->
+                        input.copyTo(out)
+                    }
+                }
+                return Pair(uri, "Downloads/MS_Scanner/$safeName")
+            } else {
+                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+                val targetDir = File(downloadsDir, "MS_Scanner").apply { if (!exists()) mkdirs() }
+                val targetFile = File(targetDir, safeName)
+                pdfFile.copyTo(targetFile, overwrite = true)
+
+                // Scan media for visibility in downloads
+                android.media.MediaScannerConnection.scanFile(
+                    context,
+                    arrayOf(targetFile.absolutePath),
+                    arrayOf("application/pdf"),
+                    null
+                )
+                val uri = getFileProviderUri(context, targetFile)
+                return Pair(uri, targetFile.absolutePath)
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            return Pair(null, null)
+        }
+    }
+
+    /**
+     * Copy PDF content to an output URI chosen by user via SAF (CreateDocument)
+     */
+    fun copyPdfToUri(context: Context, pdfFile: File, targetUri: Uri): Boolean {
+        return try {
+            context.contentResolver.openOutputStream(targetUri)?.use { out ->
+                pdfFile.inputStream().use { input ->
+                    input.copyTo(out)
+                }
+            }
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    /**
+     * Copies an incoming content/file URI to a persistent cache file
+     * and extracts its original display name.
+     */
+    suspend fun copyUriToLocalPdf(context: Context, uri: Uri): File? = withContext(Dispatchers.IO) {
+        try {
+            var displayName = "document_${System.currentTimeMillis()}.pdf"
+            if (uri.scheme == "content") {
+                val cursor = context.contentResolver.query(uri, null, null, null, null)
+                cursor?.use {
+                    if (it.moveToFirst()) {
+                        val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                        if (nameIndex != -1) {
+                            val name = it.getString(nameIndex)
+                            if (!name.isNullOrBlank()) {
+                                displayName = name
+                            }
+                        }
+                    }
+                }
+            } else if (uri.scheme == "file") {
+                val path = uri.path
+                if (!path.isNullOrBlank()) {
+                    displayName = File(path).name
+                }
+            }
+
+            if (!displayName.endsWith(".pdf", ignoreCase = true)) {
+                displayName = "$displayName.pdf"
+            }
+            val safeName = displayName.replace("[^a-zA-Z0-9._\\-\\s]".toRegex(), "_")
+
+            val targetDir = File(context.cacheDir, "incoming_pdfs").apply { if (!exists()) mkdirs() }
+            val targetFile = File(targetDir, "${System.currentTimeMillis()}_$safeName")
+
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(targetFile).use { output ->
+                    input.copyTo(output)
+                }
+            }
+
+            if (targetFile.exists() && targetFile.length() > 0L) {
+                targetFile
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    /**
+     * Converts each page of an existing PDF file into high-res images
+     * for editing in EditSessionScreen with real-time progress and memory protection.
+     * Returns List<Pair<rawImagePath, processedImagePath>>
+     */
+    suspend fun convertPdfToPages(
+        context: Context,
+        pdfFile: File,
+        maxPages: Int = 50,
+        onProgress: ((current: Int, total: Int) -> Unit)? = null
+    ): List<Pair<String, String>> = withContext(Dispatchers.IO) {
+        val result = mutableListOf<Pair<String, String>>()
+        if (!pdfFile.exists() || pdfFile.length() == 0L) return@withContext result
+
+        var pfd: android.os.ParcelFileDescriptor? = null
+        var renderer: android.graphics.pdf.PdfRenderer? = null
+        try {
+            pfd = android.os.ParcelFileDescriptor.open(pdfFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
+            renderer = android.graphics.pdf.PdfRenderer(pfd)
+            val total = renderer.pageCount
+            val pageCount = minOf(total, maxPages)
+
+            val targetWidth = 1600 // Crisp quality for scanning and editing
+
+            for (i in 0 until pageCount) {
+                onProgress?.invoke(i + 1, pageCount)
+                val page = renderer.openPage(i)
+                val aspect = page.height.toFloat() / page.width.toFloat().coerceAtLeast(1f)
+                val targetHeight = (targetWidth * aspect).toInt()
+
+                val bitmap = try {
+                    Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
+                } catch (oom: OutOfMemoryError) {
+                    Bitmap.createBitmap(targetWidth / 2, targetHeight / 2, Bitmap.Config.RGB_565)
+                }
+                bitmap.eraseColor(android.graphics.Color.WHITE)
+                page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                page.close()
+
+                val path = ImageProcessor.saveBitmapToFile(context, bitmap, "pdf_import_p${i + 1}_")
+                bitmap.recycle()
+                result.add(Pair(path, path))
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        } finally {
+            try { renderer?.close() } catch (e: Exception) {}
+            try { pfd?.close() } catch (e: Exception) {}
+        }
+        result
     }
 }

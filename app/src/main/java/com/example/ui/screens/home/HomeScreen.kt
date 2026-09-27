@@ -54,11 +54,17 @@ import com.example.engine.cv.ImageProcessor
 import com.example.ui.components.CategoryChipsRow
 import com.example.ui.components.FolderChipsRow
 import com.example.ui.components.AppUpdateDialog
+import com.example.ui.components.PdfViewerOverlay
+import com.example.ui.components.DefaultPdfAppPromptDialog
 import com.example.ui.components.ScanActionButton
+import com.example.data.repository.AppPreferences
+import com.example.engine.pdf.PdfEngine
 import com.example.ui.screens.home.components.DocumentGridItem
 import com.example.ui.screens.home.components.FolderGridItem
+import com.example.ui.screens.home.components.ExportPdfDialog
 import com.example.ui.screens.home.components.NewFolderDialog
 import com.example.ui.screens.home.components.RenameDocumentsDialog
+import com.example.ui.viewmodel.ExportPdfAction
 import com.example.engine.updater.UpdateCheckState
 import com.example.ScannerApplication
 import com.example.ui.theme.Emerald400
@@ -81,6 +87,7 @@ fun HomeScreen(
     listViewModel: DocumentListViewModel,
     onPagesCaptured: (List<Pair<String, String>>) -> Unit = {},
     onImportedUris: (List<Uri>) -> Unit = {},
+    onOpenPdfFile: (File) -> Unit = {},
     onNavigateToSettings: () -> Unit,
     onNavigateToDocument: (Long) -> Unit,
     onNavigateToScan: (String) -> Unit = {},
@@ -92,6 +99,7 @@ fun HomeScreen(
     val isArabic = context.resources.configuration.locales[0].language == "ar"
     val updateCheckState by listViewModel.updateCheckState.collectAsState()
     val updateDownloadState by listViewModel.updateDownloadState.collectAsState()
+    val prefs = remember { AppPreferences(context) }
 
     var selectionMode by remember { mutableStateOf(false) }
     var selectedDocIds by remember { mutableStateOf(setOf<Long>()) }
@@ -109,7 +117,72 @@ fun HomeScreen(
     var showSortSheet by remember { mutableStateOf(false) }
     var newFolderNameInput by remember { mutableStateOf("") }
     
+    var showDefaultPdfPrompt by remember { mutableStateOf(false) }
+    var showExportPdfDialog by remember { mutableStateOf(false) }
+    var pendingExportConfig by remember { mutableStateOf<com.example.engine.pdf.PdfExportConfig?>(null) }
+    var previewPdfFile by remember { mutableStateOf<File?>(null) }
+    
     var tempCameraFile by remember { mutableStateOf<File?>(null) }
+
+    // Prompt user to set as default PDF app on initial launch
+    LaunchedEffect(Unit) {
+        if (!prefs.hasPromptedDefaultPdfApp) {
+            kotlinx.coroutines.delay(1200)
+            showDefaultPdfPrompt = true
+        }
+    }
+
+    // System File Picker for importing / opening PDF files
+    val pdfPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let {
+            coroutineScope.launch {
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        it,
+                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (e: Exception) {}
+                val localPdf = PdfEngine.copyUriToLocalPdf(context, it)
+                if (localPdf != null) {
+                    onOpenPdfFile(localPdf)
+                } else {
+                    Toast.makeText(context, "Could not open PDF file", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    // SAF Create Document launcher for PDF export
+    val createPdfDocumentLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.CreateDocument("application/pdf")
+    ) { uri: Uri? ->
+        if (uri != null && pendingExportConfig != null) {
+            val config = pendingExportConfig!!
+            listViewModel.exportDocumentsAsPdf(
+                context = context,
+                docIds = selectedDocIds.toList(),
+                config = config,
+                action = ExportPdfAction.SAVE_AS,
+                targetSaveUri = uri,
+                onSuccess = { _, _, path ->
+                    showExportPdfDialog = false
+                    selectionMode = false
+                    selectedDocIds = emptySet()
+                    pendingExportConfig = null
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.export_pdf_success_saved, path),
+                        Toast.LENGTH_LONG
+                    ).show()
+                },
+                onError = { err ->
+                    Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                }
+            )
+        }
+    }
 
     // Gallery/Media Permission Logic
     val galleryPermission = if (Build.VERSION.SDK_INT >= 33) {
@@ -225,7 +298,8 @@ fun HomeScreen(
         try {
             if (result.resultCode == Activity.RESULT_OK && result.data != null) {
                 val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
-                scanResult?.pages?.let { pages ->
+                val pages = scanResult?.pages
+                if (!pages.isNullOrEmpty()) {
                     coroutineScope.launch {
                         val processedPages = mutableListOf<Pair<String, String>>()
                         for (page in pages) {
@@ -250,7 +324,7 @@ fun HomeScreen(
             }
         } catch (e: Exception) {
             e.printStackTrace()
-            launchCameraCapture()
+            onNavigateToScan("DOCUMENT")
         }
     }
 
@@ -258,8 +332,6 @@ fun HomeScreen(
         val activity = context as? Activity
         if (activity != null) {
             try {
-                // Use the pre-warmed scanner from Application if available to prevent redundant creation
-                // Otherwise fallback to creating a new one with specific limit
                 val scanner = ScannerApplication.getScanner() ?: run {
                     val dynOptions = GmsDocumentScannerOptions.Builder()
                         .setGalleryImportAllowed(true)
@@ -278,19 +350,19 @@ fun HomeScreen(
                             )
                         } catch (e: Exception) {
                             e.printStackTrace()
-                            launchCameraCapture()
+                            onNavigateToScan("DOCUMENT")
                         }
                     }
                     .addOnFailureListener { e ->
                         e.printStackTrace()
-                        launchCameraCapture()
+                        onNavigateToScan("DOCUMENT")
                     }
             } catch (e: Exception) {
                 e.printStackTrace()
-                launchCameraCapture()
+                onNavigateToScan("DOCUMENT")
             }
         } else {
-            launchCameraCapture()
+            onNavigateToScan("DOCUMENT")
         }
     }
 
@@ -368,9 +440,16 @@ fun HomeScreen(
                             Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "Move")
                         }
                         IconButton(onClick = {
-                            listViewModel.shareDocumentsAsPdf(context, selectedDocIds.toList())
-                            selectionMode = false
-                            selectedDocIds = emptySet()
+                            showExportPdfDialog = true
+                        }) {
+                            Icon(
+                                Icons.Default.PictureAsPdf,
+                                contentDescription = stringResource(R.string.export_pdf_btn),
+                                tint = GoldBase
+                            )
+                        }
+                        IconButton(onClick = {
+                            showExportPdfDialog = true
                         }) {
                             Icon(Icons.Default.Share, contentDescription = "Share")
                         }
@@ -442,28 +521,20 @@ fun HomeScreen(
                                 onClick = { expanded = false; showSortSheet = true }
                             )
                             HorizontalDivider()
-                            // Launcher for PDF import
-                            val pdfPickerLauncher = rememberLauncherForActivityResult(
-                                contract = ActivityResultContracts.OpenDocument()
-                            ) { uri: Uri? ->
-                                uri?.let {
-                                    // Take persistable permission to access the URI later
-                                    context.contentResolver.takePersistableUriPermission(it, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                    
-                                    // TODO: Implement PDF to Image conversion logic using PdfEngine
-                                    // For now, toast the success
-                                    Toast.makeText(context, "PDF Selected: ${it.lastPathSegment}", Toast.LENGTH_SHORT).show()
-                                }
-                            }
-
-                            // ... (rest of your code)
-
                             DropdownMenuItem(
                                 text = { Text(stringResource(R.string.txt_import_pdf)) },
-                                leadingIcon = { Icon(Icons.Default.PictureAsPdf, null) },
+                                leadingIcon = { Icon(Icons.Default.PictureAsPdf, null, tint = GoldBase) },
                                 onClick = { 
                                     expanded = false
                                     pdfPickerLauncher.launch(arrayOf("application/pdf"))
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.pdf_default_app_title)) },
+                                leadingIcon = { Icon(Icons.Default.Star, null, tint = GoldBase) },
+                                onClick = { 
+                                    expanded = false
+                                    showDefaultPdfPrompt = true
                                 }
                             )
                             DropdownMenuItem(
@@ -747,6 +818,18 @@ fun HomeScreen(
                             onLongClick = {
                                 selectionMode = true
                                 selectedDocIds += doc.id
+                            },
+                            onDeleteClick = {
+                                listViewModel.deleteDocument(doc.id)
+                            },
+                            onRenameClick = {
+                                renameDocIds = listOf(doc.id)
+                                renameBaseName = doc.title
+                                showRenameDialog = true
+                            },
+                            onExportClick = {
+                                selectedDocIds = setOf(doc.id)
+                                showExportPdfDialog = true
                             }
                         )
                     }
@@ -850,8 +933,7 @@ fun HomeScreen(
                     ),
                     modifier = Modifier.fillMaxWidth().clickable {
                         showCameraSheet = false
-                        // Use ML Kit GmsDocumentScanner for Auto Document mode
-                        launchScanner(20)
+                        onNavigateToScan("DOCUMENT")
                     }
                 ) {
                     Row(
@@ -1137,6 +1219,90 @@ fun HomeScreen(
         }
     }
 
-    // GitHub In-App Update Dialog
-    
+    // Multi-Page PDF Export Dialog for selected documents
+    val selectedDocsList = remember(selectedDocIds, uiState.documents) {
+        uiState.documents.filter { it.id in selectedDocIds }
+    }
+    val totalSelectedPages = remember(selectedDocsList) {
+        selectedDocsList.sumOf { it.pageCount }
+    }
+
+    ExportPdfDialog(
+        show = showExportPdfDialog,
+        selectedDocuments = selectedDocsList,
+        totalPageCount = totalSelectedPages,
+        isExporting = uiState.isLoading,
+        onDismiss = { showExportPdfDialog = false },
+        onExportAction = { config, action ->
+            if (action == ExportPdfAction.SAVE_AS) {
+                pendingExportConfig = config
+                createPdfDocumentLauncher.launch("${config.title}.pdf")
+            } else {
+                listViewModel.exportDocumentsAsPdf(
+                    context = context,
+                    docIds = selectedDocIds.toList(),
+                    config = config,
+                    action = action,
+                    onSuccess = { pdfFile, _, path ->
+                        if (action == ExportPdfAction.PREVIEW) {
+                            showExportPdfDialog = false
+                            previewPdfFile = pdfFile
+                        } else {
+                            showExportPdfDialog = false
+                            selectionMode = false
+                            selectedDocIds = emptySet()
+                            when (action) {
+                                ExportPdfAction.SAVE_TO_DOWNLOADS -> {
+                                    Toast.makeText(
+                                        context,
+                                        context.getString(R.string.export_pdf_success_saved, path),
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                                ExportPdfAction.SHARE -> {
+                                    Toast.makeText(
+                                        context,
+                                        context.getString(R.string.export_pdf_success_shared),
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                                else -> {}
+                            }
+                        }
+                    },
+                    onError = { err ->
+                        Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
+        }
+    )
+
+    // In-App PDF Review & Viewer Overlay before sharing via FileProvider
+    previewPdfFile?.let { pdfFile ->
+        PdfViewerOverlay(
+            pdfFile = pdfFile,
+            onDismiss = {
+                previewPdfFile = null
+                selectionMode = false
+                selectedDocIds = emptySet()
+            },
+            onShareComplete = {
+                // Optionally can close or keep open
+            }
+        )
+    }
+
+    // Default PDF App Prompt Dialog
+    DefaultPdfAppPromptDialog(
+        show = showDefaultPdfPrompt,
+        onDismiss = {
+            showDefaultPdfPrompt = false
+            prefs.hasPromptedDefaultPdfApp = true
+        },
+        onConfirm = {
+            showDefaultPdfPrompt = false
+            prefs.hasPromptedDefaultPdfApp = true
+        }
+    )
 }

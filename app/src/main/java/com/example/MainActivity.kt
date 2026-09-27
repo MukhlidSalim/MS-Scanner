@@ -36,6 +36,13 @@ import androidx.navigation.navArgument
 import com.example.data.db.DocScanDatabase
 import com.example.data.repository.DocumentRepository
 import com.example.ui.components.PinLockScreen
+import com.example.ui.components.OpenPdfActionDialog
+import com.example.ui.components.PdfViewerOverlay
+import com.example.ui.components.DefaultPdfAppPromptDialog
+import androidx.lifecycle.lifecycleScope
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import java.io.File
 import com.example.ui.navigation.Screen
 import com.example.ui.screens.annotate.AnnotationScreen
 import com.example.ui.screens.camera.CameraScanScreen
@@ -94,12 +101,59 @@ class MainViewModel : ViewModel() {
     private var _isPromptShowing = false
     val isPromptShowing: Boolean get() = _isPromptShowing
 
+    // Incoming PDF handling states
+    private val _incomingPdfFile = MutableStateFlow<File?>(null)
+    val incomingPdfFile: StateFlow<File?> = _incomingPdfFile.asStateFlow()
+
+    private val _showPdfActionDialog = MutableStateFlow(false)
+    val showPdfActionDialog: StateFlow<Boolean> = _showPdfActionDialog.asStateFlow()
+
+    private val _pdfViewerFile = MutableStateFlow<File?>(null)
+    val pdfViewerFile: StateFlow<File?> = _pdfViewerFile.asStateFlow()
+
+    private val _isConvertingPdf = MutableStateFlow(false)
+    val isConvertingPdf: StateFlow<Boolean> = _isConvertingPdf.asStateFlow()
+
+    private val _pdfConversionProgress = MutableStateFlow<Pair<Int, Int>?>(null)
+    val pdfConversionProgress: StateFlow<Pair<Int, Int>?> = _pdfConversionProgress.asStateFlow()
+
     fun setAuthenticated(value: Boolean) {
         _isAuthenticated.value = value
     }
 
     fun setPromptShowing(value: Boolean) {
         _isPromptShowing = value
+    }
+
+    fun setIncomingPdf(file: File) {
+        _incomingPdfFile.value = file
+        _showPdfActionDialog.value = true
+    }
+
+    fun clearIncomingPdf() {
+        _incomingPdfFile.value = null
+        _showPdfActionDialog.value = false
+    }
+
+    fun openPdfViewer(file: File) {
+        _pdfViewerFile.value = file
+        _showPdfActionDialog.value = false
+    }
+
+    fun closePdfViewer() {
+        _pdfViewerFile.value = null
+    }
+
+    fun setConverting(value: Boolean) {
+        _isConvertingPdf.value = value
+    }
+
+    fun setConversionProgress(current: Int, total: Int) {
+        _pdfConversionProgress.value = Pair(current, total)
+    }
+
+    fun clearConversionProgress() {
+        _pdfConversionProgress.value = null
     }
 }
 
@@ -114,6 +168,9 @@ class MainActivity : AppCompatActivity() {
         
         prefs = AppPreferences(applicationContext)
         mainViewModel = ViewModelProvider(this)[MainViewModel::class.java]
+
+        // Check if opened with a PDF intent
+        handleIncomingPdfIntent(intent)
 
         // Initial state: if biometric is NOT enabled, we are already "authenticated"
         if (!prefs.biometricEnabled) {
@@ -158,7 +215,8 @@ class MainActivity : AppCompatActivity() {
                         DocScanApp(
                             cameraViewModel = cameraViewModel,
                             listViewModel = listViewModel,
-                            editViewModel = editViewModel
+                            editViewModel = editViewModel,
+                            mainViewModel = mainViewModel
                         )
                     } else {
                         // Showing a lock icon while waiting for biometric authentication
@@ -174,6 +232,45 @@ class MainActivity : AppCompatActivity() {
                             )
                         }
                     }
+                }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIncomingPdfIntent(intent)
+    }
+
+    private fun handleIncomingPdfIntent(intent: android.content.Intent?) {
+        if (intent == null) return
+        val action = intent.action
+        val isViewOrEdit = action == android.content.Intent.ACTION_VIEW || action == android.content.Intent.ACTION_EDIT
+        val isSend = action == android.content.Intent.ACTION_SEND
+
+        if (!isViewOrEdit && !isSend) return
+
+        val uri: Uri? = if (isSend) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+                intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM)
+            }
+        } else {
+            intent.data
+        }
+
+        if (uri != null) {
+            lifecycleScope.launch {
+                try {
+                    val localPdf = com.example.engine.pdf.PdfEngine.copyUriToLocalPdf(applicationContext, uri)
+                    if (localPdf != null) {
+                        mainViewModel.setIncomingPdf(localPdf)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
             }
         }
@@ -247,11 +344,56 @@ class MainActivity : AppCompatActivity() {
 fun DocScanApp(
     cameraViewModel: CameraViewModel,
     listViewModel: DocumentListViewModel,
-    editViewModel: EditSessionViewModel
+    editViewModel: EditSessionViewModel,
+    mainViewModel: MainViewModel
 ) {
     val navController = rememberNavController()
     val listUiState by listViewModel.uiState.collectAsState()
     val editUiState by editViewModel.uiState.collectAsState()
+
+    val incomingPdf by mainViewModel.incomingPdfFile.collectAsState()
+    val showPdfActionDialog by mainViewModel.showPdfActionDialog.collectAsState()
+    val activeViewerPdf by mainViewModel.pdfViewerFile.collectAsState()
+    val isConvertingPdf by mainViewModel.isConvertingPdf.collectAsState()
+    val pdfConversionProgress by mainViewModel.pdfConversionProgress.collectAsState()
+
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    val startEditingPdf: (File) -> Unit = { pdfFile ->
+        mainViewModel.setConverting(true)
+        mainViewModel.clearConversionProgress()
+        coroutineScope.launch {
+            try {
+                val pages = com.example.engine.pdf.PdfEngine.convertPdfToPages(context, pdfFile) { cur, tot ->
+                    mainViewModel.setConversionProgress(cur, tot)
+                }
+                if (pages.isNotEmpty()) {
+                    cameraViewModel.setPagesPendingEdit(pages)
+                    mainViewModel.clearIncomingPdf()
+                    mainViewModel.closePdfViewer()
+                    navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L)) {
+                        popUpTo(Screen.Home.route) { inclusive = false }
+                    }
+                } else {
+                    android.widget.Toast.makeText(
+                        context,
+                        context.getString(R.string.export_pdf_error, "Could not extract pages from PDF"),
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+            } catch (e: Exception) {
+                android.widget.Toast.makeText(
+                    context,
+                    "Error reading PDF: ${e.localizedMessage}",
+                    android.widget.Toast.LENGTH_SHORT
+                ).show()
+            } finally {
+                mainViewModel.setConverting(false)
+                mainViewModel.clearConversionProgress()
+            }
+        }
+    }
 
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
@@ -284,6 +426,7 @@ fun DocScanApp(
                     listViewModel = listViewModel,
                     onPagesCaptured = { pages -> cameraViewModel.setPagesPendingEdit(pages) },
                     onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
+                    onOpenPdfFile = { file -> mainViewModel.setIncomingPdf(file) },
                     onNavigateToSettings = {
                         navController.navigate(Screen.Settings.route)
                     },
@@ -544,6 +687,37 @@ fun DocScanApp(
                     }
                 )
             }
+        }
+
+        // Dialog asking user: Browse Only vs Edit in Studio
+        if (showPdfActionDialog && incomingPdf != null) {
+            OpenPdfActionDialog(
+                pdfFile = incomingPdf!!,
+                isConverting = isConvertingPdf,
+                conversionProgress = pdfConversionProgress,
+                onDismiss = {
+                    mainViewModel.clearIncomingPdf()
+                },
+                onBrowseOnly = {
+                    mainViewModel.openPdfViewer(incomingPdf!!)
+                },
+                onEditInStudio = {
+                    startEditingPdf(incomingPdf!!)
+                }
+            )
+        }
+
+        // In-App PDF Viewer Overlay (When user chooses Browse Only)
+        activeViewerPdf?.let { pdfFile ->
+            PdfViewerOverlay(
+                pdfFile = pdfFile,
+                onDismiss = {
+                    mainViewModel.closePdfViewer()
+                },
+                onEditClick = {
+                    startEditingPdf(pdfFile)
+                }
+            )
         }
     }
 }

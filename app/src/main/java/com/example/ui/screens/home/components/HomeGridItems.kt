@@ -44,7 +44,9 @@ fun DocumentGridItem(
     onClick: () -> Unit,
     onEditClick: () -> Unit,
     onLongClick: () -> Unit,
-    onDeleteClick: () -> Unit = {}
+    onDeleteClick: () -> Unit = {},
+    onRenameClick: (() -> Unit)? = null,
+    onExportClick: (() -> Unit)? = null
 ) {
     Card(
         modifier = modifier
@@ -147,6 +149,22 @@ fun DocumentGridItem(
                             shape = RoundedCornerShape(14.dp)
                         ) {
                             DropdownMenuItem(
+                                text = { Text(stringResource(R.string.action_export_pdf)) },
+                                leadingIcon = { Icon(Icons.Default.PictureAsPdf, null, tint = GoldBase) },
+                                onClick = {
+                                    expanded = false
+                                    onExportClick?.invoke()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.action_share)) },
+                                leadingIcon = { Icon(Icons.Default.Share, null, tint = GoldLight) },
+                                onClick = {
+                                    expanded = false
+                                    onExportClick?.invoke()
+                                }
+                            )
+                            DropdownMenuItem(
                                 text = { Text("Edit") },
                                 leadingIcon = { Icon(Icons.Default.AutoFixHigh, null, tint = Emerald400) },
                                 onClick = { 
@@ -155,17 +173,15 @@ fun DocumentGridItem(
                                 }
                             )
                             DropdownMenuItem(
-                                text = { Text("Rename") },
+                                text = { Text(stringResource(R.string.action_rename)) },
                                 leadingIcon = { Icon(Icons.Default.Edit, null) },
-                                onClick = { expanded = false } // TODO: Implement
+                                onClick = {
+                                    expanded = false
+                                    onRenameClick?.invoke()
+                                }
                             )
                             DropdownMenuItem(
-                                text = { Text("Share") },
-                                leadingIcon = { Icon(Icons.Default.Share, null) },
-                                onClick = { expanded = false } // TODO: Implement
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Delete") },
+                                text = { Text(stringResource(R.string.action_delete)) },
                                 leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
                                 onClick = { expanded = false; onDeleteClick() }
                             )
