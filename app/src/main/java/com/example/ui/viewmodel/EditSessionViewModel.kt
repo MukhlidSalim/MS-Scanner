@@ -48,6 +48,7 @@ class EditSessionViewModel(
 ) : ViewModel() {
 
     private val prefs = AppPreferences(context)
+    private var originalSessionPages = listOf<com.example.data.model.PageEntity>()
     private val _uiState = MutableStateFlow(EditSessionUiState(
         defaultPdfPageSize = prefs.pdfPageSize,
         defaultPdfCompression = prefs.pdfCompression

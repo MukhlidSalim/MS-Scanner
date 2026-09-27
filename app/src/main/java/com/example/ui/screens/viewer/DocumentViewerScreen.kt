@@ -135,6 +135,7 @@ fun DocumentViewerScreen(
 
     var isGridView by remember { mutableStateOf(true) } // Images inside documents are always grid by default
     var showPdfExportDialog by remember { mutableStateOf(false) }
+    var isSharingMultiple by remember { mutableStateOf(false) }
     var showFilterSheet by remember { mutableStateOf(false) }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showDeleteSelectedConfirmDialog by remember { mutableStateOf(false) }

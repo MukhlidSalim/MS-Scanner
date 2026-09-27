@@ -1,12 +1,5 @@
 package com.example.ui.viewmodel
 
-enum class SortOrder {
-    DATE_CREATED,
-    DATE_MODIFIED,
-    NAME,
-    SIZE
-}
-
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -22,6 +15,13 @@ import com.example.ui.util.UiEvent
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+
+enum class SortOrder {
+    DATE_CREATED,
+    DATE_MODIFIED,
+    NAME,
+    SIZE
+}
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import java.io.File
