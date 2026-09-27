@@ -311,7 +311,7 @@ fun DocumentViewerScreen(
                                 if (selectedFiles.size == 1) {
                                     shareFile(context, selectedFiles.first())
                                 } else if (selectedFiles.isNotEmpty()) {
-                                    shareMultipleFiles(context, selectedFiles, coroutineScope)
+                                    shareMultipleFiles(context, selectedFiles, coroutineScope) { isSharingMultiple = it }
                                 }
                             }) {
                                 Icon(
@@ -484,7 +484,7 @@ fun DocumentViewerScreen(
                                     onClick = {
                                         showOverflowMenu = false
                                         val allFiles = pages.map { File(it.processedImagePath) }
-                                        shareMultipleFiles(context, allFiles, coroutineScope)
+                                        shareMultipleFiles(context, allFiles, coroutineScope) { isSharingMultiple = it }
                                     }
                                 )
                             }
@@ -532,7 +532,7 @@ fun DocumentViewerScreen(
                         if (selectedFiles.size == 1) {
                             shareFile(context, selectedFiles.first())
                         } else if (selectedFiles.isNotEmpty()) {
-                            shareMultipleFiles(context, selectedFiles, coroutineScope)
+                            shareMultipleFiles(context, selectedFiles, coroutineScope) { isSharingMultiple = it }
                         }
                     },
                     onExportPdf = { showPdfExportDialog = true },
@@ -1397,19 +1397,18 @@ private fun shareFile(context: Context, file: File, mimeType: String = "image/jp
     } catch (e: Exception) {}
 }
 
-private fun shareMultipleFiles(context: Context, files: List<File>, scope: kotlinx.coroutines.CoroutineScope) {
+private fun shareMultipleFiles(context: Context, files: List<File>, scope: kotlinx.coroutines.CoroutineScope, onLoading: (Boolean) -> Unit) {
     scope.launch {
         try {
-            val bitmaps = files.mapNotNull { file ->
-                com.example.engine.cv.ImageProcessor.loadBitmapFromFile(file.absolutePath)
-            }
-            if (bitmaps.isEmpty()) return@launch
-            
-            val pdfFile = com.example.engine.cv.ImageProcessor.mergeToPdf(context, bitmaps)
+            if (files.isEmpty()) return@launch
+            onLoading(true)
+            val paths = files.map { it.absolutePath }
+            val pdfFile = com.example.engine.cv.ImageProcessor.mergeToPdf(context, paths)
             shareFile(context, pdfFile, "application/pdf")
-            
         } catch (e: Exception) {
             e.printStackTrace()
+        } finally {
+            onLoading(false)
         }
     }
 }

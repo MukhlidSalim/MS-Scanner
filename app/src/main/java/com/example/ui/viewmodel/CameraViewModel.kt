@@ -192,7 +192,18 @@ class CameraViewModel(
         }
     }
 
-    fun clearPendingPages() {
+    fun clearPendingPages(deleteFiles: Boolean = false) {
+        if (deleteFiles) {
+            val state = _uiState.value
+            state.pendingPages.forEach { 
+                java.io.File(it.first).delete()
+                java.io.File(it.second).delete()
+            }
+            state.pagesPendingEdit.forEach { 
+                java.io.File(it.first).delete()
+                java.io.File(it.second).delete()
+            }
+        }
         _uiState.update { it.copy(pendingPages = emptyList(), pagesPendingEdit = emptyList(), importedUrisPending = emptyList()) }
     }
 }

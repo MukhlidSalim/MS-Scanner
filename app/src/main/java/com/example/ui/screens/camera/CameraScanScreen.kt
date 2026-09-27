@@ -338,12 +338,8 @@ fun CameraScanScreen(
     }
 
     val launchGalleryImport = {
-        val permissionCheck = ContextCompat.checkSelfPermission(context, galleryPermission)
-        if (permissionCheck == PackageManager.PERMISSION_GRANTED) {
-            galleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-        } else {
-            galleryPermissionLauncher.launch(galleryPermission)
-        }
+        // Photo Picker does not require permissions!
+        galleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
     // System Camera fallback launcher

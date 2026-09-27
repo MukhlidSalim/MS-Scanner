@@ -164,10 +164,19 @@ class EditSessionViewModel(
     }
 
     fun startEditingSession(pages: List<PageEntity>) {
+        originalSessionPages = pages
         _uiState.update { it.copy(editingSessionPages = pages, isEditingSession = true) }
     }
 
     fun endEditingSession() {
+        val currentPages = _uiState.value.editingSessionPages
+        currentPages.forEach { currentPage ->
+            val originalPage = originalSessionPages.find { it.id == currentPage.id }
+            if (originalPage != null && currentPage.processedImagePath != originalPage.processedImagePath) {
+                java.io.File(currentPage.processedImagePath).delete()
+            }
+        }
+        originalSessionPages = emptyList()
         _uiState.update { it.copy(editingSessionPages = emptyList(), isEditingSession = false) }
     }
 
@@ -178,9 +187,14 @@ class EditSessionViewModel(
             
             for (page in pages) {
                 repository.updatePage(page)
+                val originalPage = originalSessionPages.find { it.id == page.id }
+                if (originalPage != null && originalPage.processedImagePath != page.processedImagePath) {
+                    java.io.File(originalPage.processedImagePath).delete()
+                }
             }
             
-            endEditingSession()
+            originalSessionPages = emptyList()
+            _uiState.update { it.copy(editingSessionPages = emptyList(), isEditingSession = false) }
             onComplete()
         }
     }

@@ -65,6 +65,28 @@ import kotlinx.coroutines.flow.asStateFlow
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 
+
+class AppViewModelFactory(
+    private val context: android.content.Context,
+    private val repository: com.example.data.repository.DocumentRepository
+) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(CameraViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return CameraViewModel(context, repository) as T
+        }
+        if (modelClass.isAssignableFrom(DocumentListViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return DocumentListViewModel(context, repository) as T
+        }
+        if (modelClass.isAssignableFrom(EditSessionViewModel::class.java)) {
+            @Suppress("UNCHECKED_CAST")
+            return EditSessionViewModel(context, repository) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
+    }
+}
+
 class MainViewModel : ViewModel() {
     private val _isAuthenticated = MutableStateFlow(false)
     val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
@@ -115,9 +137,10 @@ class MainActivity : AppCompatActivity() {
         val repository = DocumentRepository(applicationContext, database.documentDao())
 
         setContent {
-            val cameraViewModel = remember { CameraViewModel(applicationContext, repository) }
-            val listViewModel = remember { DocumentListViewModel(applicationContext, repository) }
-            val editViewModel = remember { EditSessionViewModel(applicationContext, repository) }
+            val factory = remember { AppViewModelFactory(applicationContext, repository) }
+            val cameraViewModel: CameraViewModel = androidx.lifecycle.viewmodel.compose.viewModel(factory = factory)
+            val listViewModel: DocumentListViewModel = androidx.lifecycle.viewmodel.compose.viewModel(factory = factory)
+            val editViewModel: EditSessionViewModel = androidx.lifecycle.viewmodel.compose.viewModel(factory = factory)
 
             val listUiState by listViewModel.uiState.collectAsState()
 
@@ -215,6 +238,7 @@ class MainActivity : AppCompatActivity() {
         // Reset authentication state when app goes to background if biometric is enabled
         if (prefs.biometricEnabled) {
             mainViewModel.setAuthenticated(false)
+            mainViewModel.setPromptShowing(false)
         }
     }
 }
@@ -508,7 +532,7 @@ fun DocScanApp(
                     onAnalyzePending = { cameraViewModel.analyzePendingFirstPage() },
                     onCommitPending = { dId, onDone -> cameraViewModel.commitPendingPagesToDocument(dId, onDone) },
                     onImportPages = { title, folder, onDone -> cameraViewModel.importPagesAsDocument(title, folder, onDone) },
-                    onClearPending = { cameraViewModel.clearPendingPages() },
+                    onClearPending = { cameraViewModel.clearPendingPages(deleteFiles = true) },
                     selectedFolder = listUiState.selectedFolder,
                     sourceType = sourceType,
                     docId = docId,
