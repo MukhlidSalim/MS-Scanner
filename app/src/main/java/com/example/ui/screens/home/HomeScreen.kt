@@ -1082,7 +1082,7 @@ fun HomeScreen(
                 Text(stringResource(R.string.txt_sort), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Spacer(modifier = Modifier.height(16.dp))
                 
-                val currentSort = listUiState.sortMode
+                val currentSort = uiState.sortMode
                 
                 val sortOptions = listOf(
                     com.example.ui.viewmodel.SortOrder.DATE_CREATED to "تاريخ الإنشاء (أحدث)",

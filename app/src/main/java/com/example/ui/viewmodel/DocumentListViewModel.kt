@@ -26,6 +26,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
 import java.io.File
 
+enum class SortOrder {
+    DATE_CREATED,
+    DATE_MODIFIED,
+    NAME,
+    SIZE
+}
+
 data class DocumentListUiState(
     val documents: List<DocumentEntity> = emptyList(),
     val favoriteDocuments: List<DocumentEntity> = emptyList(),
