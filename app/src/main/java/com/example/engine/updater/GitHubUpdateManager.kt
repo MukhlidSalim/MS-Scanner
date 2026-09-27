@@ -165,7 +165,14 @@ class GitHubUpdateManager(private val context: Context) {
         val apkFile = File(updatesDir, "update_$cleanVer.apk")
 
         if (apkFile.exists()) {
-            apkFile.delete()
+            val archiveInfo = context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
+            if (archiveInfo != null) {
+                // Already downloaded and verified!
+                onProgress(apkFile.length(), apkFile.length(), 1f)
+                return@withContext apkFile
+            } else {
+                apkFile.delete() // Corrupt, delete and redownload
+            }
         }
 
         val request = Request.Builder()
