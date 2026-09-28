@@ -98,6 +98,13 @@ class MainViewModel : ViewModel() {
     private var _isPromptShowing = false
     val isPromptShowing: Boolean get() = _isPromptShowing
 
+    private val _updateInfo = mutableStateOf<com.example.update.UpdateManager.VersionInfo?>(null)
+    val updateInfo: androidx.compose.runtime.State<com.example.update.UpdateManager.VersionInfo?> = _updateInfo
+
+    fun setUpdateInfo(info: com.example.update.UpdateManager.VersionInfo?) {
+        _updateInfo.value = info
+    }
+
     fun setAuthenticated(value: Boolean) {
         _isAuthenticated.value = value
     }
@@ -127,6 +134,11 @@ class MainActivity : AppCompatActivity() {
         val database = DocScanDatabase.getInstance(applicationContext)
         val repository = DocumentRepository(applicationContext, database.documentDao())
 
+        lifecycleScope.launch {
+            val info = com.example.update.UpdateManager.checkForUpdates(this@MainActivity)
+            mainViewModel.setUpdateInfo(info)
+        }
+
         setContent {
             val factory = remember { AppViewModelFactory(applicationContext, repository) }
             val cameraViewModel: CameraViewModel = androidx.lifecycle.viewmodel.compose.viewModel(factory = factory)
@@ -142,9 +154,33 @@ class MainActivity : AppCompatActivity() {
             }
 
             val isAuthenticated by mainViewModel.isAuthenticated.collectAsState()
+            val updateInfo by mainViewModel.updateInfo
 
             DocScanTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
+                    if (updateInfo != null) {
+                        androidx.compose.material3.AlertDialog(
+                            onDismissRequest = { mainViewModel.setUpdateInfo(null) },
+                            title = { androidx.compose.material3.Text("Update Available") },
+                            text = { androidx.compose.material3.Text("A new version of the app is available. Would you like to update?") },
+                            confirmButton = {
+                                androidx.compose.material3.TextButton(
+                                    onClick = {
+                                        lifecycleScope.launch {
+                                            com.example.update.UpdateManager.downloadAndInstall(this@MainActivity, updateInfo!!.downloadUrl)
+                                            mainViewModel.setUpdateInfo(null)
+                                        }
+                                    }
+                                ) { androidx.compose.material3.Text("Update") }
+                            },
+                            dismissButton = {
+                                androidx.compose.material3.TextButton(onClick = { mainViewModel.setUpdateInfo(null) }) {
+                                    androidx.compose.material3.Text("Cancel")
+                                }
+                            }
+                        )
+                    }
+
                     if (isAuthenticated) {
                         DocScanApp(
                             cameraViewModel = cameraViewModel,
