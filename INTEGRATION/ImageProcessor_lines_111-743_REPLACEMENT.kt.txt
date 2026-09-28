@@ -1,0 +1,118 @@
+// =====================================================================================
+// FILE:   app/src/main/java/com/example/engine/cv/ImageProcessor.kt
+// ACTION: Replace source lines 111..743 (from the KDoc "Result of document detection"
+//         down to and including `warpPerspective`) with the block below.
+//
+// Why only a block: the full ImageProcessor.kt was not supplied (filters, loadBitmapFromFile,
+// rotateBitmap, saveBitmapToFile, adjustEnhancements, quality checks, merge helpers live
+// outside the supplied ranges and must stay untouched).
+//
+// Before deleting, check the lines that were NOT included in the code pack:
+//   121-127, 222-229, 406, 560, 725-729
+// If any of them contains a PUBLIC function other than the ones re-declared below, keep it.
+//
+// All detection now delegates to DocumentDetector; all warping to DocumentPipeline.warp().
+// Public signatures are unchanged so existing callers keep compiling.
+// =====================================================================================
+
+    /**
+     * Legacy detection model, kept for source compatibility.
+     * New code should use the top-level [com.example.engine.cv.DocumentDetection].
+     */
+    data class DocumentDetection(
+        val quad: DocumentQuad,
+        val confidence: Float,
+        val imageWidth: Int,
+        val imageHeight: Int
+    )
+
+    private fun com.example.engine.cv.DocumentDetection.toLegacy() =
+        DocumentDetection(quad, confidence, imageWidth, imageHeight)
+
+    /** Detects the document border on an upright bitmap. Null when nothing reliable is found. */
+    suspend fun detectDocument(
+        bitmap: Bitmap,
+        expectedAspectRatio: Float? = null
+    ): DocumentDetection? = withContext(Dispatchers.Default) {
+        DocumentDetector.detect(bitmap, expectedAspectRatio)?.toLegacy()
+    }
+
+    /** CameraX fast path (oriented crop-rect frame). */
+    fun detectDocumentFromImageProxy(
+        imageProxy: ImageProxy,
+        expectedAspectRatio: Float? = null
+    ): DocumentDetection? = DocumentDetector.detectFromImageProxy(imageProxy, expectedAspectRatio)?.toLegacy()
+
+    /** Returns the detected quad, or the FULL image when nothing is detected (never a fake inset). */
+    suspend fun detectDocumentQuad(bitmap: Bitmap): DocumentQuad = withContext(Dispatchers.Default) {
+        DocumentDetector.detect(bitmap)?.quad ?: DocumentQuad.fullQuad()
+    }
+
+    /** True when [quad] is a plausible document AND actually crops something. */
+    fun isQuadValid(quad: DocumentQuad): Boolean = DocumentDetector.isPlausible(quad) && !quad.isFullImage()
+
+    fun isConvex(quad: DocumentQuad): Boolean = quad.isConvex()
+
+    /** Exponential smoothing kept for compatibility (live smoothing now lives in DetectionStabilizer). */
+    fun smoothQuad(current: DocumentQuad, previous: DocumentQuad?, alpha: Float = 0.35f): DocumentQuad =
+        previous?.lerpTo(current, alpha) ?: current
+
+    /**
+     * Perspective rectification. Always returns a NEW bitmap (legacy callers recycle the input
+     * independently of the output).
+     */
+    suspend fun applyPerspectiveWarp(srcBitmap: Bitmap, quad: DocumentQuad): Bitmap = withContext(Dispatchers.Default) {
+        val out = DocumentPipeline.warp(srcBitmap, quad)
+        if (out === srcBitmap) srcBitmap.copy(srcBitmap.config ?: Bitmap.Config.ARGB_8888, true) else out
+    }
+
+    @Deprecated("Use applyPerspectiveWarp instead", ReplaceWith("applyPerspectiveWarp(srcBitmap, quad)"))
+    suspend fun warpPerspective(srcBitmap: Bitmap, quad: DocumentQuad): Bitmap = applyPerspectiveWarp(srcBitmap, quad)
+
+    // ---- Generic private helpers kept because code outside the supplied ranges may use them ----
+
+    private fun erode(input: BooleanArray, width: Int, height: Int): BooleanArray {
+        val output = BooleanArray(input.size)
+        for (y in 1 until height - 1) {
+            val row = y * width
+            for (x in 1 until width - 1) {
+                var keep = true
+                loop@ for (dy in -1..1) {
+                    val nRow = (y + dy) * width
+                    for (dx in -1..1) {
+                        if (!input[nRow + x + dx]) { keep = false; break@loop }
+                    }
+                }
+                output[row + x] = keep
+            }
+        }
+        return output
+    }
+
+    private fun dilate(input: BooleanArray, width: Int, height: Int): BooleanArray {
+        val output = BooleanArray(input.size)
+        for (y in 1 until height - 1) {
+            val row = y * width
+            for (x in 1 until width - 1) {
+                var found = false
+                loop@ for (dy in -1..1) {
+                    val nRow = (y + dy) * width
+                    for (dx in -1..1) {
+                        if (input[nRow + x + dx]) { found = true; break@loop }
+                    }
+                }
+                output[row + x] = found
+            }
+        }
+        return output
+    }
+
+    private fun polygonArea(quad: DocumentQuad): Float = quad.area()
+
+    private fun distance(a: PointF, b: PointF): Float = hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
+
+    private fun value(v: Byte): Float = (v.toInt() and 0xFF).toFloat()
+
+// ----- END OF REPLACEMENT (the next line in the original file was line 744) -----
+// If the compiler reports "unused" warnings for erode/dilate/polygonArea/distance/value,
+// they are not used elsewhere and may be deleted safely.

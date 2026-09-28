@@ -1,0 +1,181 @@
+MS Scanner — Detection / Auto Capture / Auto Crop / Perspective / Manual Crop
+Re-engineering changelog
+==============================================================================
+
+PACKAGE CONTENTS
+----------------
+Complete files (drop-in, same paths as the project):
+  app/src/main/java/com/example/engine/cv/DocumentQuad.kt                 REWRITTEN
+  app/src/main/java/com/example/engine/cv/BatchProcessingQueue.kt         REWRITTEN
+  app/src/main/java/com/example/engine/cv/DocumentDetector.kt             NEW
+  app/src/main/java/com/example/engine/cv/LiveDocumentAnalyzer.kt         NEW
+  app/src/main/java/com/example/engine/cv/QuadCoordinateMapper.kt         NEW
+  app/src/main/java/com/example/engine/cv/DocumentPipeline.kt             NEW (includes QuadStore)
+  app/src/main/java/com/example/ui/screens/editor/DocumentCropEditorScreen.kt  REWRITTEN
+  app/src/main/java/com/example/ui/screens/editor/QuadCropEditor.kt       NEW
+  app/src/main/java/com/example/ui/screens/camera/DocumentScanController.kt    NEW
+
+Exact replacement blocks (full source of these files was NOT in the code pack):
+  INTEGRATION/ImageProcessor_lines_111-743_REPLACEMENT.kt.txt
+  INTEGRATION/CameraScanScreen_INTEGRATION.kt.txt
+  INTEGRATION/ViewModels_and_HomeScreen_INTEGRATION.kt.txt
+    (CameraViewModel.kt, EditSessionViewModel.kt, HomeScreen.kt)
+
+No new permissions. No new libraries (CameraX, Compose, Material3 + material-icons-extended,
+android.graphics.pdf.PdfRenderer and android.media.ExifInterface are all already in use/platform).
+
+
+ROOT CAUSES FOUND
+-----------------
+Detection
+  D1  extremeQuad() picked corners as min/max of (x+y) and (x-y) over a whole connected component.
+      Any background texture touching the page, or a page rotated ~45°, produced a bounding-shape
+      quad instead of the real corners.
+  D2  Edge thresholds were the 65/75/85th percentiles of ALL gradient magnitudes (no non-maximum
+      suppression): thick, noisy edge maps where text and background merge with the border.
+  D3  The region candidate used a 3x3 erode/dilate that zeroes the image border and an Otsu mask
+      inverted by the border average; it frequently returned the background as the "document".
+  D4  expectedAspectRatio (ID card / passport) was accepted but never used.
+  D5  Confidence thresholds were inconsistent (0.45 detector, 0.55 camera, area >= 0.15 in
+      isQuadValid): ID cards at normal distance (5–12% of the frame) were always rejected.
+  D6  detectDocumentQuad() returned fullQuad() on failure and DocumentQuad.fromJson() returned a
+      6% inset on blank/invalid JSON — pages were silently cropped by a fake rectangle.
+
+Auto capture
+  A1  ViewPort was built from PreviewView.width/height possibly before layout (0x0). Binding then
+      threw and the fallback bound ONLY Preview + ImageCapture: no ImageAnalysis at all, so
+      detection and auto capture never ran.
+  A2  Stability needed 10 consecutive perfect UI ticks; one noisy frame, one missed detection or
+      one luma-grid change (auto-exposure / flicker, threshold 7.5) reset the counter to 0.
+  A3  A second 1.8 s countdown ran in a LaunchedEffect keyed on flickering booleans; each flicker
+      restarted or cancelled it.
+  A4  Compose state (stabilityCount, detectedImageQuad) was read from the analyzer thread.
+  A5  The capture used the EMA-smoothed (lagging) quad and warped with it without re-checking it
+      on the full-resolution photo.
+  A6  In batch mode the same page could be re-captured right after the cooldown.
+
+Crop / perspective
+  C1  Editor save rotated the image FIRST and then warped with a quad expressed in the UNROTATED
+      image -> wrong crop whenever rotation != 0. EditSessionViewModel did warp -> rotate:
+      two orders in the same app.
+  C2  The editor could receive the processed (already cropped) path and re-detected on open, so
+      the quad from capture was lost and cropping was applied twice.
+  C3  HomeScreen detected a quad and then ignored it (full image + MAGIC filter).
+  C4  Filters differed by path (AUTO in some, MAGIC in others).
+
+Manual crop gesture
+  G1  pointerInput(..., quad) was keyed on quad: every live update restarted the gesture coroutine
+      and cancelled the drag after one event ("tap-tap" instead of continuous drag).
+  G2  Position integrated from per-event deltas (drift, clamping loss); hit radius normalized by
+      width only (wrong vertically); a non-convex intermediate froze the handle.
+
+
+CHANGES PER FILE
+----------------
+DocumentDetector.kt (NEW) — the only detector in the app
+  - Gaussian 5x5 -> Sobel -> non-maximum suppression -> hysteresis with adaptive thresholds.
+  - Candidates from 4 sources: thin edges, bridged edges, Otsu bright side, Otsu dark side.
+  - Convex hull (row extremes) -> maximum-area inscribed quadrilateral (replaces extremeQuad).
+  - Sub-pixel refinement: each side re-fitted by total least squares to gradient-aligned edge
+    pixels, corners = line intersections.
+  - Score = per-side edge support with gradient direction (mean + weakest side) + right angles
+    + area + expected aspect (ID 1.586 / passport 1.42). Min area 5% (small cards work).
+  - detectWithPrior(): full-resolution confirmation of the live quad at capture time.
+  - Returns null when nothing qualifies: no fixed quad, no bounding-box fallback.
+  - Validated offline on synthetic scenes (straight, strong perspective, 30° rotation,
+    low contrast, small card, page touching a dark object, empty scene): max corner error
+    0.6–2.1 px at 320 px working size, no false positive on the empty scene.
+
+LiveDocumentAnalyzer.kt (NEW)
+  - ImageAnalysis.Analyzer: Y-plane only, crop-rect aware, 2x2 box sampling, ~15 fps cap.
+  - DetectionStabilizer: time-based hold (0.9 s) with 0.4 s miss tolerance, movement tolerance
+    scaled by document size, confidence EMA, display smoothing that snaps on large jumps.
+  - Publishes one immutable LiveDetectionState on the main executor (no cross-thread state reads).
+  - requireNewScene(): after a batch / first-side capture, re-arms only when the page changes
+    (brightness-normalized scene signature) or the document leaves the frame.
+
+QuadCoordinateMapper.kt (NEW)
+  - frameToView(): FILL_CENTER / FIT_CENTER + front-camera mirroring for the preview overlay.
+  - ImageFit: editor fit-with-padding transform used for BOTH drawing and hit testing.
+
+DocumentQuad.kt (REWRITTEN, API-compatible)
+  - defaultQuad()/fromJson() now return the full image instead of a 6% inset (D6).
+  - New: fromJsonOrNull, isConvex, area, minSide, maxCornerDistance, rotated(deg),
+    mirroredHorizontally, lerpTo, withPoint, isFullImage, clamped.
+  - targetDimensions() caps output at 4096 px; getTransformationMatrix(dstW, dstH) overload.
+
+DocumentPipeline.kt (NEW) — the only processing path
+  - processCapturedFile / processUri / processFile / importPdf / redetect / render / renderBitmap.
+  - Fixed order everywhere: warp(raw, quad) -> rotate -> filter -> enhancements (C1).
+  - One default filter (AUTO) for every source (C4).
+  - Raw saved upright once; quad persisted next to it (QuadStore "<raw>.quad.json"), so the
+    editor opens with the real detected quad even through Pair(raw, processed) flows (C2).
+  - Bounded decoding (inSampleSize + EXIF) for camera, gallery and PDF; all work off main thread.
+  - PDF pages rasterized with PdfRenderer on white; no border detection on flat pages.
+
+BatchProcessingQueue.kt (REWRITTEN)
+  - Same public API (enqueueUris, enqueueExistingPagePairs, queueState, models) delegating to
+    DocumentPipeline; pause()/resume()/skipRemainingAutoCrop()/cancel()/reset()/release().
+  - Pause implemented with a StateFlow gate (the old CompletableDeferred could be lost);
+    CancellationException is re-thrown instead of being reported as a failed page.
+
+DocumentCropEditorScreen.kt (REWRITTEN, same required parameters)
+  - New optional params: initialQuad, initialRotation, initialFilter, expectedAspectRatio,
+    onCropResult (returns quad/rotation/filter for persistence).
+  - Opens instantly; detection runs in the background and never overrides a user edit.
+  - Failed detection -> full-image quad + message: manual crop is the fallback.
+  - Quad state is RAW-normalized; display uses rotated(rotation); save uses DocumentPipeline.render.
+  - Undo/redo (one entry per drag / slider gesture), debounced live preview for Filters/Adjust.
+  - No dependency on theme files or R strings that were not part of the pack.
+
+QuadCropEditor.kt (NEW) — manual gesture
+  - pointerInput(Unit) + rememberUpdatedState: continuous Touch -> Drag -> Live update -> Release.
+  - Absolute positioning with grab offset (no drift, no jump). Corner radius 36 dp, edge 28 dp,
+    corners have priority, edges use their middle 70%; edges move along their normal.
+  - Invalid (non-convex / collapsed) positions are skipped without ending the drag.
+  - Loupe shows the image around the handle with the quad lines, flips below near the top.
+
+DocumentScanController.kt (NEW)
+  - Owns live state, bindScannerCamera() (ViewPort only after layout, analysis always bound
+    when possible, 3-level fallback), awaitCameraProvider/awaitLaidOut, AutoCaptureEffect
+    (fires once per STABLE entry), DocumentDetectionOverlay (tracking/stable colors + hold ring).
+  - Capture prior is used only when a ViewPort aligns analysis and photo (otherwise re-detects).
+
+INTEGRATION blocks
+  - ImageProcessor: detection/warp functions become thin delegates (same signatures).
+  - CameraScanScreen: 8 ordered steps (state, binding, capture, auto-capture, overlay).
+  - CameraViewModel: pipeline import, PDF import, Edit usable after the first page
+    (isBackgroundProcessing), re-crop updates by raw path.
+  - EditSessionViewModel: batch re-crop / filter / rotate via DocumentPipeline, pages matched by id.
+  - HomeScreen: system-camera result goes through the pipeline (C3).
+
+
+REMOVED / REPLACED LOGIC
+------------------------
+  quadDistance, previewQuad, luma-grid motion check, stabilityCount/countdown effect,
+  detectDocumentInternal, detectFromGrayscale, detectRegionCandidate, detectCandidate,
+  extremeQuad, sideEdgeSupport, rotateNormalizedQuad, duplicated decode/detect/warp/filter blocks
+  in CameraScanScreen, CameraViewModel (x2), EditSessionViewModel (x3), BatchProcessingQueue (x2),
+  HomeScreen, private isConvex/distanceToSegment in the editor.
+
+
+VERIFICATION DONE / LIMITS
+--------------------------
+  - Detection algorithm prototyped and tested on synthetic scenes (results above).
+  - Code statically reviewed for compile errors, threading, state ownership, coordinate frames,
+    gesture conflicts and bitmap lifetimes. NO Android/Kotlin toolchain was available in the
+    review environment: run a Gradle build before merging.
+  - Assumptions to confirm on first build:
+      * ImageProcessor.loadBitmapFromFile(path, maxDim), saveBitmapToFile(context, bmp, prefix): String,
+        applyFilter(bmp, FilterType), adjustEnhancements(bmp, Float, Float, Boolean) — signatures
+        taken from the calls in the pack.
+      * BRIGHTNESS_RANGE in DocumentCropEditorScreen (-1..1) must match adjustEnhancements
+        (the original slider range was outside the supplied lines).
+      * BatchProcessingQueue control method names (pause/resume/skipRemainingAutoCrop/cancel)
+        were outside the supplied lines; rename call sites if they differ.
+      * minSdk >= 24 (ExifInterface(InputStream) in DocumentPipeline).
+
+Manual test matrix to run on device
+  Single page | Multiple pages (batch) | Retake | Add page | Reorder | Delete |
+  Failed detection -> manual crop | Manual drag of corners/edges | Rotate 0/90/180/270 then save |
+  ID card 2 sides | Passport 2 sides | Import photos (EXIF-rotated) | Import PDF | Front camera overlay.

@@ -1,27 +1,30 @@
 package com.example.engine.cv
 
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.media.ExifInterface
 import android.net.Uri
-import com.example.data.model.FilterType
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.InputStream
 import java.util.UUID
 
 enum class BatchItemStatus {
     PENDING,        // Waiting in queue
-    ANALYZING,      // Background image analysis (edge detection & quad contouring)
-    CROPPING,       // Perspective warp & filter enhancement
-    COMPLETED,      // Processed and ready for review/saving
-    FAILED,         // Error during processing (fallback to raw image)
-    SKIPPED         // User skipped auto-crop
+    ANALYZING,      // Document border detection
+    CROPPING,       // Perspective warp & filter
+    COMPLETED,      // Processed and ready
+    FAILED,         // Error during processing
+    SKIPPED         // Auto-crop skipped by the user (page kept uncropped)
 }
 
 data class BatchCropItemState(
@@ -53,33 +56,29 @@ data class BatchQueueState(
 ) {
     val progressPercentage: Float
         get() = if (totalCount > 0) completedCount.toFloat() / totalCount.toFloat() else 0f
-
-    val isAllCompleted: Boolean
-        get() = totalCount > 0 && completedCount >= totalCount
 }
 
 /**
- * High-performance, non-blocking batch processing queue for auto-cropping imported multi-page documents.
- * Runs heavy image analysis (Sobel edge detection, corner detection, perspective warp, scan enhancements)
- * on background threads (Dispatchers.Default / IO) while keeping the Compose UI 100% fluid and responsive.
- * Emits results page-by-page as each image finishes analysis, enabling immediate user interaction.
+ * Non-blocking batch queue for imported / existing pages. All image work is delegated to
+ * [DocumentPipeline] (same detection, warp and filter as single scans), so batch output can no longer
+ * diverge from the single-page path. Pages are emitted one by one as soon as they are ready, so the
+ * UI (and the Edit screen) stays usable while the rest of the batch runs.
  */
 class BatchProcessingQueue(
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 ) {
-
     private val _queueState = MutableStateFlow(BatchQueueState())
     val queueState: StateFlow<BatchQueueState> = _queueState.asStateFlow()
 
     private var queueJob: Job? = null
-    private var isPausedInternal = false
-    private var pauseCompleter: CompletableDeferred<Unit>? = null
-    private var skipRemainingAutoCrop = false
+    private val paused = MutableStateFlow(false)
+    @Volatile private var skipRemainingAutoCrop = false
+
+    // ------------------------------------------------------------------ enqueue
 
     /**
-     * Enqueue a list of imported image URIs (e.g. from gallery multi-selection).
-     * @param onPageReady Called immediately on the main-safe thread when each individual page completes auto-cropping.
-     * @param onAllComplete Called when all pages in the batch have been processed.
+     * Imported images (gallery multi-select, shares).
+     * [onPageReady] runs on the main thread for each finished page, in order.
      */
     fun enqueueUris(
         context: Context,
@@ -89,174 +88,43 @@ class BatchProcessingQueue(
         onAllComplete: suspend () -> Unit = {}
     ) {
         if (uris.isEmpty()) return
-
-        // Cancel previous job if running
-        queueJob?.cancel()
-        isPausedInternal = false
-        skipRemainingAutoCrop = false
-        pauseCompleter = null
-
-        val initialItems = uris.mapIndexed { idx, uri ->
-            BatchCropItemState(
-                index = idx,
-                sourceUri = uri,
-                status = BatchItemStatus.PENDING,
-                statusTextEn = "Waiting in queue...",
-                statusTextAr = "في الانتظار..."
-            )
-        }
-
-        _queueState.value = BatchQueueState(
-            isProcessing = true,
-            isPaused = false,
-            totalCount = uris.size,
-            completedCount = 0,
-            currentProcessingIndex = 0,
-            currentItemStatusEn = "Preparing imported documents...",
-            currentItemStatusAr = "جاري تحضير المستندات المستوردة...",
-            items = initialItems,
-            autoCropEnabled = autoCrop
+        val appContext = context.applicationContext
+        startNewRun(
+            items = uris.mapIndexed { i, uri -> BatchCropItemState(index = i, sourceUri = uri) },
+            autoCrop = autoCrop,
+            titleEn = "Preparing imported documents...",
+            titleAr = "جاري تحضير المستندات المستوردة..."
         )
-
-        queueJob = scope.launch(Dispatchers.IO) {
+        queueJob = scope.launch {
             val total = uris.size
             for (i in 0 until total) {
-                if (!isActive) break
-
-                // Check pause state
-                if (isPausedInternal) {
-                    val deferred = CompletableDeferred<Unit>()
-                    pauseCompleter = deferred
-                    _queueState.update { it.copy(isPaused = true) }
-                    deferred.await()
-                    _queueState.update { it.copy(isPaused = false) }
-                }
-
-                val uri = uris[i]
-                val shouldAutoCropThis = autoCrop && !skipRemainingAutoCrop
-
-                // Update item status: ANALYZING
-                updateItemState(i) {
-                    it.copy(
-                        status = BatchItemStatus.ANALYZING,
-                        progress = 0.2f,
-                        statusTextEn = "Analyzing document boundaries & edges...",
-                        statusTextAr = "تحليل حدود وزوايا المستند..."
-                    )
-                }
-                _queueState.update {
-                    it.copy(
-                        currentProcessingIndex = i,
-                        currentItemStatusEn = "Analyzing page ${i + 1} of $total...",
-                        currentItemStatusAr = "تحليل الصفحة ${i + 1} من $total..."
-                    )
-                }
-
+                ensureActive()
+                awaitIfPaused()
+                val doCrop = autoCrop && !skipRemainingAutoCrop
+                markAnalyzing(i, total)
                 try {
-                    // 1. Decode bitmap with inSampleSize to prevent OOM
-                    val (rawBmp, orientationDegrees) = decodeSampledBitmapFromUri(context, uri, 2048, 2048)
-                    if (rawBmp == null) {
+                    val page = DocumentPipeline.processUri(appContext, uris[i], doCrop, null, DocumentPipeline.DEFAULT_FILTER, "batch_p${i + 1}")
+                    if (page == null) {
                         markItemFailed(i, "Could not decode image")
                         continue
                     }
-
-                    // Rotate if EXIF orientation dictates
-                    var cleanRawBmp = if (orientationDegrees != 0) {
-                        val rotated = ImageProcessor.rotateBitmap(rawBmp, orientationDegrees)
-                        if (rotated != rawBmp) rawBmp.recycle()
-                        rotated
-                    } else {
-                        rawBmp
-                    }
-
-                    // Save raw uncropped image
-                    val rawPath = ImageProcessor.saveBitmapToFile(context, cleanRawBmp, "batch_raw_p${i + 1}_")
-
-                    // 2. Background Image Analysis: Detect Quad Corners
-                    val detectedQuad = if (shouldAutoCropThis) {
-                        ImageProcessor.detectDocumentQuad(cleanRawBmp)
-                    } else {
-                        DocumentQuad.defaultQuad()
-                    }
-
-                    val isQuadValid = shouldAutoCropThis && ImageProcessor.isQuadValid(detectedQuad)
-
-                    // 3. Perspective Warp & Auto-Crop
-                    updateItemState(i) {
-                        it.copy(
-                            status = BatchItemStatus.CROPPING,
-                            progress = 0.6f,
-                            statusTextEn = "Perspective cropping & enhancing...",
-                            statusTextAr = "قص المنظور وتطبيق الفلتر..."
-                        )
-                    }
-
-                    val croppedBmp = if (isQuadValid) {
-                        ImageProcessor.applyPerspectiveWarp(cleanRawBmp, detectedQuad)
-                    } else {
-                        cleanRawBmp.copy(cleanRawBmp.config ?: Bitmap.Config.ARGB_8888, true)
-                    }
-
-                    // 4. Scan Filter Enhancement
-                    val enhancedBmp = ImageProcessor.applyFilter(croppedBmp, FilterType.MAGIC)
-                    val procPath = ImageProcessor.saveBitmapToFile(context, enhancedBmp, "batch_proc_p${i + 1}_")
-
-                    // Recycle temporary bitmaps to free native memory
-                    if (croppedBmp != cleanRawBmp) croppedBmp.recycle()
-                    if (enhancedBmp != croppedBmp) enhancedBmp.recycle()
-                    cleanRawBmp.recycle()
-
-                    // 5. Page Completed: Update state & notify UI immediately
-                    updateItemState(i) {
-                        it.copy(
-                            status = BatchItemStatus.COMPLETED,
-                            progress = 1.0f,
-                            rawImagePath = rawPath,
-                            processedImagePath = procPath,
-                            detectedQuad = detectedQuad,
-                            isAutoCropped = isQuadValid,
-                            statusTextEn = "Ready",
-                            statusTextAr = "جاهزة"
-                        )
-                    }
-
-                    _queueState.update { state ->
-                        state.copy(
-                            completedCount = state.completedCount + 1,
-                            currentItemStatusEn = "Page ${i + 1} ready",
-                            currentItemStatusAr = "الصفحة ${i + 1} جاهزة"
-                        )
-                    }
-
-                    // Emit to caller so UI displays this page right away
+                    markCompleted(i, page, doCrop)
                     withContext(Dispatchers.Main) {
-                        onPageReady(i, rawPath, procPath, detectedQuad)
+                        onPageReady(i, page.rawPath, page.processedPath, page.quad.takeIf { page.autoCropped })
                     }
-
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     e.printStackTrace()
                     markItemFailed(i, e.localizedMessage ?: "Unknown error")
                 }
             }
-
-            _queueState.update {
-                it.copy(
-                    isProcessing = false,
-                    currentProcessingIndex = -1,
-                    currentItemStatusEn = "Batch auto-crop completed",
-                    currentItemStatusAr = "اكتملت معالجة الدفعة بنجاح"
-                )
-            }
-
-            withContext(Dispatchers.Main) {
-                onAllComplete()
-            }
+            finishRun("Batch processing finished", "تم الانتهاء من المعالجة")
+            withContext(Dispatchers.Main) { onAllComplete() }
         }
     }
 
-    /**
-     * Enqueue already loaded pages (raw/proc pairs) for batch auto-cropping re-analysis in background.
-     */
+    /** Re-detect + re-render already loaded pages (raw, processed) pairs. */
     fun enqueueExistingPagePairs(
         context: Context,
         pages: List<Pair<String, String>>,
@@ -264,166 +132,72 @@ class BatchProcessingQueue(
         onAllComplete: suspend () -> Unit = {}
     ) {
         if (pages.isEmpty()) return
-
-        queueJob?.cancel()
-        isPausedInternal = false
-        skipRemainingAutoCrop = false
-        pauseCompleter = null
-
-        val initialItems = pages.mapIndexed { idx, pair ->
-            BatchCropItemState(
-                index = idx,
-                rawImagePath = pair.first,
-                processedImagePath = pair.second,
-                status = BatchItemStatus.PENDING,
-                statusTextEn = "Waiting in queue...",
-                statusTextAr = "في الانتظار..."
-            )
-        }
-
-        _queueState.value = BatchQueueState(
-            isProcessing = true,
-            isPaused = false,
-            totalCount = pages.size,
-            completedCount = 0,
-            currentProcessingIndex = 0,
-            currentItemStatusEn = "Re-analyzing documents for auto-crop...",
-            currentItemStatusAr = "جاري إعادة تحليل وقص المستندات...",
-            items = initialItems,
-            autoCropEnabled = true
+        val appContext = context.applicationContext
+        startNewRun(
+            items = pages.mapIndexed { i, p -> BatchCropItemState(index = i, rawImagePath = p.first, processedImagePath = p.second) },
+            autoCrop = true,
+            titleEn = "Re-analyzing documents for auto-crop...",
+            titleAr = "جاري إعادة تحليل وقص المستندات..."
         )
-
-        queueJob = scope.launch(Dispatchers.IO) {
+        queueJob = scope.launch {
             val total = pages.size
             for (i in 0 until total) {
-                if (!isActive) break
-
-                if (isPausedInternal) {
-                    val deferred = CompletableDeferred<Unit>()
-                    pauseCompleter = deferred
-                    _queueState.update { it.copy(isPaused = true) }
-                    deferred.await()
-                    _queueState.update { it.copy(isPaused = false) }
+                ensureActive()
+                awaitIfPaused()
+                if (skipRemainingAutoCrop) {
+                    updateItemState(i) { it.copy(status = BatchItemStatus.SKIPPED, progress = 1f, statusTextEn = "Skipped", statusTextAr = "تم التخطي") }
+                    _queueState.update { it.copy(completedCount = it.completedCount + 1) }
+                    continue
                 }
-
                 val rawPath = pages[i].first.ifBlank { pages[i].second }
-                val rawFile = File(rawPath)
-                if (!rawFile.exists()) {
+                if (!File(rawPath).exists()) {
                     markItemFailed(i, "Raw file not found")
                     continue
                 }
-
-                updateItemState(i) {
-                    it.copy(
-                        status = BatchItemStatus.ANALYZING,
-                        progress = 0.3f,
-                        statusTextEn = "Detecting document edges...",
-                        statusTextAr = "تحليل حواف المستند..."
-                    )
-                }
-
+                markAnalyzing(i, total)
                 try {
-                    val rawBmp = ImageProcessor.loadBitmapFromFile(rawPath, 2048)
-                    if (rawBmp == null) {
+                    val page = DocumentPipeline.redetect(appContext, rawPath, null, 0, DocumentPipeline.DEFAULT_FILTER, "batch_recrop_p${i + 1}")
+                    if (page == null) {
                         markItemFailed(i, "Failed to load bitmap")
                         continue
                     }
-
-                    val quad = ImageProcessor.detectDocumentQuad(rawBmp)
-                    val isQuadValid = ImageProcessor.isQuadValid(quad)
-
-                    updateItemState(i) {
-                        it.copy(
-                            status = BatchItemStatus.CROPPING,
-                            progress = 0.7f,
-                            statusTextEn = "Perspective cropping & enhancing...",
-                            statusTextAr = "قص المنظور وتطبيق الفلتر..."
-                        )
-                    }
-
-                    val warped = if (isQuadValid) {
-                        ImageProcessor.applyPerspectiveWarp(rawBmp, quad)
-                    } else {
-                        rawBmp.copy(rawBmp.config ?: Bitmap.Config.ARGB_8888, true)
-                    }
-
-                    val enhanced = ImageProcessor.applyFilter(warped, FilterType.MAGIC)
-                    val newProcPath = ImageProcessor.saveBitmapToFile(context, enhanced, "batch_recrop_p${i + 1}_")
-
-                    if (warped != rawBmp) warped.recycle()
-                    if (enhanced != warped) enhanced.recycle()
-                    rawBmp.recycle()
-
-                    updateItemState(i) {
-                        it.copy(
-                            status = BatchItemStatus.COMPLETED,
-                            progress = 1.0f,
-                            processedImagePath = newProcPath,
-                            detectedQuad = quad,
-                            isAutoCropped = isQuadValid,
-                            statusTextEn = "Auto-cropped",
-                            statusTextAr = "تم القص بنجاح"
-                        )
-                    }
-
-                    _queueState.update { state ->
-                        state.copy(completedCount = state.completedCount + 1)
-                    }
-
-                    withContext(Dispatchers.Main) {
-                        onPageUpdated(i, newProcPath, quad)
-                    }
-
+                    markCompleted(i, page, true)
+                    withContext(Dispatchers.Main) { onPageUpdated(i, page.processedPath, page.quad) }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     e.printStackTrace()
                     markItemFailed(i, e.localizedMessage ?: "Processing error")
                 }
             }
-
-            _queueState.update {
-                it.copy(
-                    isProcessing = false,
-                    currentProcessingIndex = -1,
-                    currentItemStatusEn = "Auto-crop finished",
-                    currentItemStatusAr = "تم الانتهاء من القص التلقائي"
-                )
-            }
-
-            withContext(Dispatchers.Main) {
-                onAllComplete()
-            }
+            finishRun("Auto-crop finished", "تم الانتهاء من القص التلقائي")
+            withContext(Dispatchers.Main) { onAllComplete() }
         }
     }
 
+    // ------------------------------------------------------------------ controls
+
     fun pause() {
-        isPausedInternal = true
+        paused.value = true
         _queueState.update { it.copy(isPaused = true) }
     }
 
     fun resume() {
-        isPausedInternal = false
-        pauseCompleter?.complete(Unit)
-        pauseCompleter = null
+        paused.value = false
         _queueState.update { it.copy(isPaused = false) }
     }
 
-    fun skipRemaining() {
+    /** Remaining pages are imported without auto-crop (kept whole, still editable manually). */
+    fun skipRemainingAutoCrop() {
         skipRemainingAutoCrop = true
+        _queueState.update { it.copy(autoCropEnabled = false) }
     }
 
     fun cancel() {
         queueJob?.cancel()
-        pauseCompleter?.complete(Unit)
-        pauseCompleter = null
-        isPausedInternal = false
-        _queueState.update {
-            it.copy(
-                isProcessing = false,
-                isPaused = false,
-                currentItemStatusEn = "Batch queue cancelled",
-                currentItemStatusAr = "تم إلغاء الطابور"
-            )
-        }
+        queueJob = null
+        paused.value = false
+        _queueState.update { it.copy(isProcessing = false, isPaused = false, currentProcessingIndex = -1) }
     }
 
     fun reset() {
@@ -431,86 +205,96 @@ class BatchProcessingQueue(
         _queueState.value = BatchQueueState()
     }
 
-    private fun updateItemState(index: Int, transform: (BatchCropItemState) -> BatchCropItemState) {
-        _queueState.update { state ->
-            val updatedList = state.items.toMutableList()
-            if (index in updatedList.indices) {
-                updatedList[index] = transform(updatedList[index])
-            }
-            state.copy(items = updatedList)
-        }
+    /** Call from the owner's onCleared()/dispose. */
+    fun release() {
+        cancel()
+        scope.cancel()
     }
 
-    private fun markItemFailed(index: Int, error: String) {
-        updateItemState(index) {
+    // ------------------------------------------------------------------ internals
+
+    private fun startNewRun(items: List<BatchCropItemState>, autoCrop: Boolean, titleEn: String, titleAr: String) {
+        queueJob?.cancel()
+        paused.value = false
+        skipRemainingAutoCrop = false
+        _queueState.value = BatchQueueState(
+            isProcessing = true,
+            totalCount = items.size,
+            currentProcessingIndex = 0,
+            currentItemStatusEn = titleEn,
+            currentItemStatusAr = titleAr,
+            items = items,
+            autoCropEnabled = autoCrop
+        )
+    }
+
+    private suspend fun awaitIfPaused() {
+        if (paused.value) paused.first { !it }
+    }
+
+    private fun markAnalyzing(i: Int, total: Int) {
+        updateItemState(i) {
             it.copy(
-                status = BatchItemStatus.FAILED,
-                progress = 1.0f,
-                errorMessage = error,
-                statusTextEn = "Analysis skipped: $error",
-                statusTextAr = "تم تخطي التحليل: $error"
+                status = BatchItemStatus.ANALYZING,
+                progress = 0.3f,
+                statusTextEn = "Detecting document edges...",
+                statusTextAr = "تحليل حواف المستند..."
             )
         }
+        _queueState.update {
+            it.copy(
+                currentProcessingIndex = i,
+                currentItemStatusEn = "Analyzing page ${i + 1} of $total...",
+                currentItemStatusAr = "تحليل الصفحة ${i + 1} من $total..."
+            )
+        }
+    }
+
+    private fun markCompleted(i: Int, page: ProcessedPage, cropRequested: Boolean) {
+        updateItemState(i) {
+            it.copy(
+                status = if (cropRequested) BatchItemStatus.COMPLETED else BatchItemStatus.SKIPPED,
+                progress = 1f,
+                rawImagePath = page.rawPath,
+                processedImagePath = page.processedPath,
+                detectedQuad = page.quad.takeIf { page.autoCropped },
+                isAutoCropped = page.autoCropped,
+                statusTextEn = if (page.autoCropped) "Auto-cropped" else "Ready (not cropped)",
+                statusTextAr = if (page.autoCropped) "تم القص بنجاح" else "جاهزة (بدون قص)"
+            )
+        }
+        _queueState.update {
+            it.copy(
+                completedCount = it.completedCount + 1,
+                currentItemStatusEn = "Page ${i + 1} ready",
+                currentItemStatusAr = "الصفحة ${i + 1} جاهزة"
+            )
+        }
+    }
+
+    private fun markItemFailed(i: Int, message: String) {
+        updateItemState(i) {
+            it.copy(
+                status = BatchItemStatus.FAILED,
+                progress = 1f,
+                errorMessage = message,
+                statusTextEn = "Failed: $message",
+                statusTextAr = "فشلت المعالجة"
+            )
+        }
+        _queueState.update { it.copy(completedCount = it.completedCount + 1) }
+    }
+
+    private fun finishRun(en: String, ar: String) {
+        _queueState.update {
+            it.copy(isProcessing = false, isPaused = false, currentProcessingIndex = -1, currentItemStatusEn = en, currentItemStatusAr = ar)
+        }
+    }
+
+    private fun updateItemState(index: Int, transform: (BatchCropItemState) -> BatchCropItemState) {
         _queueState.update { state ->
-            state.copy(completedCount = state.completedCount + 1)
+            if (index !in state.items.indices) state
+            else state.copy(items = state.items.toMutableList().also { it[index] = transform(it[index]) })
         }
-    }
-
-    private fun decodeSampledBitmapFromUri(
-        context: Context,
-        uri: Uri,
-        reqWidth: Int,
-        reqHeight: Int
-    ): Pair<Bitmap?, Int> {
-        // Step 1: Decode bounds
-        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        context.contentResolver.openInputStream(uri)?.use { stream ->
-            BitmapFactory.decodeStream(stream, null, boundsOptions)
-        }
-
-        val sampleSize = calculateInSampleSize(boundsOptions.outWidth, boundsOptions.outHeight, reqWidth, reqHeight)
-
-        // Step 2: Read EXIF orientation
-        var orientationDegrees = 0
-        try {
-            context.contentResolver.openInputStream(uri)?.use { stream ->
-                val exif = ExifInterface(stream)
-                val orientation = exif.getAttributeInt(
-                    ExifInterface.TAG_ORIENTATION,
-                    ExifInterface.ORIENTATION_NORMAL
-                )
-                orientationDegrees = when (orientation) {
-                    ExifInterface.ORIENTATION_ROTATE_90 -> 90
-                    ExifInterface.ORIENTATION_ROTATE_180 -> 180
-                    ExifInterface.ORIENTATION_ROTATE_270 -> 270
-                    else -> 0
-                }
-            }
-        } catch (e: Exception) {
-            // Ignore EXIF failure
-        }
-
-        // Step 3: Decode scaled bitmap
-        val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }
-        val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
-            BitmapFactory.decodeStream(stream, null, decodeOptions)
-        }
-
-        return Pair(bitmap, orientationDegrees)
-    }
-
-    private fun calculateInSampleSize(width: Int, height: Int, reqWidth: Int, reqHeight: Int): Int {
-        var inSampleSize = 1
-        if (height > reqHeight || width > reqWidth) {
-            val halfHeight = height / 2
-            val halfWidth = width / 2
-            while ((halfHeight / inSampleSize) >= reqHeight && (halfWidth / inSampleSize) >= reqWidth) {
-                inSampleSize *= 2
-            }
-        }
-        return inSampleSize
     }
 }

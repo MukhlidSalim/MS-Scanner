@@ -1,270 +1,339 @@
 package com.example.ui.screens.editor
 
 import android.graphics.Bitmap
-import android.graphics.PointF
-import androidx.compose.animation.*
-import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.RotateRight
-import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.automirrored.filled.Redo
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.automirrored.filled.Undo
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.ColorLens
+import androidx.compose.material.icons.filled.Crop
+import androidx.compose.material.icons.filled.CropFree
+import androidx.compose.material.icons.filled.RestartAlt
+import androidx.compose.material.icons.filled.Rotate90DegreesCcw
+import androidx.compose.material.icons.filled.Rotate90DegreesCw
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.clipPath
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.R
 import com.example.data.model.FilterType
+import com.example.engine.cv.DocumentPipeline
 import com.example.engine.cv.DocumentQuad
 import com.example.engine.cv.ImageProcessor
-import com.example.ui.theme.CyanScan
-import com.example.ui.theme.Emerald400
-import com.example.ui.theme.StudioCanvasBg
+import com.example.engine.cv.QuadStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlin.math.hypot
 import kotlin.math.max
-import kotlin.math.min
+import kotlin.math.roundToInt
 
-enum class EditorTab {
-    CROP,
-    FILTERS,
-    ADJUST
-}
+enum class EditorTab { CROP, FILTERS, ADJUST }
 
 data class EditorState(
     val quad: DocumentQuad,
     val rotation: Int,
-    val filter: FilterType,
+    val filter: FilterType?,
     val brightness: Float,
     val contrast: Float,
     val sharpen: Boolean
 )
 
+/** Full result of a crop session, for callers that persist cropQuadJson / rotationDegrees / filterType. */
+data class CropEditorResult(
+    val processedPath: String,
+    val rawPath: String,
+    /** Normalized to the RAW image. */
+    val quad: DocumentQuad,
+    val rotationDegrees: Int,
+    val filter: FilterType?
+)
+
+private enum class DetectionStatus { LOADING, DETECTING, DETECTED, NOT_FOUND, STORED, MANUAL }
+
+private val Accent = Color(0xFF34D399)
+private val CanvasBg = Color(0xFF111418)
+
+/** Brightness slider range passed to ImageProcessor.adjustEnhancements. Keep in sync with that function. */
+private val BRIGHTNESS_RANGE = -1f..1f
+private val CONTRAST_RANGE = 0.6f..2.0f
+
+/**
+ * Crop / perspective / filter editor.
+ *
+ * [imagePath] MUST be the RAW (uncropped, upright) image. The initial quad is, in order:
+ * [initialQuad] -> quad persisted by the pipeline for this raw file -> fresh detection -> full image.
+ * The image is shown immediately; detection never blocks editing, and when it fails the full-image
+ * quad is editable by hand (manual fallback).
+ *
+ * Coordinate model: `quad` state is always RAW-normalized. The canvas shows the raw image rotated by
+ * `rotation`, so the quad is converted with DocumentQuad.rotated() for display and back for gestures.
+ * Save renders raw -> warp(quad) -> rotate -> filter -> enhancements via DocumentPipeline.render().
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DocumentCropEditorScreen(
     imagePath: String,
     onCropped: (String) -> Unit,
     onCancel: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    initialQuad: DocumentQuad? = null,
+    initialRotation: Int = 0,
+    initialFilter: FilterType? = DocumentPipeline.DEFAULT_FILTER,
+    expectedAspectRatio: Float? = null,
+    onCropResult: ((CropEditorResult) -> Unit)? = null
 ) {
     val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
+    val scope = rememberCoroutineScope()
+    val snackbar = remember { SnackbarHostState() }
+    val isArabic = context.resources.configuration.locales[0].language == "ar"
+    fun t(en: String, ar: String) = if (isArabic) ar else en
 
-    var originalBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var currentBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+    var rawBitmap by remember(imagePath) { mutableStateOf<Bitmap?>(null) }
+    var previewRaw by remember(imagePath) { mutableStateOf<Bitmap?>(null) }
+    var displayImage by remember(imagePath) { mutableStateOf<ImageBitmap?>(null) }
+    var previewImage by remember { mutableStateOf<ImageBitmap?>(null) }
 
     var selectedTab by remember { mutableStateOf(EditorTab.CROP) }
+    var quad by remember(imagePath) { mutableStateOf(DocumentQuad.fullQuad()) }
+    var rotation by remember(imagePath) { mutableStateOf(normalizeRotation(initialRotation)) }
+    var filter by remember(imagePath) { mutableStateOf(initialFilter) }
+    var brightness by remember(imagePath) { mutableStateOf(0f) }
+    var contrast by remember(imagePath) { mutableStateOf(1f) }
+    var sharpen by remember(imagePath) { mutableStateOf(false) }
+    var status by remember(imagePath) { mutableStateOf(DetectionStatus.LOADING) }
+    var userEdited by remember(imagePath) { mutableStateOf(false) }
+    var isSaving by remember { mutableStateOf(false) }
 
-    // Core state
-    var quad by remember { mutableStateOf(DocumentQuad.defaultQuad()) }
-    var rotationDegrees by remember { mutableStateOf(0) }
-    var selectedFilter by remember { mutableStateOf(FilterType.AUTO) }
-    var brightness by remember { mutableStateOf(0f) }
-    var contrast by remember { mutableStateOf(1f) }
-    var isSharpenEnabled by remember { mutableStateOf(false) }
+    val undoStack = remember(imagePath) { mutableStateListOf<EditorState>() }
+    val redoStack = remember(imagePath) { mutableStateListOf<EditorState>() }
 
-    // History stack for Undo / Redo
-    val undoStack = remember { mutableStateListOf<EditorState>() }
-    val redoStack = remember { mutableStateListOf<EditorState>() }
-
-    fun captureState(): EditorState {
-        return EditorState(
-            quad = quad,
-            rotation = rotationDegrees,
-            filter = selectedFilter,
-            brightness = brightness,
-            contrast = contrast,
-            sharpen = isSharpenEnabled
-        )
+    fun snapshot() = EditorState(quad, rotation, filter, brightness, contrast, sharpen)
+    fun restore(s: EditorState) {
+        quad = s.quad; rotation = s.rotation; filter = s.filter
+        brightness = s.brightness; contrast = s.contrast; sharpen = s.sharpen
     }
-
     fun pushHistory() {
-        undoStack.add(captureState())
+        undoStack.add(snapshot())
+        if (undoStack.size > 50) undoStack.removeAt(0)
         redoStack.clear()
     }
 
-    // Touch handle tracking
-    var activeHandleIndex by remember { mutableStateOf<Int?>(null) }
-    var activeTouchOffset by remember { mutableStateOf<Offset?>(null) }
-    var isProcessing by remember { mutableStateOf(false) }
-    var showBoundary by remember { mutableStateOf(true) }
-
+    // ---- Load raw image and initial quad (never blocks the UI) -------------------------------
     LaunchedEffect(imagePath) {
-        isProcessing = true
-        try {
-            val bmp = ImageProcessor.loadBitmapFromFile(imagePath, 2048)
-            originalBitmap = bmp
-            currentBitmap = bmp
-            if (bmp != null) {
-                quad = ImageProcessor.detectDocumentQuad(bmp)
+        status = DetectionStatus.LOADING
+        val loaded = withContext(Dispatchers.IO) {
+            runCatching { ImageProcessor.loadBitmapFromFile(imagePath, 2048) }.getOrNull()
+        }
+        if (loaded == null) {
+            snackbar.showSnackbar(t("Unable to open image", "تعذر فتح الصورة"))
+            return@LaunchedEffect
+        }
+        rawBitmap = loaded
+        previewRaw = withContext(Dispatchers.Default) { downscale(loaded, 1200) }
+
+        val known = initialQuad ?: withContext(Dispatchers.IO) { QuadStore.load(imagePath) }
+        if (known != null) {
+            quad = known.clamped()
+            status = DetectionStatus.STORED
+        } else {
+            quad = DocumentQuad.fullQuad()
+            status = DetectionStatus.DETECTING
+            val detection = runCatching { DocumentPipeline.detectOnRaw(loaded, expectedAspectRatio) }.getOrNull()
+            if (!userEdited) {
+                if (detection != null) {
+                    quad = detection.quad
+                    status = DetectionStatus.DETECTED
+                } else {
+                    status = DetectionStatus.NOT_FOUND
+                    snackbar.showSnackbar(t("Document edges not found — drag the corners to crop", "لم يتم العثور على حواف المستند — اسحب الزوايا للقص"))
+                }
             }
+        }
+    }
+
+    // ---- Displayed (rotated) image -------------------------------------------------------------
+    LaunchedEffect(rawBitmap, rotation) {
+        val raw = rawBitmap ?: return@LaunchedEffect
+        displayImage = withContext(Dispatchers.Default) {
+            (if (rotation == 0) raw else rotateBitmap(raw, rotation)).asImageBitmap()
+        }
+    }
+
+    // ---- Live preview for Filters / Adjust tabs (debounced, off main thread) --------------------
+    LaunchedEffect(selectedTab, quad, rotation, filter, brightness, contrast, sharpen, previewRaw) {
+        if (selectedTab == EditorTab.CROP) return@LaunchedEffect
+        val src = previewRaw ?: return@LaunchedEffect
+        delay(120)
+        try {
+            val out = DocumentPipeline.renderBitmap(src, quad, rotation, filter, brightness, contrast, sharpen)
+            previewImage = out.asImageBitmap()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             e.printStackTrace()
-            quad = DocumentQuad.defaultQuad()
-        } finally {
-            isProcessing = false
+        }
+    }
+
+    DisposableEffect(imagePath) {
+        onDispose {
+            // Bitmaps are released by GC once no longer referenced; explicit recycle here could race a
+            // frame that is still drawing them.
+            rawBitmap = null
+            previewRaw = null
+        }
+    }
+
+    fun runAutoDetect(recordHistory: Boolean = true) {
+        val raw = rawBitmap ?: return
+        scope.launch {
+            status = DetectionStatus.DETECTING
+            val detection = runCatching { DocumentPipeline.detectOnRaw(raw, expectedAspectRatio) }.getOrNull()
+            if (detection != null) {
+                if (recordHistory) pushHistory()
+                quad = detection.quad
+                status = DetectionStatus.DETECTED
+            } else {
+                status = DetectionStatus.NOT_FOUND
+                snackbar.showSnackbar(t("No document detected — adjust manually", "لم يتم اكتشاف مستند — عدّل يدويًا"))
+            }
+        }
+    }
+
+    fun save() {
+        if (isSaving || rawBitmap == null) return
+        isSaving = true
+        scope.launch {
+            try {
+                val path = DocumentPipeline.render(context, imagePath, quad, rotation, filter, brightness, contrast, sharpen)
+                if (path.isNullOrBlank()) {
+                    snackbar.showSnackbar(t("Saving failed", "فشل الحفظ"))
+                } else {
+                    onCropResult?.invoke(CropEditorResult(path, imagePath, quad, rotation, filter))
+                    onCropped(path)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.printStackTrace()
+                snackbar.showSnackbar(t("Saving failed", "فشل الحفظ"))
+            } finally {
+                isSaving = false
+            }
         }
     }
 
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        snackbarHost = { SnackbarHost(snackbar) },
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text("Document Editor", fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                        Text(
-                            text = when (selectedTab) {
-                                EditorTab.CROP -> "Perspective & Boundaries"
-                                EditorTab.FILTERS -> "Color & Scan Filters"
-                                EditorTab.ADJUST -> "Brightness & Clarity"
-                            },
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(
+                        when (status) {
+                            DetectionStatus.LOADING -> t("Loading…", "جارٍ التحميل…")
+                            DetectionStatus.DETECTING -> t("Detecting edges…", "جارٍ اكتشاف الحواف…")
+                            DetectionStatus.NOT_FOUND -> t("Manual crop", "قص يدوي")
+                            else -> t("Crop & Enhance", "قص وتحسين")
+                        },
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
                 },
                 navigationIcon = {
                     IconButton(onClick = onCancel) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = t("Back", "رجوع"))
                     }
                 },
                 actions = {
-                    // Undo
                     IconButton(
                         onClick = {
-                            if (undoStack.isNotEmpty()) {
-                                val current = captureState()
-                                redoStack.add(current)
-                                val previous = undoStack.removeAt(undoStack.lastIndex)
-                                quad = previous.quad
-                                rotationDegrees = previous.rotation
-                                selectedFilter = previous.filter
-                                brightness = previous.brightness
-                                contrast = previous.contrast
-                                isSharpenEnabled = previous.sharpen
-                            }
+                            val prev = undoStack.removeLastOrNull() ?: return@IconButton
+                            redoStack.add(snapshot())
+                            restore(prev)
                         },
                         enabled = undoStack.isNotEmpty()
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
-                    }
-
-                    // Redo
+                    ) { Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo") }
                     IconButton(
                         onClick = {
-                            if (redoStack.isNotEmpty()) {
-                                val current = captureState()
-                                undoStack.add(current)
-                                val next = redoStack.removeAt(redoStack.lastIndex)
-                                quad = next.quad
-                                rotationDegrees = next.rotation
-                                selectedFilter = next.filter
-                                brightness = next.brightness
-                                contrast = next.contrast
-                                isSharpenEnabled = next.sharpen
-                            }
+                            val next = redoStack.removeLastOrNull() ?: return@IconButton
+                            undoStack.add(snapshot())
+                            restore(next)
                         },
                         enabled = redoStack.isNotEmpty()
-                    ) {
-                        Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
-                    }
-
-                    // Reset to original
+                    ) { Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo") }
                     IconButton(onClick = {
                         pushHistory()
-                        originalBitmap?.let { bmp ->
-                            coroutineScope.launch {
-                                quad = ImageProcessor.detectDocumentQuad(bmp)
-                            }
-                            rotationDegrees = 0
-                            selectedFilter = FilterType.AUTO
-                            brightness = 0f
-                            contrast = 1f
-                            isSharpenEnabled = false
-                        }
-                    }) {
-                        Icon(Icons.Default.RestartAlt, contentDescription = "Reset")
-                    }
-
-                    // Save Button
+                        rotation = 0
+                        filter = initialFilter
+                        brightness = 0f
+                        contrast = 1f
+                        sharpen = false
+                        userEdited = false
+                        runAutoDetect(recordHistory = false)
+                    }) { Icon(Icons.Default.RestartAlt, contentDescription = t("Reset", "إعادة ضبط")) }
                     Button(
-                        onClick = {
-                            if (isProcessing) return@Button
-                            isProcessing = true
-                            coroutineScope.launch {
-                                try {
-                                    val original = ImageProcessor.loadBitmapFromFile(imagePath, 2048)
-                                        ?: throw IllegalStateException("Unable to load image")
-                                    var rotated: Bitmap? = null
-                                    var warped: Bitmap? = null
-                                    var filtered: Bitmap? = null
-                                    var enhanced: Bitmap? = null
-                                    try {
-                                        val base = if (rotationDegrees != 0) {
-                                            rotated = ImageProcessor.rotateBitmap(original, rotationDegrees)
-                                            rotated!!
-                                        } else original
-                                        warped = ImageProcessor.applyPerspectiveWarp(base, quad)
-                                        filtered = ImageProcessor.applyFilter(warped!!, selectedFilter)
-                                        enhanced = if (brightness != 0f || contrast != 1f || isSharpenEnabled) {
-                                            ImageProcessor.adjustEnhancements(filtered!!, brightness, contrast, isSharpenEnabled)
-                                        } else filtered
-                                        val newPath = ImageProcessor.saveBitmapToFile(context, enhanced!!, "edit_proc_")
-                                        onCropped(newPath)
-                                    } finally {
-                                        if (enhanced != null && enhanced !== filtered) enhanced?.recycle()
-                                        if (filtered != null && filtered !== warped) filtered?.recycle()
-                                        if (warped != null && warped !== rotated) warped?.recycle()
-                                        if (rotated != null && rotated !== original) rotated?.recycle()
-                                        original.recycle()
-                                    }
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
-                                } finally {
-                                    isProcessing = false
-                                }
-                            }
-                        },
+                        onClick = { save() },
+                        enabled = !isSaving && rawBitmap != null,
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier.padding(end = 8.dp)
                     ) {
-                        if (isProcessing) {
-                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(18.dp))
-                        } else {
-                            Text(stringResource(R.string.txt_save), fontWeight = FontWeight.Bold)
-                        }
+                        if (isSaving) CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
+                        else Text(t("Save", "حفظ"), fontWeight = FontWeight.Bold)
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
@@ -272,193 +341,84 @@ fun DocumentCropEditorScreen(
         },
         bottomBar = {
             Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .navigationBarsPadding(),
+                modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 6.dp
             ) {
                 Column {
-                    // Secondary Tab Content Panels
                     when (selectedTab) {
-                        EditorTab.CROP -> {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceAround,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                // Auto Detect
-                                TextButton(onClick = {
-                                    pushHistory()
-                                    coroutineScope.launch {
-                                        try {
-                                            val bmp = originalBitmap ?: ImageProcessor.loadBitmapFromFile(imagePath, 2048)
-                                            if (bmp != null) {
-                                                quad = ImageProcessor.detectDocumentQuad(bmp)
-                                                if (originalBitmap == null) {
-                                                    originalBitmap = bmp
-                                                    currentBitmap = bmp
-                                                }
-                                            }
-                                        } catch (e: Exception) {
-                                            e.printStackTrace()
-                                        }
-                                    }
-                                }) {
-                                    Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Emerald400)
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Auto Detect", color = Emerald400, fontWeight = FontWeight.SemiBold)
-                                }
-
-                                // Full Document
-                                TextButton(onClick = {
-                                    pushHistory()
-                                    quad = DocumentQuad.fullQuad()
-                                }) {
-                                    Icon(Icons.Default.CropFree, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text("Full Document", fontWeight = FontWeight.SemiBold)
-                                }
-
-                                // Rotate 90 CW
-                                IconButton(onClick = {
-                                    pushHistory()
-                                    rotationDegrees = (rotationDegrees + 90) % 360
-                                }) {
-                                    Icon(Icons.AutoMirrored.Filled.RotateRight, contentDescription = "Rotate 90°")
-                                }
-                                
-                                // Boundary Toggle
-                                IconButton(onClick = { showBoundary = !showBoundary }) {
-                                    Icon(
-                                        imageVector = if (showBoundary) Icons.Default.Visibility else Icons.Default.VisibilityOff,
-                                        contentDescription = "Toggle Boundary"
-                                    )
-                                }
+                        EditorTab.CROP -> Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.SpaceAround,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            TextButton(onClick = { runAutoDetect() }, enabled = status != DetectionStatus.DETECTING && rawBitmap != null) {
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Accent)
+                                Spacer(Modifier.width(6.dp))
+                                Text(t("Auto", "تلقائي"), color = Accent, fontWeight = FontWeight.SemiBold)
+                            }
+                            TextButton(onClick = {
+                                pushHistory()
+                                quad = DocumentQuad.fullQuad()
+                                userEdited = true
+                                status = DetectionStatus.MANUAL
+                            }) {
+                                Icon(Icons.Default.CropFree, contentDescription = null)
+                                Spacer(Modifier.width(6.dp))
+                                Text(t("Full", "كامل"), fontWeight = FontWeight.SemiBold)
+                            }
+                            IconButton(onClick = { pushHistory(); rotation = normalizeRotation(rotation - 90) }) {
+                                Icon(Icons.Default.Rotate90DegreesCcw, contentDescription = t("Rotate left", "تدوير لليسار"))
+                            }
+                            IconButton(onClick = { pushHistory(); rotation = normalizeRotation(rotation + 90) }) {
+                                Icon(Icons.Default.Rotate90DegreesCw, contentDescription = t("Rotate right", "تدوير لليمين"))
                             }
                         }
-
-                        EditorTab.FILTERS -> {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .horizontalScroll(rememberScrollState())
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                FilterType.values().forEach { flt ->
-                                    val isSelected = selectedFilter == flt
-                                    FilterChip(
-                                        selected = isSelected,
-                                        onClick = {
-                                            pushHistory()
-                                            selectedFilter = flt
-                                        },
-                                        label = { Text(flt.displayNameEn, fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal) },
-                                        leadingIcon = if (isSelected) {
-                                            { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
-                                        } else null
-                                    )
-                                }
+                        EditorTab.FILTERS -> Row(
+                            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = filter == null,
+                                onClick = { if (filter != null) { pushHistory(); filter = null } },
+                                label = { Text(t("Original", "الأصل")) }
+                            )
+                            for (f in FilterType.values()) {
+                                FilterChip(
+                                    selected = filter == f,
+                                    onClick = { if (filter != f) { pushHistory(); filter = f } },
+                                    label = { Text(prettyName(f.name)) }
+                                )
                             }
                         }
-
-                        EditorTab.ADJUST -> {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                // Smart Enhance Button
-                                Button(
-                                    onClick = {
-                                        coroutineScope.launch {
-                                            isProcessing = true
-                                            val bmp = currentBitmap
-                                            if (bmp != null) {
-                                                val enhanced = withContext(Dispatchers.IO) { ImageProcessor.applySmartEnhance(bmp) }
-                                                currentBitmap = enhanced
-                                                // Reset adjustments to reflect enhanced state
-                                                brightness = 0f
-                                                contrast = 1.0f
-                                                isSharpenEnabled = true
-                                                pushHistory()
-                                            }
-                                            isProcessing = false
-                                        }
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Icon(Icons.Default.AutoFixHigh, contentDescription = null)
-                                    Spacer(modifier = Modifier.width(8.dp))
-                                    Text("Smart Enhance")
-                                }
-
-                                // Brightness Slider
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    Icon(Icons.Default.Brightness6, contentDescription = "Brightness", modifier = Modifier.size(20.dp))
-                                    Text("Brightness", fontSize = 12.sp, modifier = Modifier.width(70.dp))
-                                    Slider(
-                                        value = brightness,
-                                        onValueChange = { brightness = it },
-                                        onValueChangeFinished = { pushHistory() },
-                                        valueRange = -40f..40f,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Text("${brightness.toInt()}", fontSize = 11.sp, modifier = Modifier.width(28.dp))
-                                }
-
-                                // Contrast Slider
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                                ) {
-                                    Icon(Icons.Default.Contrast, contentDescription = "Contrast", modifier = Modifier.size(20.dp))
-                                    Text("Contrast", fontSize = 12.sp, modifier = Modifier.width(70.dp))
-                                    Slider(
-                                        value = contrast,
-                                        onValueChange = { contrast = it },
-                                        onValueChangeFinished = { pushHistory() },
-                                        valueRange = 0.6f..2.0f,
-                                        modifier = Modifier.weight(1f)
-                                    )
-                                    Text(String.format("%.1f", contrast), fontSize = 11.sp, modifier = Modifier.width(28.dp))
-                                }
+                        EditorTab.ADJUST -> Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                            LabeledSlider(t("Brightness", "السطوع"), brightness, BRIGHTNESS_RANGE, { brightness = it }, { pushHistory() })
+                            LabeledSlider(t("Contrast", "التباين"), contrast, CONTRAST_RANGE, { contrast = it }, { pushHistory() })
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(t("Sharpen", "زيادة الحدة"), fontSize = 13.sp, modifier = Modifier.weight(1f))
+                                Switch(checked = sharpen, onCheckedChange = { pushHistory(); sharpen = it })
                             }
                         }
                     }
-
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    // Primary Navigation Tabs
-                    NavigationBar(
-                        containerColor = MaterialTheme.colorScheme.surface,
-                        tonalElevation = 0.dp,
-                        modifier = Modifier.height(56.dp)
-                    ) {
+                    NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp, modifier = Modifier.height(56.dp)) {
                         NavigationBarItem(
                             selected = selectedTab == EditorTab.CROP,
                             onClick = { selectedTab = EditorTab.CROP },
-                            icon = { Icon(Icons.Default.Crop, contentDescription = "Crop") },
-                            label = { Text("Crop", fontSize = 11.sp) }
+                            icon = { Icon(Icons.Default.Crop, contentDescription = null) },
+                            label = { Text(t("Crop", "قص"), fontSize = 11.sp) }
                         )
                         NavigationBarItem(
                             selected = selectedTab == EditorTab.FILTERS,
                             onClick = { selectedTab = EditorTab.FILTERS },
-                            icon = { Icon(Icons.Default.ColorLens, contentDescription = "Filters") },
-                            label = { Text("Filters", fontSize = 11.sp) }
+                            icon = { Icon(Icons.Default.ColorLens, contentDescription = null) },
+                            label = { Text(t("Filters", "الفلاتر"), fontSize = 11.sp) }
                         )
                         NavigationBarItem(
                             selected = selectedTab == EditorTab.ADJUST,
                             onClick = { selectedTab = EditorTab.ADJUST },
-                            icon = { Icon(Icons.Default.Tune, contentDescription = "Adjust") },
-                            label = { Text("Adjust", fontSize = 11.sp) }
+                            icon = { Icon(Icons.Default.Tune, contentDescription = null) },
+                            label = { Text(t("Adjust", "ضبط"), fontSize = 11.sp) }
                         )
                     }
                 }
@@ -466,212 +426,84 @@ fun DocumentCropEditorScreen(
         }
     ) { innerPadding ->
         Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(StudioCanvasBg)
-                .onSizeChanged { containerSize = it }
+            modifier = Modifier.fillMaxSize().padding(innerPadding).background(CanvasBg),
+            contentAlignment = Alignment.Center
         ) {
-            val bmp = originalBitmap
-            if (bmp != null && containerSize.width > 0 && containerSize.height > 0) {
-                val canvasW = containerSize.width.toFloat()
-                val canvasH = containerSize.height.toFloat()
-                val bmpW = bmp.width.toFloat()
-                val bmpH = bmp.height.toFloat()
-
-                val scale = minOf(canvasW / bmpW, canvasH / bmpH) * 0.90f
-                val renderW = bmpW * scale
-                val renderH = bmpH * scale
-                val offsetX = (canvasW - renderW) / 2f
-                val offsetY = (canvasH - renderH) / 2f
-
-                val handles = listOf(
-                    quad.topLeft,
-                    quad.topRight,
-                    quad.bottomRight,
-                    quad.bottomLeft
+            val shown = displayImage
+            when {
+                shown == null -> CircularProgressIndicator(color = Accent)
+                selectedTab == EditorTab.CROP -> QuadCropEditor(
+                    image = shown,
+                    // RAW-normalized -> displayed (rotated) frame.
+                    quad = quad.rotated(rotation),
+                    onQuadChange = { displayed ->
+                        quad = displayed.rotated(360 - rotation)
+                        userEdited = true
+                    },
+                    onDragStart = { pushHistory() },
+                    onDragEnd = { if (status != DetectionStatus.DETECTED && status != DetectionStatus.STORED) status = DetectionStatus.MANUAL },
+                    modifier = Modifier.fillMaxSize(),
+                    accent = Accent
                 )
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(renderW, renderH, offsetX, offsetY, quad) {
-                            detectDragGestures(
-                                onDragStart = { startPt ->
-                                    val touchX = (startPt.x - offsetX) / renderW
-                                    val touchY = (startPt.y - offsetY) / renderH
-
-                                    var closestIdx = -1
-                                    var closestDist = Float.MAX_VALUE
-
-                                    for (i in handles.indices) {
-                                        val dist = hypot((handles[i].x - touchX).toDouble(), (handles[i].y - touchY).toDouble()).toFloat()
-                                        if (dist < closestDist) {
-                                            closestDist = dist
-                                            closestIdx = i
-                                        }
-                                    }
-
-                                    if (closestDist < 0.35f) {
-                                        activeHandleIndex = closestIdx
-                                        activeTouchOffset = startPt
-                                    }
-                                },
-                                onDrag = { change, _ ->
-                                    change.consume()
-                                    val idx = activeHandleIndex ?: return@detectDragGestures
-                                    activeTouchOffset = change.position
-
-                                    val newX = ((change.position.x - offsetX) / renderW).coerceIn(0f, 1f)
-                                    val newY = ((change.position.y - offsetY) / renderH).coerceIn(0f, 1f)
-
-                                    quad = when (idx) {
-                                        0 -> quad.copy(topLeft = PointF(newX, newY))
-                                        1 -> quad.copy(topRight = PointF(newX, newY))
-                                        2 -> quad.copy(bottomRight = PointF(newX, newY))
-                                        3 -> quad.copy(bottomLeft = PointF(newX, newY))
-                                        else -> quad
-                                    }
-                                },
-                                onDragEnd = {
-                                    pushHistory()
-                                    activeHandleIndex = null
-                                    activeTouchOffset = null
-                                },
-                                onDragCancel = {
-                                    activeHandleIndex = null
-                                    activeTouchOffset = null
-                                }
-                            )
-                        }
-                ) {
-                    Canvas(modifier = Modifier.fillMaxSize()) {
-                        // 1. Draw image
-                        drawImage(
-                            image = bmp.asImageBitmap(),
-                            dstOffset = IntOffset(offsetX.toInt(), offsetY.toInt()),
-                            dstSize = IntSize(renderW.toInt(), renderH.toInt())
-                        )
-
-                        // 2. Polygon path
-                        val p = Path().apply {
-                            moveTo(offsetX + quad.topLeft.x * renderW, offsetY + quad.topLeft.y * renderH)
-                            lineTo(offsetX + quad.topRight.x * renderW, offsetY + quad.topRight.y * renderH)
-                            lineTo(offsetX + quad.bottomRight.x * renderW, offsetY + quad.bottomRight.y * renderH)
-                            lineTo(offsetX + quad.bottomLeft.x * renderW, offsetY + quad.bottomLeft.y * renderH)
-                            close()
-                        }
-
-                        // Draw Corner Handles with touch circles
-                        val pts = listOf(
-                            Offset(offsetX + quad.topLeft.x * renderW, offsetY + quad.topLeft.y * renderH),
-                            Offset(offsetX + quad.topRight.x * renderW, offsetY + quad.topRight.y * renderH),
-                            Offset(offsetX + quad.bottomRight.x * renderW, offsetY + quad.bottomRight.y * renderH),
-                            Offset(offsetX + quad.bottomLeft.x * renderW, offsetY + quad.bottomLeft.y * renderH)
-                        )
-
-                        if (showBoundary) {
-                            // Shaded area
-                            drawPath(p, color = Emerald400.copy(alpha = 0.15f))
-                            drawPath(p, color = Emerald400, style = Stroke(width = 3.dp.toPx()))
-
-                            for ((i, pt) in pts.withIndex()) {
-                                val isActive = activeHandleIndex == i
-                                drawCircle(
-                                    color = Color.White,
-                                    radius = if (isActive) 15.dp.toPx() else 11.dp.toPx(),
-                                    center = pt
-                                )
-                                drawCircle(
-                                    color = Emerald400,
-                                    radius = if (isActive) 11.dp.toPx() else 8.dp.toPx(),
-                                    center = pt
-                                )
-                            }
-                        }
-
-                        // Draw Midpoint Handles (for edge dragging guidance)
-                        val midpoints = listOf(
-                            (pts[0] + pts[1]) / 2f,
-                            (pts[1] + pts[2]) / 2f,
-                            (pts[2] + pts[3]) / 2f,
-                            (pts[3] + pts[0]) / 2f
-                        )
-                        for (mp in midpoints) {
-                            drawCircle(color = Color.White.copy(alpha = 0.85f), radius = 5.dp.toPx(), center = mp)
-                            drawCircle(color = Emerald400, radius = 3.5.dp.toPx(), center = mp)
-                        }
-                    }
-
-                    // Magnifying Loupe Overlay when dragging a corner handle
-                    activeHandleIndex?.let { idx ->
-                        val currentTouch = activeTouchOffset
-                        if (currentTouch != null) {
-                            val loupeSize = 110.dp
-                            val loupeRadiusPx = with(androidx.compose.ui.platform.LocalDensity.current) { (loupeSize / 2).toPx() }
-                            val activePt = when (idx) {
-                                0 -> quad.topLeft
-                                1 -> quad.topRight
-                                2 -> quad.bottomRight
-                                else -> quad.bottomLeft
-                            }
-
-                            // Center loupe 80dp above finger
-                            val loupeCenter = Offset(
-                                x = currentTouch.x.coerceIn(loupeRadiusPx + 16f, canvasW - loupeRadiusPx - 16f),
-                                y = (currentTouch.y - 120.dp.value * 2.5f).coerceAtLeast(loupeRadiusPx + 20f)
-                            )
-
-                            Box(
-                                modifier = Modifier
-                                    .offset {
-                                        IntOffset(
-                                            (loupeCenter.x - loupeRadiusPx).toInt(),
-                                            (loupeCenter.y - loupeRadiusPx).toInt()
-                                        )
-                                    }
-                                    .size(loupeSize)
-                                    .shadow(12.dp, CircleShape)
-                                    .border(3.dp, Emerald400, CircleShape)
-                                    .clip(CircleShape)
-                                    .background(Color.Black)
-                            ) {
-                                Canvas(modifier = Modifier.fillMaxSize()) {
-                                    val zoomFactor = 2.4f
-                                    val focusBmpX = activePt.x * bmp.width
-                                    val focusBmpY = activePt.y * bmp.height
-
-                                    val srcRectW = (bmp.width / zoomFactor).coerceAtLeast(50f)
-                                    val srcRectH = (bmp.height / zoomFactor).coerceAtLeast(50f)
-
-                                    val srcLeft = (focusBmpX - srcRectW / 2).coerceIn(0f, bmp.width - srcRectW)
-                                    val srcTop = (focusBmpY - srcRectH / 2).coerceIn(0f, bmp.height - srcRectH)
-
-                                    drawImage(
-                                        image = bmp.asImageBitmap(),
-                                        srcOffset = IntOffset(srcLeft.toInt(), srcTop.toInt()),
-                                        srcSize = IntSize(srcRectW.toInt(), srcRectH.toInt()),
-                                        dstOffset = IntOffset.Zero,
-                                        dstSize = IntSize(size.width.toInt(), size.height.toInt())
-                                    )
-
-                                    // Crosshair in center of loupe
-                                    val ch = size.width / 2f
-                                    val crosshairCol = Emerald400
-                                    val crosshairStroke = 1.8.dp.toPx()
-                                    drawLine(crosshairCol, Offset(ch - 16f, ch), Offset(ch + 16f, ch), crosshairStroke)
-                                    drawLine(crosshairCol, Offset(ch, ch - 16f), Offset(ch, ch + 16f), crosshairStroke)
-                                    drawCircle(color = crosshairCol, radius = 3.dp.toPx(), center = Offset(ch, ch))
-                                }
-                            }
-                        }
-                    }
+                else -> {
+                    val p = previewImage
+                    if (p == null) CircularProgressIndicator(color = Accent)
+                    else Image(bitmap = p, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().padding(16.dp))
                 }
-            } else {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = Emerald400)
+            }
+            if (status == DetectionStatus.DETECTING && selectedTab == EditorTab.CROP) {
+                Surface(
+                    shape = RoundedCornerShape(20.dp),
+                    color = Color.Black.copy(alpha = 0.6f),
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 12.dp)
+                ) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(color = Accent, strokeWidth = 2.dp, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(t("Detecting edges…", "جارٍ اكتشاف الحواف…"), color = Color.White, fontSize = 12.sp)
+                    }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun LabeledSlider(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit,
+    onStart: () -> Unit
+) {
+    var started by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(label, fontSize = 13.sp, modifier = Modifier.width(84.dp))
+        Slider(
+            value = value,
+            onValueChange = {
+                if (!started) { started = true; onStart() } // one history entry per slider gesture
+                onChange(it)
+            },
+            onValueChangeFinished = { started = false },
+            valueRange = range,
+            modifier = Modifier.weight(1f)
+        )
+        Text(String.format("%.1f", value), fontSize = 11.sp, modifier = Modifier.width(32.dp))
+    }
+}
+
+private fun normalizeRotation(deg: Int): Int = ((deg % 360) + 360) % 360
+
+private fun prettyName(name: String): String =
+    name.lowercase().split('_').joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
+
+/** Clockwise rotation; must match DocumentQuad.rotated() and DocumentPipeline rendering. */
+private fun rotateBitmap(src: Bitmap, degrees: Int): Bitmap = DocumentPipeline.rotate(src, degrees)
+
+private fun downscale(src: Bitmap, maxSide: Int): Bitmap {
+    val longest = max(src.width, src.height)
+    if (longest <= maxSide) return src
+    val s = maxSide.toFloat() / longest
+    return Bitmap.createScaledBitmap(src, (src.width * s).roundToInt().coerceAtLeast(1), (src.height * s).roundToInt().coerceAtLeast(1), true)
 }
