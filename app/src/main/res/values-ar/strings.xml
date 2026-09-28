@@ -60,8 +60,6 @@
     <string name="ocr_extracting">جاري تحليل المستند واستخراج النصوص بدقة…</string>
     <string name="ocr_copy_all">نسخ النص بالكامل</string>
     <string name="ocr_share_text">مشاركة النص</string>
-    <string name="ocr_ai_intelligence">تحليل الذكاء الاصطناعي للمستند</string>
-    <string name="ai_classify">تصنيف تلقائي للمستند</string>
     <string name="pdf_settings_title">إعدادات تصدير PDF</string>
     <string name="page_size_a4">A4 (قياسي)</string>
     <string name="page_size_letter">US Letter (أمريكي)</string>
@@ -91,8 +89,6 @@
     <string name="txt_cancel">إلغاء</string>
     <string name="desc_back">رجوع</string>
     <string name="desc_undo">تراجع</string>
-    <string name="txt_update_available">تحديث متاح</string>
-    <string name="txt_update_now">تحديث الآن</string>
     <string name="txt_later">لاحقاً</string>
     <string name="txt_id_card">بطاقة هوية</string>
     <string name="txt_scan_document">مسح مستند</string>
@@ -111,8 +107,8 @@
     <string name="txt_merge_id_card">دمج بطاقة الهوية</string>
     <string name="txt_pinch_to_zoom__drag_to_mov">اضغط للتكبير، اسحب للتحريك</string>
     <string name="desc_front">الوجه الأمامي</string>
-    <string name="txt_ocr___document_ai">OCR وذكاء المستندات</string>
-    <string name="txt_structured_ai_data">بيانات AI المنظمة</string>
+    <string name="txt_ocr_document">OCR وتحليل المستند</string>
+    <string name="txt_structured_data">البيانات المستخرجة</string>
     <string name="txt_full_ocr_text">النص الكامل OCR</string>
     <string name="txt_apply_title_to_document">تطبيق العنوان على المستند</string>
     <string name="txt_copy_all">نسخ الكل</string>
@@ -230,7 +226,6 @@
     <string name="txt_create">إنشاء</string>
     <string name="txt_move_to_folder">نقل إلى مجلد</string>
     <string name="txt_select_folder">اختر المجلد</string>
-    <string name="txt_version_available">الإصدار %1$s متاح!\n\n%2$s</string>
     <string name="txt_save_to_gallery">حفظ في المعرض</string>
     <string name="txt_saved_to_gallery">تم الحفظ في المعرض!</string>
     <string name="txt_save_failed">فشل الحفظ</string>

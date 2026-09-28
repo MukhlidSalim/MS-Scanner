@@ -48,8 +48,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-import com.example.engine.cv.BatchQueueState
-import com.example.ui.screens.editor.components.BatchProcessingQueueBanner
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material.icons.filled.VisibilityOff
@@ -83,10 +81,6 @@ fun EditSessionScreen(
     onNavigateToFinish: (Long) -> Unit
 ) {
     val editUiState by editViewModel.uiState.collectAsState()
-    
-    // Add batch queue state and controls
-    val batchQueueState by editViewModel.batchProcessingQueue.queueState.collectAsState()
-    val effectiveQueueState = if (sourceType == "EXISTING") editUiState.batchQueueState else batchQueueState
     
     // Determine which pages to show
     val pages: List<Any> = when (sourceType) {
@@ -139,7 +133,6 @@ fun EditSessionScreen(
     var hasUnsavedChanges by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
     var showOriginalPreview by remember { mutableStateOf(false) }
-    var showSaveWhileProcessingDialog by remember { mutableStateOf(false) }
     var contrast by remember { mutableStateOf(1f) }
     var isApplyingAdjustment by remember { mutableStateOf(false) }
 
@@ -297,45 +290,6 @@ fun EditSessionScreen(
         )
     }
 
-    if (showSaveWhileProcessingDialog) {
-        AlertDialog(
-            onDismissRequest = { showSaveWhileProcessingDialog = false },
-            icon = { Icon(Icons.Default.HourglassEmpty, null, tint = MaterialTheme.colorScheme.primary) },
-            title = { Text(if (isArabic) "المعالجة التلقائية جارية" else "Auto-Crop Still Running") },
-            text = {
-                Text(
-                    if (isArabic)
-                        "طابور القص التلقائي يحلل حالياً الصفحات المتبقية (${effectiveQueueState.completedCount}/${effectiveQueueState.totalCount}). هل ترغب بالانتظار لاكتمال كافة الصفحات، أم الحفظ الفوري؟"
-                    else
-                        "Background auto-crop is still analyzing remaining pages (${effectiveQueueState.completedCount}/${effectiveQueueState.totalCount}). Would you like to wait for all pages, or save immediately?"
-                )
-            },
-            confirmButton = {
-                Button(onClick = {
-                    showSaveWhileProcessingDialog = false
-                    performSave()
-                }) {
-                    Text(if (isArabic) "حفظ الجاهز الآن (${pages.size})" else "Save Ready Pages (${pages.size})")
-                }
-            },
-            dismissButton = {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton(onClick = {
-                        showSaveWhileProcessingDialog = false
-                        if (sourceType == "EXISTING") editViewModel.skipRemainingAutoCrop()
-                        else editViewModel.batchProcessingQueue.skipRemaining()
-                        performSave()
-                    }) {
-                        Text(if (isArabic) "تخطي وحفظ الكل" else "Skip & Save All")
-                    }
-                    TextButton(onClick = { showSaveWhileProcessingDialog = false }) {
-                        Text(if (isArabic) "انتظار" else "Wait")
-                    }
-                }
-            }
-        )
-    }
-
     if (showCropEditor) {
         val currentPage = pages.getOrNull(pagerState.currentPage)
         val imagePath = when (currentPage) {
@@ -415,19 +369,6 @@ fun EditSessionScreen(
                 }
             } else {
                 Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-                    // Batch Processing Banner
-                    if (effectiveQueueState.isProcessing || effectiveQueueState.isPaused) {
-                        BatchProcessingQueueBanner(
-                            queueState = effectiveQueueState,
-                            currentPageIndex = pagerState.currentPage,
-                            onPageSelected = { coroutineScope.launch { pagerState.scrollToPage(it) } },
-                            onPause = { editViewModel.batchProcessingQueue.pause() },
-                            onResume = { editViewModel.batchProcessingQueue.resume() },
-                            onSkipRemaining = { editViewModel.batchProcessingQueue.skipRemaining() },
-                            onCancel = { editViewModel.batchProcessingQueue.cancel() }
-                        )
-                    }
-
                     // Title Editor
                     if (sourceType != "EXISTING") {
                         OutlinedTextField(

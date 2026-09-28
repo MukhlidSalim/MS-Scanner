@@ -44,8 +44,6 @@ import com.example.R
 import com.example.data.model.FilterType
 import com.example.engine.cv.DocumentQuad
 import com.example.engine.cv.ImageProcessor
-import com.example.engine.cv.ImageProcessingWorker
-import androidx.work.*
 import com.example.ui.theme.CyanScan
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.StudioCanvasBg
@@ -123,31 +121,19 @@ fun DocumentCropEditorScreen(
     var showBoundary by remember { mutableStateOf(true) }
 
     LaunchedEffect(imagePath) {
-        val workManager = WorkManager.getInstance(context)
-        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(workDataOf(
-                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_DETECT_QUAD,
-                ImageProcessingWorker.KEY_IMAGE_PATH to imagePath
-            ))
-            .build()
-        
-        workManager.enqueue(workRequest)
-        
-        coroutineScope.launch {
-            val bmp = withContext(Dispatchers.IO) { ImageProcessor.loadBitmapFromFile(imagePath, 2048) }
+        isProcessing = true
+        try {
+            val bmp = ImageProcessor.loadBitmapFromFile(imagePath, 2048)
             originalBitmap = bmp
             currentBitmap = bmp
-        }
-
-        coroutineScope.launch {
-            workManager.getWorkInfoByIdFlow(workRequest.id).collect { workInfo ->
-                if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
-                    val quadJson = workInfo.outputData.getString(ImageProcessingWorker.KEY_QUAD_JSON)
-                    if (quadJson != null) {
-                        quad = DocumentQuad.fromJson(quadJson)
-                    }
-                }
+            if (bmp != null) {
+                quad = ImageProcessor.detectDocumentQuad(bmp)
             }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            quad = DocumentQuad.defaultQuad()
+        } finally {
+            isProcessing = false
         }
     }
 
@@ -235,35 +221,39 @@ fun DocumentCropEditorScreen(
                     // Save Button
                     Button(
                         onClick = {
-                            val workManager = WorkManager.getInstance(context)
-                            val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-                                .setInputData(workDataOf(
-                                    ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_EDIT_PROCESS,
-                                    ImageProcessingWorker.KEY_IMAGE_PATH to imagePath,
-                                    ImageProcessingWorker.KEY_QUAD_JSON to quad.toJson(),
-                                    ImageProcessingWorker.KEY_ROTATION_DEGREES to rotationDegrees,
-                                    ImageProcessingWorker.KEY_FILTER_TYPE to selectedFilter.name,
-                                    ImageProcessingWorker.KEY_BRIGHTNESS to brightness,
-                                    ImageProcessingWorker.KEY_CONTRAST to contrast,
-                                    ImageProcessingWorker.KEY_SHARPEN to isSharpenEnabled
-                                ))
-                                .build()
-
+                            if (isProcessing) return@Button
                             isProcessing = true
-                            workManager.enqueue(workRequest)
-
                             coroutineScope.launch {
-                                workManager.getWorkInfoByIdFlow(workRequest.id).collect { workInfo ->
-                                    if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
-                                        val newPath = workInfo.outputData.getString(ImageProcessingWorker.KEY_RESULT_PATH)
-                                        isProcessing = false
-                                        if (newPath != null) {
-                                            onCropped(newPath)
-                                        }
-                                    } else if (workInfo?.state == WorkInfo.State.FAILED) {
-                                        isProcessing = false
-                                        // Should show error
+                                try {
+                                    val original = ImageProcessor.loadBitmapFromFile(imagePath, 2048)
+                                        ?: throw IllegalStateException("Unable to load image")
+                                    var rotated: Bitmap? = null
+                                    var warped: Bitmap? = null
+                                    var filtered: Bitmap? = null
+                                    var enhanced: Bitmap? = null
+                                    try {
+                                        val base = if (rotationDegrees != 0) {
+                                            rotated = ImageProcessor.rotateBitmap(original, rotationDegrees)
+                                            rotated!!
+                                        } else original
+                                        warped = ImageProcessor.applyPerspectiveWarp(base, quad)
+                                        filtered = ImageProcessor.applyFilter(warped!!, selectedFilter)
+                                        enhanced = if (brightness != 0f || contrast != 1f || isSharpenEnabled) {
+                                            ImageProcessor.adjustEnhancements(filtered!!, brightness, contrast, isSharpenEnabled)
+                                        } else filtered
+                                        val newPath = ImageProcessor.saveBitmapToFile(context, enhanced!!, "edit_proc_")
+                                        onCropped(newPath)
+                                    } finally {
+                                        if (enhanced != null && enhanced !== filtered) enhanced?.recycle()
+                                        if (filtered != null && filtered !== warped) filtered?.recycle()
+                                        if (warped != null && warped !== rotated) warped?.recycle()
+                                        if (rotated != null && rotated !== original) rotated?.recycle()
+                                        original.recycle()
                                     }
+                                } catch (e: Exception) {
+                                    e.printStackTrace()
+                                } finally {
+                                    isProcessing = false
                                 }
                             }
                         },
@@ -302,23 +292,18 @@ fun DocumentCropEditorScreen(
                                 // Auto Detect
                                 TextButton(onClick = {
                                     pushHistory()
-                                    val workManager = WorkManager.getInstance(context)
-                                    val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-                                        .setInputData(workDataOf(
-                                            ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_DETECT_QUAD,
-                                            ImageProcessingWorker.KEY_IMAGE_PATH to imagePath
-                                        ))
-                                        .build()
-                                    
-                                    workManager.enqueue(workRequest)
                                     coroutineScope.launch {
-                                        workManager.getWorkInfoByIdFlow(workRequest.id).collect { workInfo ->
-                                            if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
-                                                val quadJson = workInfo.outputData.getString(ImageProcessingWorker.KEY_QUAD_JSON)
-                                                if (quadJson != null) {
-                                                    quad = DocumentQuad.fromJson(quadJson)
+                                        try {
+                                            val bmp = originalBitmap ?: ImageProcessor.loadBitmapFromFile(imagePath, 2048)
+                                            if (bmp != null) {
+                                                quad = ImageProcessor.detectDocumentQuad(bmp)
+                                                if (originalBitmap == null) {
+                                                    originalBitmap = bmp
+                                                    currentBitmap = bmp
                                                 }
                                             }
+                                        } catch (e: Exception) {
+                                            e.printStackTrace()
                                         }
                                     }
                                 }) {

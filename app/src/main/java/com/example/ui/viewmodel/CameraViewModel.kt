@@ -1,21 +1,26 @@
 package com.example.ui.viewmodel
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.ExifInterface
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.work.*
 import com.example.data.model.DocumentCategory
 import com.example.data.repository.DocumentRepository
-import com.example.engine.cv.BatchProcessingQueue
-import com.example.engine.cv.BatchQueueState
-import com.example.engine.cv.ImageProcessingWorker
+import com.example.engine.cv.DocumentQuad
 import com.example.engine.cv.ImageProcessor
 import com.example.engine.ocr.DocumentAiEngine
 import com.example.ui.util.UiEvent
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class CameraUiState(
     val pendingPages: List<Pair<String, String>> = emptyList(),
@@ -23,8 +28,7 @@ data class CameraUiState(
     val importedUrisPending: List<Uri> = emptyList(),
     val isLoading: Boolean = false,
     val detectedCategory: DocumentCategory = DocumentCategory.OTHER,
-    val detectedOcrText: String = "",
-    val batchQueueState: BatchQueueState = BatchQueueState()
+    val detectedOcrText: String = ""
 )
 
 class CameraViewModel(
@@ -38,108 +42,119 @@ class CameraViewModel(
     private val _events = Channel<UiEvent>()
     val events = _events.receiveAsFlow()
 
-    private val workManager = WorkManager.getInstance(context)
-    val batchProcessingQueue = BatchProcessingQueue(viewModelScope)
-
-    init {
-        // Collect batch queue state continuously to drive non-blocking UI updates
-        viewModelScope.launch {
-            batchProcessingQueue.queueState.collectLatest { queueState ->
-                _uiState.update { it.copy(batchQueueState = queueState) }
-            }
-        }
-    }
-
     fun setPagesPendingEdit(pages: List<Pair<String, String>>) {
-        _uiState.update { it.copy(pagesPendingEdit = pages) }
+        _uiState.update { it.copy(pagesPendingEdit = pages, pendingPages = pages, importedUrisPending = emptyList()) }
     }
 
     fun setImportedUrisPendingEdit(uris: List<Uri>, autoCrop: Boolean = true) {
-        _uiState.update { 
-            it.copy(
-                importedUrisPending = uris,
-                pagesPendingEdit = emptyList(),
-                isLoading = false // Non-blocking: UI remains interactive immediately
-            ) 
-        }
-        processImportedUrisWithBatchQueue(uris, autoCrop)
-    }
-
-    private fun processImportedUrisWithBatchQueue(uris: List<Uri>, autoCrop: Boolean) {
-        val completedPagesMap = mutableMapOf<Int, Pair<String, String>>()
-
-        batchProcessingQueue.enqueueUris(
-            context = context,
-            uris = uris,
-            autoCrop = autoCrop,
-            onPageReady = { index, rawPath, procPath, _ ->
-                completedPagesMap[index] = Pair(rawPath, procPath)
-                // Build contiguous ordered list of completed pages so user can view/swipe immediately
-                val orderedList = (0..completedPagesMap.keys.maxOrNull()!!)
-                    .mapNotNull { completedPagesMap[it] }
-                _uiState.update { it.copy(pagesPendingEdit = orderedList) }
-
-                // Auto-analyze OCR & category on the very first page as soon as it arrives
-                if (index == 0) {
-                    analyzePendingFirstPage()
-                }
-            },
-            onAllComplete = {
-                // Ensure final pages list is updated
-                val finalPages = (0 until uris.size).mapNotNull { completedPagesMap[it] }
-                if (finalPages.isNotEmpty()) {
-                    _uiState.update { it.copy(pagesPendingEdit = finalPages) }
+        if (uris.isEmpty()) return
+        _uiState.update { it.copy(importedUrisPending = uris, pagesPendingEdit = emptyList(), pendingPages = emptyList(), isLoading = true) }
+        viewModelScope.launch {
+            val completedPages = mutableListOf<Pair<String, String>>()
+            for ((index, uri) in uris.withIndex()) {
+                try {
+                    val result = processImportedUri(uri, index, autoCrop)
+                    if (result != null) {
+                        completedPages += result
+                        _uiState.update { it.copy(pagesPendingEdit = completedPages.toList(), pendingPages = completedPages.toList()) }
+                        if (index == 0) analyzePendingFirstPage()
+                    } else {
+                        _events.send(UiEvent.Error("Could not import page ${index + 1}"))
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    _events.send(UiEvent.Error("Failed to process page ${index + 1}"))
                 }
             }
-        )
+            _uiState.update { it.copy(isLoading = false) }
+        }
     }
+
+    private suspend fun processImportedUri(uri: Uri, index: Int, autoCrop: Boolean): Pair<String, String>? =
+        withContext(Dispatchers.IO) {
+            val decodedResult = decodeSampledBitmapFromUri(context, uri, 2048, 2048)
+            val decoded = decodedResult.first ?: return@withContext null
+            var rawBitmap: Bitmap = decoded
+            try {
+                val orientation = decodedResult.second
+                if (orientation != 0) {
+                    val rotated = ImageProcessor.rotateBitmap(rawBitmap, orientation)
+                    if (rotated !== rawBitmap) rawBitmap.recycle()
+                    rawBitmap = rotated
+                }
+                val rawPath = ImageProcessor.saveBitmapToFile(context, rawBitmap, "import_raw_p${index + 1}_")
+                val quad = if (autoCrop) ImageProcessor.detectDocumentQuad(rawBitmap) else DocumentQuad.fullQuad()
+                val valid = autoCrop && ImageProcessor.isQuadValid(quad)
+                val cropped = if (valid) ImageProcessor.applyPerspectiveWarp(rawBitmap, quad)
+                              else rawBitmap.copy(rawBitmap.config ?: Bitmap.Config.ARGB_8888, true)
+                try {
+                    val filtered = ImageProcessor.applyFilter(cropped, com.example.data.model.FilterType.MAGIC)
+                    try {
+                        val procPath = ImageProcessor.saveBitmapToFile(context, filtered, "import_proc_p${index + 1}_")
+                        return@withContext Pair(rawPath, procPath)
+                    } finally { if (filtered !== cropped) filtered.recycle() }
+                } finally { if (cropped !== rawBitmap) cropped.recycle() }
+            } finally { rawBitmap.recycle() }
+        }
 
     fun autoCropAllPendingPages() {
         val currentPages = _uiState.value.pagesPendingEdit
         if (currentPages.isEmpty()) return
-
-        batchProcessingQueue.enqueueExistingPagePairs(
-            context = context,
-            pages = currentPages,
-            onPageUpdated = { index, newProcPath, _ ->
-                updatePendingPageProcessedImage(index, newProcPath)
+        viewModelScope.launch(Dispatchers.Default) {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val updated = currentPages.toMutableList()
+                for (index in currentPages.indices) {
+                    val (rawPath, oldProcessed) = currentPages[index]
+                    val bmp = ImageProcessor.loadBitmapFromFile(rawPath, 2048) ?: continue
+                    try {
+                        val quad = ImageProcessor.detectDocumentQuad(bmp)
+                        val valid = ImageProcessor.isQuadValid(quad)
+                        val warped = if (valid) ImageProcessor.applyPerspectiveWarp(bmp, quad)
+                                     else bmp.copy(bmp.config ?: Bitmap.Config.ARGB_8888, true)
+                        try {
+                            val filtered = ImageProcessor.applyFilter(warped, com.example.data.model.FilterType.MAGIC)
+                            try {
+                                val newPath = ImageProcessor.saveBitmapToFile(context, filtered, "recrop_p${index + 1}_")
+                                if (newPath.isNotBlank()) updated[index] = Pair(rawPath, newPath)
+                            } finally { if (filtered !== warped) filtered.recycle() }
+                        } finally { if (warped !== bmp) warped.recycle() }
+                    } finally { bmp.recycle() }
+                    if (updated[index].second != oldProcessed) {
+                        _uiState.update { it.copy(pagesPendingEdit = updated.toList(), pendingPages = updated.toList()) }
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to auto-crop pending pages"))
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
-        )
+        }
     }
-
-    fun pauseBatchQueue() = batchProcessingQueue.pause()
-    fun resumeBatchQueue() = batchProcessingQueue.resume()
-    fun skipRemainingAutoCrop() = batchProcessingQueue.skipRemaining()
-    fun cancelBatchQueue() = batchProcessingQueue.cancel()
 
     fun rotatePendingPage(index: Int, clockwise: Boolean) {
         val pages = _uiState.value.pagesPendingEdit.toMutableList()
         if (index !in pages.indices) return
         val pagePair = pages[index]
-        
-        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(workDataOf(
-                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_ROTATE_PENDING,
-                ImageProcessingWorker.KEY_RAW_PATH to pagePair.first,
-                ImageProcessingWorker.KEY_PROC_PATH to pagePair.second,
-                ImageProcessingWorker.KEY_CLOCKWISE to clockwise
-            ))
-            .build()
-
-        _uiState.update { it.copy(isLoading = true) }
-        workManager.enqueueUniqueWork("rotate_pending_$index", ExistingWorkPolicy.REPLACE, workRequest)
-
-        viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(workRequest.id).collectLatest { workInfo ->
-                if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
-                    val newPath = workInfo.outputData.getString(ImageProcessingWorker.KEY_RESULT_PATH) ?: pagePair.second
-                    val newPages = _uiState.value.pagesPendingEdit.toMutableList()
-                    newPages[index] = Pair(pagePair.first, newPath)
-                    _uiState.update { it.copy(pagesPendingEdit = newPages, isLoading = false) }
-                } else if (workInfo?.state == WorkInfo.State.FAILED) {
-                    _uiState.update { it.copy(isLoading = false) }
-                    viewModelScope.launch { _events.send(UiEvent.Error("Failed to rotate pending page")) }
-                }
+        viewModelScope.launch(Dispatchers.Default) {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val bmp = ImageProcessor.loadBitmapFromFile(pagePair.second, 2048)
+                    ?: throw IllegalStateException("Unable to load pending page")
+                try {
+                    val rotated = ImageProcessor.rotateBitmap(bmp, if (clockwise) 90 else -90)
+                    try {
+                        val newPath = ImageProcessor.saveBitmapToFile(context, rotated, "rot_pending_")
+                        pages[index] = Pair(pagePair.first, newPath)
+                        _uiState.update { it.copy(pagesPendingEdit = pages.toList(), pendingPages = pages.toList()) }
+                    } finally { if (rotated !== bmp) rotated.recycle() }
+                } finally { bmp.recycle() }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to rotate pending page"))
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
     }
@@ -147,21 +162,13 @@ class CameraViewModel(
     fun analyzePendingFirstPage() {
         val pages = _uiState.value.pagesPendingEdit
         if (pages.isEmpty()) return
-        
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             try {
-                val firstPage = pages.first()
-                val bmp = ImageProcessor.loadBitmapFromFile(firstPage.second, 1200)
-                if (bmp != null) {
+                val bmp = ImageProcessor.loadBitmapFromFile(pages.first().second, 1200) ?: return@launch
+                try {
                     val result = DocumentAiEngine.performOfflineOcr(bmp)
-                    _uiState.update { 
-                        it.copy(
-                            detectedCategory = result.detectedCategory,
-                            detectedOcrText = result.fullText
-                        )
-                    }
-                    bmp.recycle()
-                }
+                    _uiState.update { it.copy(detectedCategory = result.detectedCategory, detectedOcrText = result.fullText) }
+                } finally { bmp.recycle() }
             } catch (e: Exception) {
                 e.printStackTrace()
             }
@@ -172,26 +179,27 @@ class CameraViewModel(
         viewModelScope.launch {
             val pages = _uiState.value.pagesPendingEdit
             if (pages.isEmpty()) return@launch
-            
-            val docId = repository.createDocumentWithPages(
-                title = title,
-                folderName = selectedFolder,
-                category = _uiState.value.detectedCategory.name,
-                ocrText = _uiState.value.detectedOcrText,
-                pages = pages
-            )
-            // Reset detected data for next use
-            _uiState.update { it.copy(detectedCategory = DocumentCategory.OTHER, detectedOcrText = "", pagesPendingEdit = emptyList()) }
-            onComplete(docId)
+            try {
+                val docId = repository.createDocumentWithPages(
+                    title = title, folderName = selectedFolder,
+                    category = _uiState.value.detectedCategory.name,
+                    ocrText = _uiState.value.detectedOcrText, pages = pages
+                )
+                clearPendingPages()
+                _uiState.update { it.copy(detectedCategory = DocumentCategory.OTHER, detectedOcrText = "") }
+                onComplete(docId)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to save imported document"))
+            }
         }
     }
 
     fun updatePendingPageProcessedImage(index: Int, newPath: String) {
         val pages = _uiState.value.pagesPendingEdit.toMutableList()
         if (index in pages.indices) {
-            val old = pages[index]
-            pages[index] = Pair(old.first, newPath)
-            _uiState.update { it.copy(pagesPendingEdit = pages) }
+            pages[index] = Pair(pages[index].first, newPath)
+            _uiState.update { it.copy(pagesPendingEdit = pages.toList(), pendingPages = pages.toList()) }
         }
     }
 
@@ -199,38 +207,70 @@ class CameraViewModel(
         viewModelScope.launch {
             val pages = _uiState.value.pagesPendingEdit
             if (pages.isEmpty()) return@launch
-            
-            val doc = repository.getDocumentById(docId) ?: return@launch
-            var pageCount = doc.pageCount
-            for (pagePair in pages) {
-                val newPage = com.example.data.model.PageEntity(
-                    documentId = doc.id,
-                    pageIndex = pageCount,
-                    rawImagePath = pagePair.first,
-                    processedImagePath = pagePair.second
-                )
-                repository.insertPage(newPage)
-                pageCount++
+            try {
+                val doc = repository.getDocumentById(docId) ?: return@launch
+                var pageCount = doc.pageCount
+                for ((rawPath, procPath) in pages) {
+                    repository.insertPage(com.example.data.model.PageEntity(
+                        documentId = doc.id, pageIndex = pageCount, rawImagePath = rawPath, processedImagePath = procPath
+                    ))
+                    pageCount++
+                }
+                repository.updateDocument(doc.copy(pageCount = pageCount))
+                clearPendingPages()
+                onComplete()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to save pages to document"))
             }
-            repository.updateDocument(doc.copy(pageCount = pageCount))
-            
-            clearPendingPages()
-            onComplete()
         }
     }
 
     fun clearPendingPages(deleteFiles: Boolean = false) {
         if (deleteFiles) {
             val state = _uiState.value
-            state.pendingPages.forEach { 
-                java.io.File(it.first).delete()
-                java.io.File(it.second).delete()
-            }
-            state.pagesPendingEdit.forEach { 
-                java.io.File(it.first).delete()
-                java.io.File(it.second).delete()
-            }
+            (state.pendingPages + state.pagesPendingEdit)
+                .flatMap { listOf(it.first, it.second) }
+                .distinct()
+                .forEach { if (it.isNotBlank()) java.io.File(it).delete() }
         }
         _uiState.update { it.copy(pendingPages = emptyList(), pagesPendingEdit = emptyList(), importedUrisPending = emptyList()) }
+    }
+
+    private fun decodeSampledBitmapFromUri(
+        context: Context, uri: Uri, reqWidth: Int, reqHeight: Int
+    ): Pair<Bitmap?, Int> {
+        val boundsOptions = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, boundsOptions)
+        }
+        var sampleSize = 1
+        var halfHeight = boundsOptions.outHeight / 2
+        var halfWidth = boundsOptions.outWidth / 2
+        while (halfHeight / sampleSize >= reqHeight && halfWidth / sampleSize >= reqWidth) sampleSize *= 2
+
+        var orientationDegrees = 0
+        try {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                val orientation = ExifInterface(stream).getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL
+                )
+                orientationDegrees = when (orientation) {
+                    ExifInterface.ORIENTATION_ROTATE_90 -> 90
+                    ExifInterface.ORIENTATION_ROTATE_180 -> 180
+                    ExifInterface.ORIENTATION_ROTATE_270 -> 270
+                    else -> 0
+                }
+            }
+        } catch (_: Exception) { }
+
+        val options = BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val bitmap = context.contentResolver.openInputStream(uri)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, options)
+        }
+        return Pair(bitmap, orientationDegrees)
     }
 }

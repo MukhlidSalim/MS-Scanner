@@ -730,7 +730,7 @@ fun DocumentViewerScreen(
                         }
                     }
 
-                    // OCR & AI Text
+                    // OCR & Document Text
                     IconButton(onClick = {
                         val currentPage = pages.getOrNull(pagerState.currentPage)
                         if (currentPage != null) {

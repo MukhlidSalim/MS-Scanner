@@ -49,7 +49,6 @@ import com.example.data.model.DocumentEntity
 import com.example.engine.cv.ImageProcessor
 import com.example.ui.components.CategoryChipsRow
 import com.example.ui.components.FolderChipsRow
-import com.example.ui.components.AppUpdateDialog
 import com.example.ui.components.PdfViewerOverlay
 import com.example.ui.components.DefaultPdfAppPromptDialog
 import com.example.ui.components.ScanActionButton
@@ -61,14 +60,9 @@ import com.example.ui.screens.home.components.ExportPdfDialog
 import com.example.ui.screens.home.components.NewFolderDialog
 import com.example.ui.screens.home.components.RenameDocumentsDialog
 import com.example.ui.viewmodel.ExportPdfAction
-import com.example.engine.updater.UpdateCheckState
-import com.example.ScannerApplication
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.DocumentListViewModel
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
-import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
-import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -93,8 +87,6 @@ fun HomeScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
-    val updateCheckState by listViewModel.updateCheckState.collectAsState()
-    val updateDownloadState by listViewModel.updateDownloadState.collectAsState()
     val prefs = remember { AppPreferences(context) }
 
     var selectionMode by remember { mutableStateOf(false) }
@@ -202,41 +194,51 @@ fun HomeScreen(
         if (success && tempCameraFile != null && tempCameraFile!!.exists()) {
             coroutineScope.launch {
                 try {
-                    val path = tempCameraFile!!.absolutePath
-                    val exif = android.media.ExifInterface(path)
-                    val orientation = exif.getAttributeInt(
-                        android.media.ExifInterface.TAG_ORIENTATION,
-                        android.media.ExifInterface.ORIENTATION_NORMAL
-                    )
-                    val rotationDegrees = when (orientation) {
-                        android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90
-                        android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180
-                        android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270
-                        else -> 0
-                    }
-                    var bmp = android.graphics.BitmapFactory.decodeFile(path)
-                    if (bmp != null) {
-                        if (rotationDegrees != 0) {
-                            val rotated = ImageProcessor.rotateBitmap(bmp, rotationDegrees)
-                            if (rotated != bmp) {
-                                bmp.recycle()
-                                bmp = rotated
+                    val result = withContext(Dispatchers.IO) {
+                        val path = tempCameraFile!!.absolutePath
+                        val exif = android.media.ExifInterface(path)
+                        val orientation = exif.getAttributeInt(
+                            android.media.ExifInterface.TAG_ORIENTATION,
+                            android.media.ExifInterface.ORIENTATION_NORMAL
+                        )
+                        val rotationDegrees = when (orientation) {
+                            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90
+                            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180
+                            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270
+                            else -> 0
+                        }
+                        var bmp = android.graphics.BitmapFactory.decodeFile(path)
+                            ?: return@withContext null
+                        try {
+                            if (rotationDegrees != 0) {
+                                val rotated = ImageProcessor.rotateBitmap(bmp, rotationDegrees)
+                                if (rotated !== bmp) {
+                                    bmp.recycle()
+                                    bmp = rotated
+                                }
                             }
+                            val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "scan_raw_")
+                            val quad = ImageProcessor.detectDocumentQuad(bmp)
+                            val valid = ImageProcessor.isQuadValid(quad)
+                            val warped = if (valid) ImageProcessor.applyPerspectiveWarp(bmp, quad)
+                                         else bmp.copy(bmp.config ?: android.graphics.Bitmap.Config.ARGB_8888, true)
+                            try {
+                                val filtered = ImageProcessor.applyFilter(warped, com.example.data.model.FilterType.MAGIC)
+                                try {
+                                    val procPath = ImageProcessor.saveBitmapToFile(context, filtered, "scan_proc_")
+                                    Pair(rawPath, procPath)
+                                } finally {
+                                    if (filtered !== warped) filtered.recycle()
+                                }
+                            } finally {
+                                if (warped !== bmp) warped.recycle()
+                            }
+                        } finally {
+                            bmp.recycle()
                         }
-                        val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "scan_raw_")
-                        val quad = ImageProcessor.detectDocumentQuad(bmp)
-                        val proc = try {
-                            val warped = ImageProcessor.warpPerspective(bmp, quad)
-                            val filtered = ImageProcessor.applyFilter(warped, com.example.data.model.FilterType.MAGIC)
-                            if (warped != bmp && warped != filtered) warped.recycle()
-                            filtered
-                        } catch (e: Exception) {
-                            ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
-                        }
-                        val procPath = ImageProcessor.saveBitmapToFile(context, proc, "scan_proc_")
-                        if (bmp != proc) bmp.recycle()
-                        proc.recycle()
-                        onPagesCaptured(listOf(Pair(rawPath, procPath)))
+                    }
+                    if (result != null) {
+                        onPagesCaptured(listOf(result))
                         onNavigateToEditSession("CAMERA", 0L)
                     }
                 } catch (e: Exception) {
@@ -261,81 +263,6 @@ fun HomeScreen(
             photoPickerLauncher.launch(
                 PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
             )
-        }
-    }
-
-    // Scanner Options
-    val scannerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartIntentSenderForResult()
-    ) { result ->
-        try {
-            if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                val scanResult = GmsDocumentScanningResult.fromActivityResultIntent(result.data)
-                val pages = scanResult?.pages
-                if (!pages.isNullOrEmpty()) {
-                    coroutineScope.launch {
-                        val processedPages = mutableListOf<Pair<String, String>>()
-                        for (page in pages) {
-                            val stream = context.contentResolver.openInputStream(page.imageUri)
-                            val bmp = android.graphics.BitmapFactory.decodeStream(stream)
-                            stream?.close()
-                            if (bmp != null) {
-                                val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "scan_raw_")
-                                val proc = ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
-                                val procPath = ImageProcessor.saveBitmapToFile(context, proc, "scan_proc_")
-                                processedPages.add(Pair(rawPath, procPath))
-                                if (bmp != proc) bmp.recycle()
-                                proc.recycle()
-                            }
-                        }
-                        if (processedPages.isNotEmpty()) {
-                            onPagesCaptured(processedPages)
-                            onNavigateToEditSession("IMPORT", 0L)
-                        }
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            onNavigateToScan("DOCUMENT")
-        }
-    }
-
-    val launchScanner: (Int) -> Unit = { limit ->
-        val activity = context as? Activity
-        if (activity != null) {
-            try {
-                val scanner = ScannerApplication.getScanner() ?: run {
-                    val dynOptions = GmsDocumentScannerOptions.Builder()
-                        .setGalleryImportAllowed(true)
-                        .setPageLimit(limit)
-                        .setResultFormats(GmsDocumentScannerOptions.RESULT_FORMAT_JPEG)
-                        .setScannerMode(GmsDocumentScannerOptions.SCANNER_MODE_FULL)
-                        .build()
-                    GmsDocumentScanning.getClient(dynOptions)
-                }
-
-                scanner.getStartScanIntent(activity)
-                    .addOnSuccessListener { intentSender ->
-                        try {
-                            scannerLauncher.launch(
-                                androidx.activity.result.IntentSenderRequest.Builder(intentSender).build()
-                            )
-                        } catch (e: Exception) {
-                            e.printStackTrace()
-                            onNavigateToScan("DOCUMENT")
-                        }
-                    }
-                    .addOnFailureListener { e ->
-                        e.printStackTrace()
-                        onNavigateToScan("DOCUMENT")
-                    }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                onNavigateToScan("DOCUMENT")
-            }
-        } else {
-            onNavigateToScan("DOCUMENT")
         }
     }
 

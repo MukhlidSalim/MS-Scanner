@@ -49,9 +49,17 @@ class DocumentRepository(
     fun getPagesForDocument(docId: Long): Flow<List<PageEntity>> = documentDao.getPagesForDocument(docId)
     fun getAllSignatures(): Flow<List<SignatureEntity>> = documentDao.getAllSignatures()
 
-    suspend fun getDocumentById(id: Long): DocumentEntity? = documentDao.getDocumentById(id)
-    suspend fun getPageById(id: Long): PageEntity? = documentDao.getPageById(id)
-    suspend fun getPagesList(docId: Long): List<PageEntity> = documentDao.getPagesListForDocument(docId)
+    suspend fun getDocumentById(id: Long): DocumentEntity? = withContext(Dispatchers.IO) {
+        documentDao.getDocumentById(id)
+    }
+
+    suspend fun getPageById(id: Long): PageEntity? = withContext(Dispatchers.IO) {
+        documentDao.getPageById(id)
+    }
+
+    suspend fun getPagesList(docId: Long): List<PageEntity> = withContext(Dispatchers.IO) {
+        documentDao.getPagesListForDocument(docId)
+    }
 
     /**
      * Transactional creation of new Document with pages

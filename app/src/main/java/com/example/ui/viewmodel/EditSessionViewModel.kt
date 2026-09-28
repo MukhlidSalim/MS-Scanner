@@ -3,12 +3,11 @@ package com.example.ui.viewmodel
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import androidx.work.*
 import com.example.data.model.*
 import com.example.data.repository.AppPreferences
 import com.example.data.repository.DocumentRepository
 import com.example.engine.annotation.AnnotationEngine
-import com.example.engine.cv.ImageProcessingWorker
+import com.example.engine.cv.DocumentQuad
 import com.example.engine.cv.ImageProcessor
 import com.example.engine.cv.QualityReport
 import com.example.engine.ocr.DocumentAiEngine
@@ -40,7 +39,6 @@ data class EditSessionUiState(
     val selectedCompression: CompressionPreset = CompressionPreset.HIGH,
     val ocrLanguage: com.example.engine.ocr.OcrLanguage = com.example.engine.ocr.OcrLanguage.AUTO,
     val isLoading: Boolean = false,
-    val batchQueueState: com.example.engine.cv.BatchQueueState = com.example.engine.cv.BatchQueueState()
 )
 
 class EditSessionViewModel(
@@ -60,16 +58,8 @@ class EditSessionViewModel(
     val events = _events.receiveAsFlow()
 
     private val qualityCache = mutableMapOf<Long, QualityReport>()
-    private val workManager = WorkManager.getInstance(context)
-    val batchProcessingQueue = com.example.engine.cv.BatchProcessingQueue(viewModelScope)
-
     init {
         loadSignatures()
-        viewModelScope.launch {
-            batchProcessingQueue.queueState.collectLatest { queueState ->
-                _uiState.update { it.copy(batchQueueState = queueState) }
-            }
-        }
     }
 
     private fun loadSignatures() {
@@ -220,32 +210,32 @@ class EditSessionViewModel(
         val pages = _uiState.value.editingSessionPages.toMutableList()
         if (index !in pages.indices) return
         val page = pages[index]
-        
-        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(workDataOf(
-                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_ROTATE_SESSION,
-                ImageProcessingWorker.KEY_PAGE_ID to page.id,
-                ImageProcessingWorker.KEY_CLOCKWISE to clockwise
-            ))
-            .build()
 
-        _uiState.update { it.copy(isLoading = true) }
-        workManager.enqueueUniqueWork("rotate_session_$index", ExistingWorkPolicy.REPLACE, workRequest)
+        viewModelScope.launch(Dispatchers.Default) {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val source = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 2048)
+                    ?: throw IllegalStateException("Unable to load page image")
+                val degrees = if (clockwise) 90 else -90
+                val rotated = ImageProcessor.rotateBitmap(source, degrees)
+                val newPath = ImageProcessor.saveBitmapToFile(context, rotated, "rot_session_")
 
-        viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(workRequest.id).collectLatest { workInfo ->
-                if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
-                    _uiState.update { it.copy(isLoading = false) }
-                    val updatedPage = repository.getPageById(page.id)
-                    if (updatedPage != null) {
-                        val newPages = _uiState.value.editingSessionPages.toMutableList()
-                        newPages[index] = updatedPage
-                        _uiState.update { it.copy(editingSessionPages = newPages) }
-                    }
-                } else if (workInfo?.state == WorkInfo.State.FAILED) {
-                    _uiState.update { it.copy(isLoading = false) }
-                    viewModelScope.launch { _events.send(UiEvent.Error("Failed to rotate session page")) }
-                }
+                if (rotated !== source) source.recycle()
+                rotated.recycle()
+
+                val updatedPage = page.copy(
+                    processedImagePath = newPath,
+                    rotationDegrees = ((page.rotationDegrees + degrees) % 360 + 360) % 360
+                )
+                repository.updatePage(updatedPage)
+                pages[index] = updatedPage
+                _uiState.update { it.copy(editingSessionPages = pages) }
+                qualityCache.remove(page.id)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to rotate session page"))
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
     }
@@ -254,65 +244,92 @@ class EditSessionViewModel(
         val pages = if (_uiState.value.isEditingSession) _uiState.value.editingSessionPages else _uiState.value.activePages
         if (pages.isEmpty()) return
 
-        val pagePairs = pages.map { Pair(it.rawImagePath.ifBlank { it.processedImagePath }, it.processedImagePath) }
-        batchProcessingQueue.enqueueExistingPagePairs(
-            context = context,
-            pages = pagePairs,
-            onPageUpdated = { index, newProcPath, _ ->
-                if (_uiState.value.isEditingSession) {
-                    updateEditingSessionPageProcessedImage(index, newProcPath)
-                } else {
-                    val page = pages.getOrNull(index)
-                    if (page != null) {
-                        viewModelScope.launch {
-                            val updated = page.copy(processedImagePath = newProcPath)
-                            repository.updatePage(updated)
-                            val currentPages = _uiState.value.activePages.toMutableList()
-                            if (index in currentPages.indices) {
-                                currentPages[index] = updated
-                                _uiState.update { it.copy(activePages = currentPages) }
+        viewModelScope.launch(Dispatchers.Default) {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                for ((index, page) in pages.withIndex()) {
+                    val rawPath = page.rawImagePath.ifBlank { page.processedImagePath }
+                    val rawBmp = ImageProcessor.loadBitmapFromFile(rawPath, 2048) ?: continue
+                    try {
+                        val quad = ImageProcessor.detectDocumentQuad(rawBmp)
+                        val valid = ImageProcessor.isQuadValid(quad)
+                        val cropped = if (valid) ImageProcessor.applyPerspectiveWarp(rawBmp, quad)
+                                      else rawBmp.copy(rawBmp.config ?: android.graphics.Bitmap.Config.ARGB_8888, true)
+                        try {
+                            val filtered = ImageProcessor.applyFilter(cropped, FilterType.MAGIC)
+                            try {
+                                val newPath = ImageProcessor.saveBitmapToFile(context, filtered, "batch_recrop_")
+                                val updated = page.copy(
+                                    processedImagePath = newPath,
+                                    cropQuadJson = if (valid) quad.toJson() else page.cropQuadJson,
+                                    filterType = FilterType.MAGIC.name
+                                )
+                                if (_uiState.value.isEditingSession) {
+                                    val current = _uiState.value.editingSessionPages.toMutableList()
+                                    if (index in current.indices) current[index] = updated
+                                    _uiState.update { it.copy(editingSessionPages = current) }
+                                } else {
+                                    repository.updatePage(updated)
+                                    val current = _uiState.value.activePages.toMutableList()
+                                    if (index in current.indices) current[index] = updated
+                                    _uiState.update { it.copy(activePages = current) }
+                                }
+                                qualityCache.remove(page.id)
+                            } finally {
+                                if (filtered !== cropped) filtered.recycle()
                             }
+                        } finally {
+                            if (cropped !== rawBmp) cropped.recycle()
                         }
+                    } finally {
+                        rawBmp.recycle()
                     }
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to auto-crop pages"))
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
+                if (_uiState.value.activeDocument?.id != null && !_uiState.value.isEditingSession) {
+                    loadDocument(_uiState.value.activeDocument!!.id)
+                }
             }
-        )
+        }
     }
-
-    fun pauseBatchQueue() = batchProcessingQueue.pause()
-    fun resumeBatchQueue() = batchProcessingQueue.resume()
-    fun skipRemainingAutoCrop() = batchProcessingQueue.skipRemaining()
-    fun cancelBatchQueue() = batchProcessingQueue.cancel()
 
     fun applyFilterToActivePage(filter: FilterType) {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
         if (idx !in pages.indices) return
-
         val page = pages[idx]
-        
-        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(workDataOf(
-                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_CROP_WARP,
-                ImageProcessingWorker.KEY_PAGE_ID to page.id,
-                ImageProcessingWorker.KEY_QUAD_JSON to page.cropQuadJson,
-                ImageProcessingWorker.KEY_FILTER_TYPE to filter.name
-            ))
-            .build()
 
-        _uiState.update { it.copy(isLoading = true) }
-        workManager.enqueueUniqueWork("filter_active_${page.id}", ExistingWorkPolicy.REPLACE, workRequest)
-
-        viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(workRequest.id).collectLatest { info ->
-                if (info?.state == WorkInfo.State.SUCCEEDED) {
-                    _uiState.update { state -> state.copy(isLoading = false) }
-                    qualityCache.remove(page.id)
-                    loadDocument(page.documentId)
-                } else if (info?.state == WorkInfo.State.FAILED) {
-                    _uiState.update { state -> state.copy(isLoading = false) }
-                    viewModelScope.launch { _events.send(UiEvent.Error("Failed to apply filter")) }
-                }
+        viewModelScope.launch(Dispatchers.Default) {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val raw = ImageProcessor.loadBitmapFromFile(page.rawImagePath, 2048)
+                    ?: throw IllegalStateException("Unable to load original page")
+                try {
+                    val quad = DocumentQuad.fromJson(page.cropQuadJson)
+                    val warped = ImageProcessor.applyPerspectiveWarp(raw, quad)
+                    try {
+                        val rotated = ImageProcessor.rotateBitmap(warped, page.rotationDegrees)
+                        try {
+                            val filtered = ImageProcessor.applyFilter(rotated, filter)
+                            try {
+                                val newPath = ImageProcessor.saveBitmapToFile(context, filtered, "filter_active_")
+                                val updated = page.copy(processedImagePath = newPath, filterType = filter.name)
+                                repository.updatePage(updated)
+                                qualityCache.remove(page.id)
+                                loadDocument(page.documentId)
+                            } finally { if (filtered !== rotated) filtered.recycle() }
+                        } finally { if (rotated !== warped) rotated.recycle() }
+                    } finally { if (warped !== raw) warped.recycle() }
+                } finally { raw.recycle() }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to apply filter"))
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
     }
@@ -321,32 +338,7 @@ class EditSessionViewModel(
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
         if (idx !in pages.indices) return
-
-        val page = pages[idx]
-        
-        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(workDataOf(
-                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_ROTATE,
-                ImageProcessingWorker.KEY_PAGE_ID to page.id,
-                ImageProcessingWorker.KEY_ROTATION_DEGREES to 90
-            ))
-            .build()
-
-        _uiState.update { it.copy(isLoading = true) }
-        workManager.enqueueUniqueWork("rotate_active_${page.id}", ExistingWorkPolicy.REPLACE, workRequest)
-
-        viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(workRequest.id).collectLatest { info ->
-                if (info?.state == WorkInfo.State.SUCCEEDED) {
-                    _uiState.update { state -> state.copy(isLoading = false) }
-                    qualityCache.remove(page.id)
-                    loadDocument(page.documentId)
-                } else if (info?.state == WorkInfo.State.FAILED) {
-                    _uiState.update { state -> state.copy(isLoading = false) }
-                    viewModelScope.launch { _events.send(UiEvent.Error("Failed to rotate page")) }
-                }
-            }
-        }
+        rotatePage(pages[idx].id)
     }
 
     fun smartEnhanceActivePage() {
@@ -356,7 +348,7 @@ class EditSessionViewModel(
 
         val page = pages[idx]
         
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             _uiState.update { it.copy(isLoading = true) }
             try {
                 val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath)
@@ -373,36 +365,43 @@ class EditSessionViewModel(
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
-                _uiState.update { it.copy(isLoading = false) }
                 _events.send(UiEvent.Error("Smart enhance failed"))
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
     }
 
     fun rotatePage(pageId: Long) {
-        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(workDataOf(
-                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_ROTATE,
-                ImageProcessingWorker.KEY_PAGE_ID to pageId,
-                ImageProcessingWorker.KEY_ROTATION_DEGREES to 90
-            ))
-            .build()
-
-        _uiState.update { it.copy(isLoading = true) }
-        workManager.enqueueUniqueWork("rotate_page_$pageId", ExistingWorkPolicy.REPLACE, workRequest)
-
-        viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(workRequest.id).collectLatest { info ->
-                if (info?.state == WorkInfo.State.SUCCEEDED) {
-                    _uiState.update { it.copy(isLoading = false) }
-                    val page = repository.getPageById(pageId)
-                    if (page != null) {
-                        loadDocument(page.documentId)
-                    }
-                } else if (info?.state == WorkInfo.State.FAILED) {
-                    _uiState.update { it.copy(isLoading = false) }
-                    viewModelScope.launch { _events.send(UiEvent.Error("Failed to rotate page")) }
-                }
+        viewModelScope.launch(Dispatchers.Default) {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val page = repository.getPageById(pageId) ?: return@launch
+                val raw = ImageProcessor.loadBitmapFromFile(page.rawImagePath, 2048)
+                    ?: throw IllegalStateException("Unable to load original page")
+                try {
+                    val quad = DocumentQuad.fromJson(page.cropQuadJson)
+                    val warped = ImageProcessor.applyPerspectiveWarp(raw, quad)
+                    try {
+                        val newRotation = ((page.rotationDegrees + 90) % 360 + 360) % 360
+                        val rotated = ImageProcessor.rotateBitmap(warped, newRotation)
+                        try {
+                            val filter = runCatching { FilterType.valueOf(page.filterType) }.getOrDefault(FilterType.MAGIC)
+                            val filtered = ImageProcessor.applyFilter(rotated, filter)
+                            try {
+                                val newPath = ImageProcessor.saveBitmapToFile(context, filtered, "rotate_")
+                                repository.updatePage(page.copy(processedImagePath = newPath, rotationDegrees = newRotation))
+                                qualityCache.remove(pageId)
+                            } finally { if (filtered !== rotated) filtered.recycle() }
+                        } finally { if (rotated !== warped) rotated.recycle() }
+                    } finally { if (warped !== raw) warped.recycle() }
+                } finally { raw.recycle() }
+                loadDocument(page.documentId)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to rotate page"))
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
     }
@@ -477,52 +476,48 @@ class EditSessionViewModel(
         }
     }
 
-    fun runOcrOnActivePage(useDeepAi: Boolean = false) {
+    fun runOcrOnActivePage() {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
         if (idx !in pages.indices) return
 
         val page = pages[idx]
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             _uiState.update { it.copy(isOcrLoading = true) }
             try {
                 val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath)
-                if (bmp != null) {
-                    val result = if (useDeepAi) {
-                        DocumentAiEngine.analyzeWithGemini(bmp)
-                    } else {
-                        DocumentAiEngine.performOfflineOcr(bmp, _uiState.value.ocrLanguage)
-                    }
-                    _uiState.update { it.copy(ocrResult = result, isOcrLoading = false) }
+                    ?: throw IllegalStateException("Unable to load page image")
+                try {
+                    val result = DocumentAiEngine.performOfflineOcr(bmp, _uiState.value.ocrLanguage)
+                    _uiState.update { it.copy(ocrResult = result) }
+                } finally {
                     bmp.recycle()
                 }
             } catch (e: Exception) {
+                _events.send(UiEvent.Error("Analysis Failed: ${e.localizedMessage ?: "Unknown error"}"))
+            } finally {
                 _uiState.update { it.copy(isOcrLoading = false) }
-                viewModelScope.launch { _events.send(UiEvent.Error("Analysis Failed: ${e.localizedMessage}")) }
             }
         }
     }
 
     fun saveDocumentToGallery(context: Context, docId: Long) {
-        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(workDataOf(
-                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_SAVE_DOC_TO_GALLERY,
-                ImageProcessingWorker.KEY_DOC_ID to docId
-            ))
-            .build()
-
-        _uiState.update { it.copy(isLoading = true) }
-        workManager.enqueueUniqueWork("save_gallery_$docId", ExistingWorkPolicy.REPLACE, workRequest)
-
-        viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(workRequest.id).collectLatest { info ->
-                if (info?.state == WorkInfo.State.SUCCEEDED) {
-                    _uiState.update { it.copy(isLoading = false) }
-                    viewModelScope.launch { _events.send(UiEvent.ShowToast("Saved to Gallery")) }
-                } else if (info?.state == WorkInfo.State.FAILED) {
-                    _uiState.update { it.copy(isLoading = false) }
-                    viewModelScope.launch { _events.send(UiEvent.Error("Failed to save to gallery")) }
+        viewModelScope.launch(Dispatchers.Default) {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val pages = repository.getPagesList(docId)
+                var saved = 0
+                for (page in pages) {
+                    val file = File(page.processedImagePath)
+                    if (file.exists() && ImageProcessor.saveToGallery(context, file)) saved++
                 }
+                if (saved > 0) _events.send(UiEvent.ShowToast("Saved to Gallery"))
+                else _events.send(UiEvent.Error("Failed to save to gallery"))
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to save to gallery"))
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
     }
@@ -532,7 +527,7 @@ class EditSessionViewModel(
         val idx = _uiState.value.selectedPageIndex
         if (idx !in pages.indices) return
         val page = pages[idx]
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath) ?: return@launch
             withContext(Dispatchers.Main) {
                 try {
@@ -591,7 +586,7 @@ class EditSessionViewModel(
         if (idx !in pages.indices) return
 
         val page = pages[idx]
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.Default) {
             _uiState.update { it.copy(isLoading = true) }
             try {
                 val baseBmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath)
@@ -612,8 +607,9 @@ class EditSessionViewModel(
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to save annotations"))
+            } finally {
                 _uiState.update { it.copy(isLoading = false) }
-                viewModelScope.launch { _events.send(UiEvent.Error("Failed to save annotations")) }
             }
         }
     }
@@ -634,59 +630,73 @@ class EditSessionViewModel(
     }
 
     fun applyFilterToAllPages(docId: Long, filter: FilterType) {
-        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(workDataOf(
-                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_FILTER_ALL,
-                ImageProcessingWorker.KEY_DOC_ID to docId,
-                ImageProcessingWorker.KEY_FILTER_TYPE to filter.name
-            ))
-            .build()
-
-        _uiState.update { it.copy(isLoading = true) }
-        workManager.enqueueUniqueWork("filter_all_$docId", ExistingWorkPolicy.REPLACE, workRequest)
-
-        viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(workRequest.id).collectLatest { info ->
-                if (info?.state == WorkInfo.State.SUCCEEDED) {
-                    _uiState.update { it.copy(isLoading = false) }
-                    qualityCache.clear()
-                    loadDocument(docId)
-                } else if (info?.state == WorkInfo.State.FAILED) {
-                    _uiState.update { it.copy(isLoading = false) }
-                    viewModelScope.launch { _events.send(UiEvent.Error("Failed to filter all pages")) }
+        viewModelScope.launch(Dispatchers.Default) {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val pages = repository.getPagesList(docId)
+                for (page in pages) {
+                    val raw = ImageProcessor.loadBitmapFromFile(page.rawImagePath, 2048) ?: continue
+                    try {
+                        val rotated = ImageProcessor.rotateBitmap(raw, page.rotationDegrees)
+                        try {
+                            val filtered = ImageProcessor.applyFilter(rotated, filter)
+                            try {
+                                val newPath = ImageProcessor.saveBitmapToFile(context, filtered, "proc_all_")
+                                val oldFile = File(page.processedImagePath)
+                                if (oldFile.exists() && oldFile.absolutePath != page.rawImagePath) oldFile.delete()
+                                repository.updatePage(page.copy(filterType = filter.name, processedImagePath = newPath))
+                            } finally { if (filtered !== rotated) filtered.recycle() }
+                        } finally { if (rotated !== raw) rotated.recycle() }
+                    } finally { raw.recycle() }
                 }
+                qualityCache.clear()
+                loadDocument(docId)
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to filter all pages"))
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
             }
         }
     }
 
     fun exportDocumentToPdf(config: PdfExportConfig, pageIds: Set<Long>? = null, onComplete: (File) -> Unit) {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             _uiState.update { it.copy(isExportingPdf = true) }
-            val docId = _uiState.value.activeDocument?.id ?: return@launch
-            val allPages = repository.getPagesList(docId)
-            val targetPages = if (pageIds != null) {
-                allPages.filter { pageIds.contains(it.id) }
-            } else {
-                allPages
-            }
-            
-            if (targetPages.isEmpty()) {
-                _uiState.update { it.copy(isExportingPdf = false) }
-                return@launch
-            }
-            
-            val pairs = targetPages.map { page ->
-                val img = if (page.processedImagePath.isNotBlank() && File(page.processedImagePath).exists()) {
-                    page.processedImagePath
+            try {
+                val docId = _uiState.value.activeDocument?.id ?: return@launch
+                val allPages = repository.getPagesList(docId)
+                val targetPages = if (pageIds != null) {
+                    allPages.filter { pageIds.contains(it.id) }
                 } else {
-                    page.rawImagePath
+                    allPages
                 }
-                Pair(img, page.ocrText)
+
+                if (targetPages.isEmpty()) {
+                    return@launch
+                }
+
+                val pairs = targetPages.map { page ->
+                    val img = if (page.processedImagePath.isNotBlank() && File(page.processedImagePath).exists()) {
+                        page.processedImagePath
+                    } else {
+                        page.rawImagePath
+                    }
+                    Pair(img, page.ocrText)
+                }
+                val pdfFile = PdfEngine.generatePdf(context, pairs, config)
+                if (!pdfFile.exists() || pdfFile.length() == 0L) {
+                    throw IllegalStateException("PDF export produced an invalid file")
+                }
+
+                _uiState.update { it.copy(exportedPdfFile = pdfFile) }
+                withContext(Dispatchers.Main) { onComplete(pdfFile) }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _events.send(UiEvent.Error("Failed to export PDF: ${e.localizedMessage ?: "Unknown error"}"))
+            } finally {
+                _uiState.update { it.copy(isExportingPdf = false) }
             }
-            val pdfFile = PdfEngine.generatePdf(context, pairs, config)
-            
-            _uiState.update { it.copy(isExportingPdf = false, exportedPdfFile = pdfFile) }
-            onComplete(pdfFile)
         }
     }
 

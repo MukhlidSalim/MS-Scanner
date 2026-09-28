@@ -3,21 +3,18 @@ package com.example.ui.viewmodel
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.example.BuildConfig
 import com.example.data.model.DocumentCategory
 import com.example.data.model.DocumentEntity
 
 import com.example.data.repository.AppPreferences
 import com.example.data.repository.DocumentRepository
 import com.example.data.repository.StorageStats
-import com.example.engine.updater.*
 import com.example.ui.util.UiEvent
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
-import java.io.File
 
 enum class ExportPdfAction {
     SHARE,
@@ -85,15 +82,10 @@ class DocumentListViewModel(
     )
     private val filterTrigger = MutableStateFlow(FilterState())
 
-    private val updateManager = GitHubUpdateManager(context)
-    val updateCheckState = MutableStateFlow<UpdateCheckState>(UpdateCheckState.Idle)
-    val updateDownloadState = MutableStateFlow<UpdateDownloadState>(UpdateDownloadState.Idle)
-
     init {
         setupDocumentStream()
         loadFolders()
         refreshStorageStats()
-        checkUpdatesOnLaunch()
     }
 
     private fun setupDocumentStream() {
@@ -448,93 +440,6 @@ class DocumentListViewModel(
                 pages = allPages.map { Pair(it.rawImagePath, it.processedImagePath) }
             )
             refreshStorageStats()
-        }
-    }
-
-    fun checkUpdates(isManual: Boolean = false) {
-        viewModelScope.launch {
-            updateCheckState.value = UpdateCheckState.Checking
-            try {
-                val info = updateManager.checkUpdate(prefs.githubRepoSlug)
-                if (info.isUpdateAvailable) {
-                    if (isManual || prefs.ignoredUpdateVersion != info.latestVersion) {
-                        updateCheckState.value = UpdateCheckState.Available(info, isManual)
-                    } else {
-                        updateCheckState.value = UpdateCheckState.Idle
-                    }
-                } else {
-                    updateCheckState.value = UpdateCheckState.UpToDate(BuildConfig.VERSION_NAME, isManual)
-                }
-                prefs.lastUpdateCheckTime = System.currentTimeMillis()
-            } catch (e: Exception) {
-                e.printStackTrace()
-                updateCheckState.value = UpdateCheckState.Error(
-                    messageAr = "تعذر التحقق من التحديثات: ${e.localizedMessage ?: "خطأ في الاتصال بالإنترنت"}",
-                    messageEn = "Failed to check updates: ${e.localizedMessage ?: "Network error"}",
-                    isManual = isManual
-                )
-            }
-        }
-    }
-
-    fun dismissUpdate(ignoreVersion: Boolean = false, version: String = "") {
-        if (ignoreVersion && version.isNotBlank()) {
-            prefs.ignoredUpdateVersion = version
-        }
-        updateCheckState.value = UpdateCheckState.Idle
-        updateDownloadState.value = UpdateDownloadState.Idle
-    }
-
-    fun downloadAndInstallUpdate(updateInfo: AppUpdateInfo) {
-        viewModelScope.launch {
-            if (updateInfo.downloadUrl.isBlank()) {
-                updateDownloadState.value = UpdateDownloadState.Error(
-                    messageAr = "رابط ملف التحديث (APK) غير متوفر حالياً على جيت هب",
-                    messageEn = "Update APK URL is currently not available on GitHub"
-                )
-                return@launch
-            }
-
-            try {
-                updateDownloadState.value = UpdateDownloadState.Downloading(0L, updateInfo.apkSize, 0f)
-                val apkFile = updateManager.downloadApk(
-                    downloadUrl = updateInfo.downloadUrl,
-                    targetVersion = updateInfo.latestVersion
-                ) { bytesRead, totalBytes, progress ->
-                    updateDownloadState.value = UpdateDownloadState.Downloading(bytesRead, totalBytes, progress)
-                }
-
-                if (updateManager.canInstallPackages()) {
-                    updateDownloadState.value = UpdateDownloadState.ReadyToInstall(apkFile, updateInfo)
-                    updateManager.launchInstallApk(apkFile)
-                } else {
-                    updateDownloadState.value = UpdateDownloadState.PermissionRequired(apkFile, updateInfo)
-                }
-            } catch (e: Exception) {
-                e.printStackTrace()
-                updateDownloadState.value = UpdateDownloadState.Error(
-                    messageAr = "فشل تحميل التحديث: ${e.localizedMessage ?: "يرجى التحقق من الاتصال بالإنترنت"}",
-                    messageEn = "Update download failed: ${e.localizedMessage ?: "Please check internet connection"}"
-                )
-            }
-        }
-    }
-
-    fun requestInstallApk(apkFile: File) {
-        if (updateManager.canInstallPackages()) {
-            updateManager.launchInstallApk(apkFile)
-        } else {
-            context.startActivity(updateManager.getInstallPermissionIntent())
-        }
-    }
-
-    fun checkUpdatesOnLaunch() {
-        if (prefs.autoCheckUpdates) {
-            val lastCheck = prefs.lastUpdateCheckTime
-            val now = System.currentTimeMillis()
-            if (now - lastCheck > 1000 * 60 * 30) {
-                checkUpdates(isManual = false)
-            }
         }
     }
 

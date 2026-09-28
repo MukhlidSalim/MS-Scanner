@@ -42,8 +42,6 @@ import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.example.data.model.PageEntity
 import com.example.engine.cv.ImageProcessor
-import com.example.engine.cv.ImageProcessingWorker
-import androidx.work.*
 import com.example.engine.cv.MergeFitMode
 import com.example.engine.cv.MergeGridLayout
 import com.example.ui.theme.CyanScan
@@ -98,25 +96,24 @@ fun MergePagesDialog(
         contract = ActivityResultContracts.PickMultipleVisualMedia(10)
     ) { uris: List<Uri> ->
         if (uris.isNotEmpty()) {
-            val workManager = WorkManager.getInstance(context)
-            uris.forEach { uri ->
-                val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-                    .setInputData(workDataOf(
-                        ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_SAVE_BITMAP,
-                        ImageProcessingWorker.KEY_URI to uri.toString(),
-                        ImageProcessingWorker.KEY_PREFIX to "merge_extra_"
-                    ))
-                    .build()
-                
-                workManager.enqueue(workRequest)
-                coroutineScope.launch {
-                    workManager.getWorkInfoByIdFlow(workRequest.id).collect { workInfo ->
-                        if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
-                            val savedPath = workInfo.outputData.getString(ImageProcessingWorker.KEY_RESULT_PATH)
-                            if (savedPath != null) {
-                                extraImagePaths.add(savedPath)
+            coroutineScope.launch {
+                uris.forEach { uri ->
+                    try {
+                        val savedPath = withContext(Dispatchers.IO) {
+                            context.contentResolver.openInputStream(uri)?.use { stream ->
+                                BitmapFactory.decodeStream(stream)?.let { bmp ->
+                                    try {
+                                        ImageProcessor.saveBitmapToFile(context, bmp, "merge_extra_")
+                                    } finally {
+                                        bmp.recycle()
+                                    }
+                                }
                             }
                         }
+                        if (!savedPath.isNullOrBlank()) extraImagePaths.add(savedPath)
+                    } catch (e: Exception) {
+                        e.printStackTrace()
+                        Toast.makeText(context, if (isArabic) "فشل استيراد إحدى الصور" else "Failed to import one of the images", Toast.LENGTH_SHORT).show()
                     }
                 }
             }
@@ -184,34 +181,35 @@ fun MergePagesDialog(
                                     return@Button
                                 }
                                 isMerging = true
-                                val workManager = WorkManager.getInstance(context)
-                                val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-                                    .setInputData(workDataOf(
-                                        ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_MERGE_GRID,
-                                        ImageProcessingWorker.KEY_IMAGE_PATHS to activeImagePaths.toTypedArray(),
-                                        ImageProcessingWorker.KEY_LAYOUT to selectedLayout.name,
-                                        ImageProcessingWorker.KEY_SCALE to imageScale,
-                                        ImageProcessingWorker.KEY_SPACING to spacingDp * 1.5f,
-                                        ImageProcessingWorker.KEY_CORNER_RADIUS to cornerRadiusDp * 1.5f,
-                                        ImageProcessingWorker.KEY_HAS_BORDER to hasBorder,
-                                        ImageProcessingWorker.KEY_BG_COLOR to selectedBgColor.toArgb(),
-                                        ImageProcessingWorker.KEY_FIT_MODE to fitMode.name
-                                    ))
-                                    .build()
-                                
-                                workManager.enqueue(workRequest)
+                                val paths = activeImagePaths.toList()
+                                val layout = selectedLayout
+                                val scale = imageScale
+                                val spacing = spacingDp * 1.5f
+                                val cornerRadius = cornerRadiusDp * 1.5f
+                                val border = hasBorder
+                                val background = selectedBgColor.toArgb()
+                                val fit = fitMode
                                 coroutineScope.launch {
-                                    workManager.getWorkInfoByIdFlow(workRequest.id).collect { workInfo ->
-                                        if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
-                                            val mergedPath = workInfo.outputData.getString(ImageProcessingWorker.KEY_RESULT_PATH)
-                                            isMerging = false
-                                            if (mergedPath != null) {
-                                                onMergeCompleted(mergedPath, selectedPageIds.toList(), replaceOriginalPages)
-                                            }
-                                        } else if (workInfo?.state == WorkInfo.State.FAILED) {
-                                            isMerging = false
-                                            Toast.makeText(context, if (isArabic) "فشل دمج الصور" else "Failed to merge images", Toast.LENGTH_SHORT).show()
-                                        }
+                                    try {
+                                        val mergedPath = ImageProcessor.createMultiImageGridCollage(
+                                            context = context,
+                                            imagePaths = paths,
+                                            layout = layout,
+                                            imageScale = scale,
+                                            spacingPx = spacing,
+                                            cornerRadiusPx = cornerRadius,
+                                            hasBorder = border,
+                                            backgroundColor = background,
+                                            fitMode = fit,
+                                            outPrefix = "merged_page_"
+                                        )
+                                        if (mergedPath.isBlank()) throw IllegalStateException("Merge returned an empty path")
+                                        onMergeCompleted(mergedPath, selectedPageIds.toList(), replaceOriginalPages)
+                                    } catch (e: Exception) {
+                                        e.printStackTrace()
+                                        Toast.makeText(context, if (isArabic) "فشل دمج الصور" else "Failed to merge images", Toast.LENGTH_SHORT).show()
+                                    } finally {
+                                        isMerging = false
                                     }
                                 }
                             },

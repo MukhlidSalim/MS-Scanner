@@ -60,8 +60,6 @@
     <string name="ocr_extracting">Extracting text &amp; analyzing document…</string>
     <string name="ocr_copy_all">Copy Text</string>
     <string name="ocr_share_text">Share Text</string>
-    <string name="ocr_ai_intelligence">Smart Document AI</string>
-    <string name="ai_classify">Classify Document</string>
     <string name="pdf_settings_title">PDF Export Settings</string>
     <string name="page_size_a4">A4 (Standard)</string>
     <string name="page_size_letter">US Letter</string>
@@ -91,8 +89,6 @@
     <string name="txt_cancel">Cancel</string>
     <string name="desc_back">Back</string>
     <string name="desc_undo">Undo</string>
-    <string name="txt_update_available">Update Available</string>
-    <string name="txt_update_now">Update Now</string>
     <string name="txt_later">Later</string>
     <string name="txt_id_card">ID Card</string>
     <string name="txt_scan_document">Scan Document</string>
@@ -111,8 +107,8 @@
     <string name="txt_merge_id_card">Merge ID Card</string>
     <string name="txt_pinch_to_zoom__drag_to_mov">Pinch to zoom, drag to move</string>
     <string name="desc_front">Front</string>
-    <string name="txt_ocr___document_ai">OCR &amp; Document AI</string>
-    <string name="txt_structured_ai_data">Structured AI Data</string>
+    <string name="txt_ocr_document">OCR &amp; Document Text</string>
+    <string name="txt_structured_data">Structured Data</string>
     <string name="txt_full_ocr_text">Full OCR Text</string>
     <string name="txt_apply_title_to_document">Apply Title to Document</string>
     <string name="txt_copy_all">Copy All</string>
@@ -230,7 +226,6 @@
     <string name="txt_create">Create</string>
     <string name="txt_move_to_folder">Move to Folder</string>
     <string name="txt_select_folder">Select Folder</string>
-    <string name="txt_version_available">Version %1$s is available!\n\n%2$s</string>
     <string name="txt_save_to_gallery">Save to Gallery</string>
     <string name="txt_saved_to_gallery">Saved to Gallery!</string>
     <string name="txt_save_failed">Failed to save</string>

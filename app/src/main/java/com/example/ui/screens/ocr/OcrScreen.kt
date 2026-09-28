@@ -47,10 +47,10 @@ fun OcrScreen(
     val ocrResult = uiState.ocrResult
 
     LaunchedEffect(pageId) {
-        viewModel.runOcrOnActivePage(useDeepAi = true)
+        viewModel.runOcrOnActivePage()
     }
 
-    var selectedTab by remember { mutableStateOf(0) } // 0: AI Structured Data, 1: Full Text
+    var selectedTab by remember { mutableStateOf(0) } // 0: Structured Data, 1: Full Text
 
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -69,7 +69,7 @@ fun OcrScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.txt_ocr___document_ai), fontWeight = FontWeight.Bold) },
+                title = { Text(stringResource(R.string.txt_ocr_document), fontWeight = FontWeight.Bold) },
                 navigationIcon = {
                     IconButton(onClick = onNavigateBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.desc_back))
@@ -77,7 +77,7 @@ fun OcrScreen(
                 },
                 actions = {
                     IconButton(
-                        onClick = { viewModel.runOcrOnActivePage(useDeepAi = true) },
+                        onClick = { viewModel.runOcrOnActivePage() },
                         modifier = Modifier.testTag("ocr_retry_btn")
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.desc_re_analyze))
@@ -102,7 +102,7 @@ fun OcrScreen(
                     onClick = { selectedTab = 0 },
                     text = {
                         Text(
-                            text = stringResource(R.string.txt_structured_ai_data),
+                            text = stringResource(R.string.txt_structured_data),
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = if (selectedTab == 0) FontWeight.Bold else FontWeight.Medium
                         )
@@ -132,7 +132,7 @@ fun OcrScreen(
                     ) {
                         CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         Text(
-                            text = "Analyzing document with AI Engine…",
+                            text = "Analyzing document text…",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -141,7 +141,7 @@ fun OcrScreen(
                 }
             } else if (ocrResult != null) {
                 if (selectedTab == 0) {
-                    // AI Structured Data View
+                    // Structured Data View
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -180,7 +180,7 @@ fun OcrScreen(
                                         )
                                     }
                                     Text(
-                                        text = "AI Suggested Title & Category",
+                                        text = "Suggested Title & Category",
                                         fontWeight = FontWeight.Bold,
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -333,7 +333,7 @@ fun OcrScreen(
                         Icon(Icons.Default.ErrorOutline, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.error)
                         Text(stringResource(R.string.txt_analysis_failed__please_tr), style = MaterialTheme.typography.bodyMedium)
                         Button(
-                            onClick = { viewModel.runOcrOnActivePage(useDeepAi = true) },
+                            onClick = { viewModel.runOcrOnActivePage() },
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Text(stringResource(R.string.txt_retry_analysis), fontWeight = FontWeight.Bold)
