@@ -57,6 +57,12 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
+
+  // ✅ يُخبر Room بمكان حفظ ملفات الـ schema للتحقق من صحة الـ Migrations وقت التجميع
+  ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+    arg("room.incremental", "true")
+  }
   dependenciesInfo {
     includeInApk = false
     includeInBundle = true
@@ -124,6 +130,8 @@ dependencies {
   implementation(libs.play.services.mlkit.document.scanner)
   implementation(libs.gms.module.install)
   implementation(libs.play.services.mlkit.text.recognition)
+  // ✅ دعم OCR العربي — أضف هذا في libs.versions.toml أيضاً
+  implementation("com.google.android.gms:play-services-mlkit-text-recognition-arabic:16.0.0-beta1")
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
