@@ -269,8 +269,8 @@ fun DocumentCropEditorScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
-        }
-    ) { innerPadding ->
+        },
+        bottomBar = {
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()

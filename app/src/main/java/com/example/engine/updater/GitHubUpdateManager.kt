@@ -100,8 +100,9 @@ class GitHubUpdateManager(private val context: Context) {
             e.printStackTrace()
         }
 
-        if (releaseInfo != null && releaseInfo.downloadUrl.isNotBlank()) {
-            return@withContext releaseInfo
+        val info = releaseInfo
+        if (info != null && info.downloadUrl.isNotBlank()) {
+            return@withContext info
         }
 
         // 2. Fallback to raw update.json on main branch (Rate-limit resistant)
