@@ -545,7 +545,7 @@ fun PdfViewerOverlay(
                                 )
                             }
 
-                            // Save to Downloads
+                            // Save on Device
                             OutlinedButton(
                                 onClick = {
                                     val (savedUri, path) = PdfEngine.savePdfToStorage(

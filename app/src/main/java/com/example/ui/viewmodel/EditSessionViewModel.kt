@@ -501,27 +501,6 @@ class EditSessionViewModel(
         }
     }
 
-    fun saveDocumentToGallery(context: Context, docId: Long) {
-        viewModelScope.launch(Dispatchers.Default) {
-            _uiState.update { it.copy(isLoading = true) }
-            try {
-                val pages = repository.getPagesList(docId)
-                var saved = 0
-                for (page in pages) {
-                    val file = File(page.processedImagePath)
-                    if (file.exists() && ImageProcessor.saveToGallery(context, file)) saved++
-                }
-                if (saved > 0) _events.send(UiEvent.ShowToast("Saved to Gallery"))
-                else _events.send(UiEvent.Error("Failed to save to gallery"))
-            } catch (e: Exception) {
-                e.printStackTrace()
-                _events.send(UiEvent.Error("Failed to save to gallery"))
-            } finally {
-                _uiState.update { it.copy(isLoading = false) }
-            }
-        }
-    }
-
     fun printActivePage(context: Context) {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex

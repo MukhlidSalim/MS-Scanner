@@ -276,7 +276,7 @@
     <string name="export_pdf_watermark">Watermark (Optional)</string>
     <string name="export_pdf_watermark_hint">e.g. CONFIDENTIAL</string>
     <string name="export_pdf_action_share">Share PDF</string>
-    <string name="export_pdf_action_save_downloads">Save to Downloads</string>
+    <string name="export_pdf_action_save_downloads">Save on Device</string>
     <string name="export_pdf_action_save_as">Save As…</string>
     <string name="export_pdf_action_open">Open PDF</string>
     <string name="export_pdf_generating">Generating PDF, please wait…</string>
@@ -288,7 +288,7 @@
     <string name="pdf_preview_title">Review PDF</string>
     <string name="pdf_preview_page_indicator">Page %1$d of %2$d</string>
     <string name="pdf_preview_action_share">Share PDF</string>
-    <string name="pdf_preview_action_save">Save to Downloads</string>
+    <string name="pdf_preview_action_save">Save on Device</string>
     <string name="pdf_preview_action_print">Print</string>
     <string name="pdf_preview_action_open_external">Open External</string>
     <string name="pdf_preview_review_btn">Review &amp; Share</string>
@@ -298,7 +298,7 @@
     <string name="pdf_open_dialog_title">Open PDF</string>
     <string name="pdf_open_dialog_subtitle">How would you like to open this document?</string>
     <string name="pdf_open_view_title">Browse &amp; Read Only</string>
-    <string name="pdf_open_view_desc">Quickly read pages, zoom, share via FileProvider, or save to downloads</string>
+    <string name="pdf_open_view_desc">Quickly read pages, zoom, share via FileProvider, or save on device</string>
     <string name="pdf_open_edit_title">Edit in Studio</string>
     <string name="pdf_open_edit_desc">Apply magic color filters, crop, annotate, sign, and run OCR</string>
     <string name="pdf_open_converting">Importing PDF pages into studio…</string>

@@ -1,13 +1,8 @@
 package com.example.engine.cv
 
-import android.content.ContentValues
 import android.content.Context
 import android.graphics.*
-import android.media.MediaScannerConnection
-import android.os.Build
-import android.os.Environment
 import androidx.camera.core.ImageProxy
-import android.provider.MediaStore
 import com.example.data.model.FilterType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -747,7 +742,7 @@ object ImageProcessor {
         return total / 4f
     }
 
-    private fun distance(a: PointF, b: PointF): Float = hypot(a.x - b.x, a.y - b.y)
+    private fun distance(a: PointF, b: PointF): Float = hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
 
     private fun value(v: Byte): Float = (v.toInt() and 0xFF).toFloat()
 
@@ -1565,68 +1560,6 @@ object ImageProcessor {
         } catch (e: Exception) {
             e.printStackTrace()
             imagePaths.firstOrNull() ?: ""
-        }
-    }
-
-    suspend fun saveToGallery(context: Context, imageFile: File): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val bitmap = BitmapFactory.decodeFile(imageFile.absolutePath) ?: return@withContext false
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    val values = ContentValues().apply {
-                        put(MediaStore.Images.Media.DISPLAY_NAME, "MS_Scanner_${System.currentTimeMillis()}.jpg")
-                        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                        put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/MS Scanner")
-                        put(MediaStore.Images.Media.IS_PENDING, 1)
-                    }
-
-                    val uri = context.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                        ?: return@withContext false
-                    try {
-                        val wrote = context.contentResolver.openOutputStream(uri)?.use { out ->
-                            bitmap.compress(Bitmap.CompressFormat.JPEG, 98, out)
-                        } ?: false
-                        if (!wrote) throw java.io.IOException("Unable to open gallery output stream")
-
-                        values.clear()
-                        values.put(MediaStore.Images.Media.IS_PENDING, 0)
-                        context.contentResolver.update(uri, values, null, null)
-                        true
-                    } catch (e: Exception) {
-                        context.contentResolver.delete(uri, null, null)
-                        throw e
-                    }
-                } else {
-                    if (ContextCompat.checkSelfPermission(
-                            context,
-                            android.Manifest.permission.WRITE_EXTERNAL_STORAGE
-                        ) != PackageManager.PERMISSION_GRANTED
-                    ) {
-                        return@withContext false
-                    }
-
-                    val picturesDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
-                    val targetDir = File(picturesDir, "MS Scanner").apply { if (!exists()) mkdirs() }
-                    val targetFile = File(targetDir, "MS_Scanner_${System.currentTimeMillis()}.jpg")
-                    FileOutputStream(targetFile).use { out ->
-                        if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 98, out)) {
-                            throw java.io.IOException("Unable to encode gallery image")
-                        }
-                    }
-                    MediaScannerConnection.scanFile(
-                        context,
-                        arrayOf(targetFile.absolutePath),
-                        arrayOf("image/jpeg"),
-                        null
-                    )
-                    true
-                }
-            } finally {
-                bitmap.recycle()
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-            false
         }
     }
 

@@ -12,10 +12,6 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.media.ExifInterface
 import android.net.Uri
-import android.os.Build
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -89,6 +85,16 @@ enum class ScanCameraMode(val titleEn: String, val titleAr: String, val shortTit
     PASSPORT("Passport", "تصوير جواز", "جواز")
 }
 
+
+private fun quadDistance(a: DocumentQuad, b: DocumentQuad): Float {
+    val pointsA = listOf(a.topLeft, a.topRight, a.bottomRight, a.bottomLeft)
+    val pointsB = listOf(b.topLeft, b.topRight, b.bottomRight, b.bottomLeft)
+    return pointsA.indices.map { i ->
+        val dx = pointsA[i].x - pointsB[i].x
+        val dy = pointsA[i].y - pointsB[i].y
+        kotlin.math.sqrt(dx * dx + dy * dy)
+    }.average().toFloat()
+}
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraScanScreen(
@@ -178,6 +184,13 @@ fun CameraScanScreen(
     var scanMode by remember { mutableStateOf(initialMode) }
     var isAutoCaptureEnabled by remember { mutableStateOf(true) }
 
+    var detectedImageQuad by remember { mutableStateOf<DocumentQuad?>(null) }
+    var detectionConfidence by remember { mutableStateOf(0f) }
+    var detectionImageWidth by remember { mutableStateOf(1) }
+    var detectionImageHeight by remember { mutableStateOf(1) }
+    var isDocumentStable by remember { mutableStateOf(false) }
+    var stabilityCount by remember { mutableStateOf(0) }
+
     // Automatically activate auto-capture whenever in document scanning mode
     LaunchedEffect(scanMode) {
         if (scanMode == ScanCameraMode.DOCUMENT) {
@@ -190,12 +203,6 @@ fun CameraScanScreen(
         stabilityCount = 0
         isDocumentStable = false
     }
-    var detectedImageQuad by remember { mutableStateOf<DocumentQuad?>(null) }
-    var detectionConfidence by remember { mutableStateOf(0f) }
-    var detectionImageWidth by remember { mutableStateOf(1) }
-    var detectionImageHeight by remember { mutableStateOf(1) }
-    var isDocumentStable by remember { mutableStateOf(false) }
-    var stabilityCount by remember { mutableStateOf(0) }
     var autoCaptureProgress by remember { mutableStateOf(0f) }
     var countdownRemaining by remember { mutableStateOf<Int?>(null) }
     var isCountdownCancelled by remember { mutableStateOf(false) }
@@ -218,26 +225,8 @@ fun CameraScanScreen(
     // Capture Review State
     var reviewPage by remember { mutableStateOf<Pair<String, String>?>(null) }
 
-    val vibrator = remember {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vm = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-            vm?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-        }
-    }
-
-    fun triggerHapticFeedback() {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator?.vibrate(VibrationEffect.createOneShot(55, VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator?.vibrate(55)
-            }
-        } catch (e: Exception) {}
-    }
+    // Haptic feedback intentionally omitted; CAMERA is the only runtime permission used.
+    fun triggerHapticFeedback() = Unit
 
     // Accelerometer listener for level/horizon indicator
     DisposableEffect(Unit) {
@@ -536,27 +525,30 @@ fun CameraScanScreen(
                             previousLuma = samples
                         }
 
-                        val quadStable = detection != null && previousDetection != null &&
-                            quadDistance(detection.quad, previousDetection.quad) < 0.018f
+                        val previous = previousDetection
+                        val quadStable = detection != null && previous != null &&
+                            quadDistance(detection.quad, previous.quad) < 0.018f
                         val detectionStable = detection != null && detection.confidence >= 0.62f &&
-                            (previousDetection == null || quadStable) && motionStable
+                            (previous == null || quadStable) && motionStable
 
                         frameCount++
                         previousDetection = detection
 
                         if (now - lastUiUpdateAtNs >= 100_000_000L) {
                             lastUiUpdateAtNs = now
+                            val nextStabilityCount = if (detectionStable && frameCount > 5) {
+                                (stabilityCount + 1).coerceAtMost(20)
+                            } else {
+                                0
+                            }
+                            val stableNow = detectionStable && nextStabilityCount >= 10
                             ContextCompat.getMainExecutor(context).execute {
                                 detectedImageQuad = detection?.quad
                                 detectionConfidence = detection?.confidence ?: 0f
                                 detectionImageWidth = detection?.imageWidth ?: 1
                                 detectionImageHeight = detection?.imageHeight ?: 1
-                                stabilityCount = if (detectionStable && frameCount > 5) {
-                                    (stabilityCount + 1).coerceAtMost(20)
-                                } else {
-                                    0
-                                }
-                                isDocumentStable = detectionStable && stabilityCount >= 10
+                                stabilityCount = nextStabilityCount
+                                isDocumentStable = stableNow
                             }
                         }
                     } catch (_: Throwable) {
@@ -618,16 +610,6 @@ fun CameraScanScreen(
                 }
             }
         }, ContextCompat.getMainExecutor(context))
-    }
-
-    fun quadDistance(a: DocumentQuad, b: DocumentQuad): Float {
-        val pointsA = listOf(a.topLeft, a.topRight, a.bottomRight, a.bottomLeft)
-        val pointsB = listOf(b.topLeft, b.topRight, b.bottomRight, b.bottomLeft)
-        return pointsA.indices.map { i ->
-            val dx = pointsA[i].x - pointsB[i].x
-            val dy = pointsA[i].y - pointsB[i].y
-            kotlin.math.sqrt(dx * dx + dy * dy)
-        }.average().toFloat()
     }
 
     fun previewQuad(quad: DocumentQuad, imageWidth: Int, imageHeight: Int, viewWidth: Float, viewHeight: Float): DocumentQuad {

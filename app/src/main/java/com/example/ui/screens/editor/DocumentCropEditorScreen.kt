@@ -464,7 +464,6 @@ fun DocumentCropEditorScreen(
                 }
             }
         }
-    ) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -505,7 +504,7 @@ fun DocumentCropEditorScreen(
                                     var closestDist = Float.MAX_VALUE
 
                                     for (i in handles.indices) {
-                                        val dist = hypot(handles[i].x - touchX, handles[i].y - touchY)
+                                        val dist = hypot((handles[i].x - touchX).toDouble(), (handles[i].y - touchY).toDouble()).toFloat()
                                         if (dist < closestDist) {
                                             closestDist = dist
                                             closestIdx = i
@@ -674,4 +673,3 @@ fun DocumentCropEditorScreen(
             }
         }
     }
-}

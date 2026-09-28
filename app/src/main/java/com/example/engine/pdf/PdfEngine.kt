@@ -1,6 +1,5 @@
 package com.example.engine.pdf
 
-import android.content.ContentValues
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
@@ -10,9 +9,7 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.pdf.PdfDocument
 import android.net.Uri
-import android.os.Build
 import android.os.Environment
-import android.provider.MediaStore
 import androidx.core.content.FileProvider
 import com.example.data.model.CompressionPreset
 import com.example.data.model.PageSizePreset
@@ -22,6 +19,7 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -276,8 +274,8 @@ object PdfEngine {
     }
 
     /**
-     * Save PDF file to the public Downloads / MS_Scanner folder
-     * Returns Pair(Uri?, DisplayPath?)
+     * Save an exported PDF into app-managed external Documents storage.
+     * This path requires no storage permission on any supported Android version.
      */
     fun savePdfToStorage(
         context: Context,
@@ -290,53 +288,16 @@ object PdfEngine {
             "$displayName.pdf"
         }.replace("[^a-zA-Z0-9._\\-\\s]".toRegex(), "_").trim().ifBlank { "Exported_Document.pdf" }
 
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val contentValues = ContentValues().apply {
-                    put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
-                    put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
-                    put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/MS_Scanner")
-                    put(MediaStore.MediaColumns.IS_PENDING, 1)
-                }
-                val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
-                    ?: return Pair(null, null)
-
-                try {
-                    val wrote = context.contentResolver.openOutputStream(uri)?.use { out ->
-                        pdfFile.inputStream().use { input ->
-                            input.copyTo(out)
-                        }
-                        true
-                    } ?: false
-                    if (!wrote) throw IOException("Unable to open Downloads output stream")
-
-                    contentValues.clear()
-                    contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
-                    context.contentResolver.update(uri, contentValues, null, null)
-                    return Pair(uri, "Downloads/MS_Scanner/$safeName")
-                } catch (e: Exception) {
-                    context.contentResolver.delete(uri, null, null)
-                    throw e
-                }
-            } else {
-                val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-                val targetDir = File(downloadsDir, "MS_Scanner").apply { if (!exists()) mkdirs() }
-                val targetFile = File(targetDir, safeName)
-                pdfFile.copyTo(targetFile, overwrite = true)
-
-                // Scan media for visibility in downloads
-                android.media.MediaScannerConnection.scanFile(
-                    context,
-                    arrayOf(targetFile.absolutePath),
-                    arrayOf("application/pdf"),
-                    null
-                )
-                val uri = getFileProviderUri(context, targetFile)
-                return Pair(uri, targetFile.absolutePath)
-            }
+        return try {
+            val exportDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+                ?: File(context.filesDir, "exports")
+            exportDir.mkdirs()
+            val targetFile = File(exportDir, safeName)
+            pdfFile.copyTo(targetFile, overwrite = true)
+            Pair(getFileProviderUri(context, targetFile), targetFile.absolutePath)
         } catch (e: Exception) {
             e.printStackTrace()
-            return Pair(null, null)
+            Pair(null, null)
         }
     }
 

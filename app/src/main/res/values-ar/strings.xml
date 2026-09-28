@@ -276,7 +276,7 @@
     <string name="export_pdf_watermark">علامة مائية (اختياري)</string>
     <string name="export_pdf_watermark_hint">مثال: سري، مسودة...</string>
     <string name="export_pdf_action_share">مشاركة PDF</string>
-    <string name="export_pdf_action_save_downloads">حفظ في التنزيلات</string>
+    <string name="export_pdf_action_save_downloads">حفظ على الجهاز</string>
     <string name="export_pdf_action_save_as">حفظ باسم…</string>
     <string name="export_pdf_action_open">معاينة وفتح PDF</string>
     <string name="export_pdf_generating">جاري إنشاء ملف PDF، يرجى الانتظار…</string>
@@ -288,7 +288,7 @@
     <string name="pdf_preview_title">مراجعة ملف PDF</string>
     <string name="pdf_preview_page_indicator">صفحة %1$d من %2$d</string>
     <string name="pdf_preview_action_share">مشاركة PDF</string>
-    <string name="pdf_preview_action_save">حفظ في التنزيلات</string>
+    <string name="pdf_preview_action_save">حفظ على الجهاز</string>
     <string name="pdf_preview_action_print">طباعة</string>
     <string name="pdf_preview_action_open_external">فتح في تطبيق خارجي</string>
     <string name="pdf_preview_review_btn">مراجعة ومشاركة</string>

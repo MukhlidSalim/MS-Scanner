@@ -421,7 +421,7 @@ fun ExportPdfDialog(
                     HorizontalDivider(color = InkBorder)
                     Spacer(modifier = Modifier.height(14.dp))
 
-                    // Action Buttons: Share, Save to Downloads, Save As, Open
+                    // Action Buttons: Share, Save on Device, Save As, Open
                     val buildConfig = {
                         PdfExportConfig(
                             title = fileName.trim().ifBlank { defaultTitle },
@@ -459,7 +459,7 @@ fun ExportPdfDialog(
                             )
                         }
 
-                        // Row: Direct Share & Save to Downloads
+                        // Row: Direct Share & Save on Device
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(10.dp)

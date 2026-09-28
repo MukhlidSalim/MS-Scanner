@@ -1,16 +1,10 @@
 package com.example.ui.screens.viewer
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import java.io.File
-import android.os.Build
-import android.os.VibrationEffect
-import android.os.Vibrator
-import android.os.VibratorManager
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -54,7 +48,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import com.example.R
@@ -117,25 +110,7 @@ fun DocumentViewerScreen(
         }
     }
 
-    val vibrator = remember {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            val vibratorManager = context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager
-            vibratorManager?.defaultVibrator
-        } else {
-            @Suppress("DEPRECATION")
-            context.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
-        }
-    }
-    val performHaptic = {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                vibrator?.vibrate(VibrationEffect.createOneShot(45, VibrationEffect.DEFAULT_AMPLITUDE))
-            } else {
-                @Suppress("DEPRECATION")
-                vibrator?.vibrate(45)
-            }
-        } catch (_: Exception) {}
-    }
+    // Haptic feedback intentionally omitted to avoid permission/dependency complexity.
 
     var isGridView by remember { mutableStateOf(true) } // Images inside documents are always grid by default
     var showPdfExportDialog by remember { mutableStateOf(false) }
@@ -281,20 +256,6 @@ fun DocumentViewerScreen(
                 actions = {
                     if (selectionMode) {
                     
-    val saveGalleryPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            viewModel.saveDocumentToGallery(context, docId)
-        } else {
-            Toast.makeText(
-                context,
-                "Storage permission is required to save images to the gallery on this Android version",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-    }
-
     // Toggle Select All / Deselect All
                         IconButton(onClick = {
                             selectedPageIds = if (selectedPageIds.size == pages.size) {
@@ -475,22 +436,6 @@ fun DocumentViewerScreen(
                                     replacePhotoPickerLauncher.launch(
                                         PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
                                     )
-                                }
-                            )
-
-                            // Save to Gallery
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_save_to_gallery)) },
-                                leadingIcon = { Icon(Icons.Default.Save, null, tint = MaterialTheme.colorScheme.primary) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
-                                        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
-                                    ) {
-                                        saveGalleryPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                                    } else {
-                                        viewModel.saveDocumentToGallery(context, docId)
-                                    }
                                 }
                             )
 
@@ -788,8 +733,7 @@ fun DocumentViewerScreen(
                                             },
                                             onLongPress = {
                                                 // Long press selects the image and activates merge, share, and other options!
-                                                performHaptic()
-                                                selectionMode = true
+                                                        selectionMode = true
                                                 selectedPageIds = if (isPageSelected) selectedPageIds - page.id else selectedPageIds + page.id
                                                 if (selectedPageIds.isEmpty()) {
                                                     selectionMode = false
@@ -865,7 +809,6 @@ fun DocumentViewerScreen(
                             .pointerInput(pageItem.id) {
                                 detectTapGestures(
                                     onLongPress = {
-                                        performHaptic()
                                         selectionMode = true
                                         selectedPageIds = setOf(pageItem.id)
                                         isGridView = true
