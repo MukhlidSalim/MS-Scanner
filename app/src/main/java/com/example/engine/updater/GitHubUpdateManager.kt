@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
+import androidx.core.content.pm.PackageInfoCompat
 import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -48,9 +49,9 @@ class GitHubUpdateManager(private val context: Context) {
                 .header("User-Agent", "MS-Scanner-App/${BuildConfig.VERSION_NAME}")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (response.isSuccessful) {
-                val bodyString = response.body?.string().orEmpty()
+            httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val bodyString = response.body?.string().orEmpty()
                 if (bodyString.isNotBlank()) {
                     val json = JSONObject(bodyString)
                     val tagName = json.optString("tag_name", "").trim()
@@ -94,6 +95,7 @@ class GitHubUpdateManager(private val context: Context) {
                     )
                 }
             }
+        }
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -110,9 +112,9 @@ class GitHubUpdateManager(private val context: Context) {
                 .header("User-Agent", "MS-Scanner-App/${BuildConfig.VERSION_NAME}")
                 .build()
 
-            val response = httpClient.newCall(request).execute()
-            if (response.isSuccessful) {
-                val bodyString = response.body?.string().orEmpty()
+            httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val bodyString = response.body?.string().orEmpty()
                 if (bodyString.isNotBlank()) {
                     val json = JSONObject(bodyString)
                     val versionName = json.optString("versionName", "").trim()
@@ -137,6 +139,7 @@ class GitHubUpdateManager(private val context: Context) {
                     )
                 }
             }
+        }
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -166,8 +169,8 @@ class GitHubUpdateManager(private val context: Context) {
 
         if (apkFile.exists()) {
             val archiveInfo = context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
-            if (archiveInfo != null) {
-                // Already downloaded and verified!
+            if (archiveInfo != null && archiveInfo.packageName == context.packageName && PackageInfoCompat.getLongVersionCode(archiveInfo) > BuildConfig.VERSION_CODE) {
+                // Already downloaded and verified for this app and a newer version.
                 onProgress(apkFile.length(), apkFile.length(), 1f)
                 return@withContext apkFile
             } else {
@@ -180,35 +183,36 @@ class GitHubUpdateManager(private val context: Context) {
             .header("User-Agent", "Mozilla/5.0 (Android; Mobile; MS-Scanner)")
             .build()
 
-        val response = httpClient.newCall(request).execute()
-        if (!response.isSuccessful) {
-            throw IOException("Download failed with HTTP code ${response.code}")
-        }
+        httpClient.newCall(request).execute().use { response ->
+            if (!response.isSuccessful) {
+                throw IOException("Download failed with HTTP code ${response.code}")
+            }
 
-        val body = response.body ?: throw IOException("Empty response body")
-        val totalBytes = body.contentLength()
+            val body = response.body ?: throw IOException("Empty response body")
+            val totalBytes = body.contentLength()
 
-        var downloadedBytes = 0L
-        val buffer = ByteArray(8 * 1024)
+            var downloadedBytes = 0L
+            val buffer = ByteArray(8 * 1024)
 
-        body.byteStream().use { input ->
-            FileOutputStream(apkFile).use { output ->
-                var read: Int
-                while (input.read(buffer).also { read = it } != -1) {
-                    output.write(buffer, 0, read)
-                    downloadedBytes += read
-                    val progress = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
-                    onProgress(downloadedBytes, totalBytes, progress)
+            body.byteStream().use { input ->
+                FileOutputStream(apkFile).use { output ->
+                    var read: Int
+                    while (input.read(buffer).also { read = it } != -1) {
+                        output.write(buffer, 0, read)
+                        downloadedBytes += read
+                        val progress = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
+                        onProgress(downloadedBytes, totalBytes, progress)
+                    }
+                    output.flush()
                 }
-                output.flush()
             }
         }
 
         // Verify package integrity using Android PackageManager
         val archiveInfo = context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
-        if (archiveInfo == null) {
+        if (archiveInfo == null || archiveInfo.packageName != context.packageName || PackageInfoCompat.getLongVersionCode(archiveInfo) <= BuildConfig.VERSION_CODE) {
             apkFile.delete()
-            throw IllegalStateException("Downloaded APK package is corrupt or incomplete")
+            throw IllegalStateException("Downloaded APK is invalid, belongs to another package, or is not newer than the installed version")
         }
 
         apkFile

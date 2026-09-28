@@ -9,13 +9,7 @@
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    
-    <!-- Gallery/Media Permissions -->
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission 
-        android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
 
     <application
         android:name=".ScannerApplication"
@@ -69,7 +63,7 @@
         </provider>
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="text" />
+            android:value="ocr" />
     </application>
 
 </manifest>

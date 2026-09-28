@@ -62,6 +62,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import android.view.Surface
 import androidx.core.content.FileProvider
 import com.example.R
 import com.example.data.model.FilterType
@@ -182,8 +183,17 @@ fun CameraScanScreen(
         if (scanMode == ScanCameraMode.DOCUMENT) {
             isAutoCaptureEnabled = true
         }
+        detectedImageQuad = null
+        detectionConfidence = 0f
+        detectionImageWidth = 1
+        detectionImageHeight = 1
+        stabilityCount = 0
+        isDocumentStable = false
     }
-    var detectedQuad by remember { mutableStateOf<DocumentQuad?>(null) }
+    var detectedImageQuad by remember { mutableStateOf<DocumentQuad?>(null) }
+    var detectionConfidence by remember { mutableStateOf(0f) }
+    var detectionImageWidth by remember { mutableStateOf(1) }
+    var detectionImageHeight by remember { mutableStateOf(1) }
     var isDocumentStable by remember { mutableStateOf(false) }
     var stabilityCount by remember { mutableStateOf(0) }
     var autoCaptureProgress by remember { mutableStateOf(0f) }
@@ -250,13 +260,6 @@ fun CameraScanScreen(
         onDispose {
             sensorManager?.unregisterListener(listener)
         }
-    }
-
-    // Gallery/Media Permission Logic
-    val galleryPermission = if (Build.VERSION.SDK_INT >= 33) {
-        Manifest.permission.READ_MEDIA_IMAGES
-    } else {
-        Manifest.permission.READ_EXTERNAL_STORAGE
     }
 
     // Multi-Image Gallery Picker as instant fallback & batch import option
@@ -420,6 +423,7 @@ fun CameraScanScreen(
                 } catch (e: Exception) {
                     e.printStackTrace()
                 } finally {
+                    file.delete()
                     isCapturing = false
                 }
             }
@@ -444,8 +448,8 @@ fun CameraScanScreen(
         }
     }
 
-    // Reactive CameraX binding with robust fallback
-    // Explicitly rebind on resumedCount changes to ensure fresh preview state after returning to the screen
+    // Reactive CameraX binding with robust fallback. Detection is performed on
+    // the actual ImageProxy Y plane; no hard-coded document rectangle is used.
     LaunchedEffect(hasCameraPermission, cameraSelector, previewViewRef, resumedCount) {
         val pView = previewViewRef
         if (!hasCameraPermission || pView == null) return@LaunchedEffect
@@ -457,123 +461,112 @@ fun CameraScanScreen(
                 cameraProvider = provider
                 provider.unbindAll()
 
-                val preview = Preview.Builder().build().also {
-                    it.setSurfaceProvider(pView.surfaceProvider)
-                }
+                val targetRotation = pView.display?.rotation ?: Surface.ROTATION_0
+                val preview = Preview.Builder()
+                    .setTargetRotation(targetRotation)
+                    .build()
+                    .also { it.setSurfaceProvider(pView.surfaceProvider) }
 
                 val imageCap = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+                    .setTargetRotation(targetRotation)
                     .setFlashMode(flashMode)
                     .build()
                 imageCapture = imageCap
 
-                // Image Analysis for Edge Detection & Quad Tracking
                 val imageAnalysis = ImageAnalysis.Builder()
+                    .setTargetRotation(targetRotation)
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
                     .build()
 
-                var prevQuad: DocumentQuad? = null
-                var prevSamples: FloatArray? = null
-                var frameIndex = 0
+                var previousDetection: ImageProcessor.DocumentDetection? = null
+                var previousLuma: FloatArray? = null
+                var frameCount = 0
+                var lastAnalysisAtNs = 0L
+                var lastUiUpdateAtNs = 0L
 
                 imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
                     try {
-                        val currentMode = scanMode
-                        val rawQuad = when (currentMode) {
-                            ScanCameraMode.ID_CARD -> {
-                                DocumentQuad(
-                                    topLeft = android.graphics.PointF(0.10f, 0.30f),
-                                    topRight = android.graphics.PointF(0.90f, 0.30f),
-                                    bottomRight = android.graphics.PointF(0.90f, 0.70f),
-                                    bottomLeft = android.graphics.PointF(0.10f, 0.70f)
-                                )
-                            }
-                            ScanCameraMode.PASSPORT -> {
-                                DocumentQuad(
-                                    topLeft = android.graphics.PointF(0.08f, 0.20f),
-                                    topRight = android.graphics.PointF(0.92f, 0.20f),
-                                    bottomRight = android.graphics.PointF(0.92f, 0.80f),
-                                    bottomLeft = android.graphics.PointF(0.08f, 0.80f)
-                                )
-                            }
-                            else -> {
-                                DocumentQuad(
-                                    topLeft = android.graphics.PointF(0.08f, 0.12f),
-                                    topRight = android.graphics.PointF(0.92f, 0.12f),
-                                    bottomRight = android.graphics.PointF(0.92f, 0.88f),
-                                    bottomLeft = android.graphics.PointF(0.08f, 0.88f)
-                                )
-                            }
+                        val now = System.nanoTime()
+                        if (now - lastAnalysisAtNs < 120_000_000L) {
+                            return@setAnalyzer
                         }
+                        lastAnalysisAtNs = now
 
-                        val smoothed = ImageProcessor.smoothQuad(rawQuad, prevQuad, alpha = 0.4f)
-                        prevQuad = smoothed
+                        val currentMode = scanMode
+                        val expectedAspect = when (currentMode) {
+                            ScanCameraMode.ID_CARD -> 1.586f
+                            ScanCameraMode.PASSPORT -> 1.42f
+                            else -> null
+                        }
+                        val detection = ImageProcessor.detectDocumentFromImageProxy(imageProxy, expectedAspect)
 
-                        // Sample luminance to calculate phone stability and camera motion
+                        var motionStable = false
                         val yPlane = imageProxy.planes.firstOrNull()
-                        var isSteady = false
                         if (yPlane != null) {
                             val buffer = yPlane.buffer
                             val rowStride = yPlane.rowStride
+                            val pixelStride = yPlane.pixelStride.coerceAtLeast(1)
                             val w = imageProxy.width
                             val h = imageProxy.height
                             val grid = 6
                             val samples = FloatArray(grid * grid)
                             var diffSum = 0f
-                            var validSamples = 0
-                            val bufCap = buffer.capacity()
-
+                            var valid = 0
                             for (gy in 0 until grid) {
                                 val py = (h * (gy + 1)) / (grid + 1)
-                                val rowStart = py * rowStride
                                 for (gx in 0 until grid) {
                                     val px = (w * (gx + 1)) / (grid + 1)
-                                    val pos = rowStart + px
-                                    if (pos < bufCap) {
-                                        val luma = (buffer.get(pos).toInt() and 0xFF).toFloat()
-                                        val idx = gy * grid + gx
-                                        samples[idx] = luma
-                                        val prev = prevSamples
-                                        if (prev != null) {
-                                            diffSum += abs(luma - prev[idx])
-                                            validSamples++
+                                    val pos = py * rowStride + px * pixelStride
+                                    if (pos in 0 until buffer.capacity()) {
+                                        val v = (buffer.get(pos).toInt() and 0xFF).toFloat()
+                                        val index = gy * grid + gx
+                                        samples[index] = v
+                                        previousLuma?.let { prev ->
+                                            diffSum += abs(v - prev[index])
+                                            valid++
                                         }
                                     }
                                 }
                             }
-                            if (prevSamples != null && validSamples > 0) {
-                                val avgDiff = diffSum / validSamples
-                                // If camera motion is small, phone is held steady on document
-                                isSteady = avgDiff < 8.0f
+                            if (previousLuma != null && valid > 0) {
+                                motionStable = diffSum / valid.toFloat() < 7.5f
                             }
-                            prevSamples = samples
-                        } else {
-                            isSteady = true
+                            previousLuma = samples
                         }
 
-                        frameIndex++
-                        coroutineScope.launch(Dispatchers.Main) {
-                            detectedQuad = smoothed
-                            if (isSteady && frameIndex > 8) {
-                                stabilityCount = (stabilityCount + 1).coerceAtMost(25)
-                                if (stabilityCount >= 20) {
-                                    isDocumentStable = true
+                        val quadStable = detection != null && previousDetection != null &&
+                            quadDistance(detection.quad, previousDetection.quad) < 0.018f
+                        val detectionStable = detection != null && detection.confidence >= 0.62f &&
+                            (previousDetection == null || quadStable) && motionStable
+
+                        frameCount++
+                        previousDetection = detection
+
+                        if (now - lastUiUpdateAtNs >= 100_000_000L) {
+                            lastUiUpdateAtNs = now
+                            ContextCompat.getMainExecutor(context).execute {
+                                detectedImageQuad = detection?.quad
+                                detectionConfidence = detection?.confidence ?: 0f
+                                detectionImageWidth = detection?.imageWidth ?: 1
+                                detectionImageHeight = detection?.imageHeight ?: 1
+                                stabilityCount = if (detectionStable && frameCount > 5) {
+                                    (stabilityCount + 1).coerceAtMost(20)
+                                } else {
+                                    0
                                 }
-                            } else {
-                                stabilityCount = 0
-                                isDocumentStable = false
+                                isDocumentStable = detectionStable && stabilityCount >= 10
                             }
                         }
-                    } catch (e: Exception) {
-                        e.printStackTrace()
+                    } catch (_: Throwable) {
+                        // Camera analysis must never kill the analyzer thread.
                     } finally {
                         imageProxy.close()
                     }
                 }
 
                 var camera: Camera? = null
-                // Attempt 1: Full combination (Preview + Capture + Analysis)
                 try {
                     camera = provider.bindToLifecycle(
                         lifecycleOwner,
@@ -582,9 +575,7 @@ fun CameraScanScreen(
                         imageCap,
                         imageAnalysis
                     )
-                } catch (e1: Exception) {
-                    e1.printStackTrace()
-                    // Attempt 2: Fallback without Analysis (Preview + Capture)
+                } catch (_: Throwable) {
                     try {
                         camera = provider.bindToLifecycle(
                             lifecycleOwner,
@@ -592,9 +583,7 @@ fun CameraScanScreen(
                             preview,
                             imageCap
                         )
-                    } catch (e2: Exception) {
-                        e2.printStackTrace()
-                        // Attempt 3: If back camera failed, try front or any available
+                    } catch (_: Throwable) {
                         if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
                             try {
                                 camera = provider.bindToLifecycle(
@@ -604,8 +593,8 @@ fun CameraScanScreen(
                                     imageCap
                                 )
                                 cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
-                            } catch (e3: Exception) {
-                                e3.printStackTrace()
+                            } catch (_: Throwable) {
+                                camera = null
                             }
                         }
                     }
@@ -614,17 +603,49 @@ fun CameraScanScreen(
                 if (camera != null) {
                     cameraControl = camera.cameraControl
                     cameraInfo = camera.cameraInfo
-
                     camera.cameraInfo.zoomState.observe(lifecycleOwner) { state ->
                         zoomRatio = state.zoomRatio
                         minZoomRatio = state.minZoomRatio
                         maxZoomRatio = state.maxZoomRatio
                     }
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
+            } catch (_: Throwable) {
+                ContextCompat.getMainExecutor(context).execute {
+                    detectedImageQuad = null
+                    detectionConfidence = 0f
+                    isDocumentStable = false
+                    stabilityCount = 0
+                }
             }
         }, ContextCompat.getMainExecutor(context))
+    }
+
+    fun quadDistance(a: DocumentQuad, b: DocumentQuad): Float {
+        val pointsA = listOf(a.topLeft, a.topRight, a.bottomRight, a.bottomLeft)
+        val pointsB = listOf(b.topLeft, b.topRight, b.bottomRight, b.bottomLeft)
+        return pointsA.indices.map { i ->
+            val dx = pointsA[i].x - pointsB[i].x
+            val dy = pointsA[i].y - pointsB[i].y
+            kotlin.math.sqrt(dx * dx + dy * dy)
+        }.average().toFloat()
+    }
+
+    fun previewQuad(quad: DocumentQuad, imageWidth: Int, imageHeight: Int, viewWidth: Float, viewHeight: Float): DocumentQuad {
+        val scale = max(viewWidth / imageWidth.coerceAtLeast(1), viewHeight / imageHeight.coerceAtLeast(1))
+        val renderedW = imageWidth * scale
+        val renderedH = imageHeight * scale
+        val offsetX = (viewWidth - renderedW) / 2f
+        val offsetY = (viewHeight - renderedH) / 2f
+
+        fun map(p: android.graphics.PointF): android.graphics.PointF {
+            val px = p.x * imageWidth * scale + offsetX
+            val py = p.y * imageHeight * scale + offsetY
+            return android.graphics.PointF(
+                (px / viewWidth.coerceAtLeast(1f)).coerceIn(-0.5f, 1.5f),
+                (py / viewHeight.coerceAtLeast(1f)).coerceIn(-0.5f, 1.5f)
+            )
+        }
+        return DocumentQuad(map(quad.topLeft), map(quad.topRight), map(quad.bottomRight), map(quad.bottomLeft))
     }
 
     fun capturePhoto() {
@@ -679,15 +700,25 @@ fun CameraScanScreen(
 
                                 val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "raw_")
 
-                                // Perspective crop & filter safely
+                                // Re-detect on the captured oriented bitmap so the crop
+                                // is computed in the exact coordinate space being saved.
                                 val procBmp = try {
-                                    val quad = detectedQuad ?: ImageProcessor.detectDocumentQuad(bmp)
-                                    val warped = ImageProcessor.warpPerspective(bmp, quad)
-                                    val filtered = ImageProcessor.applyFilter(warped, FilterType.AUTO)
-                                    if (warped != bmp && warped != filtered) warped.recycle()
-                                    filtered
-                                } catch (e: Exception) {
-                                    e.printStackTrace()
+                                    val expectedAspect = when (scanMode) {
+                                        ScanCameraMode.ID_CARD -> 1.586f
+                                        ScanCameraMode.PASSPORT -> 1.42f
+                                        else -> null
+                                    }
+                                    val detection = ImageProcessor.detectDocument(bmp, expectedAspect)
+                                    if (detection != null && detection.confidence >= 0.58f && ImageProcessor.isQuadValid(detection.quad)) {
+                                        val warped = ImageProcessor.applyPerspectiveWarp(bmp, detection.quad)
+                                        val filtered = ImageProcessor.applyFilter(warped, FilterType.AUTO)
+                                        if (warped != bmp && warped != filtered) warped.recycle()
+                                        filtered
+                                    } else {
+                                        // Safe fallback: preserve the full captured frame and only enhance it.
+                                        ImageProcessor.applyFilter(bmp, FilterType.AUTO)
+                                    }
+                                } catch (_: Throwable) {
                                     ImageProcessor.applyFilter(bmp, FilterType.AUTO)
                                 }
 
@@ -695,6 +726,7 @@ fun CameraScanScreen(
 
                                 if (procBmp != bmp) procBmp.recycle()
                                 bmp.recycle()
+                                photoFile.delete()
 
                                 triggerHapticFeedback()
 
@@ -749,9 +781,11 @@ fun CameraScanScreen(
                                 }
                             } else {
                                 isCapturing = false
+                                photoFile.delete()
                                 Toast.makeText(context, if (isArabic) "تعذر معالجة الصورة، جرب مجدداً" else "Could not decode captured photo", Toast.LENGTH_SHORT).show()
                             }
                         } catch (e: Exception) {
+                            photoFile.delete()
                             e.printStackTrace()
                             isCapturing = false
                             Toast.makeText(context, if (isArabic) "حدث خطأ أثناء حفظ الصورة" else "Error processing photo", Toast.LENGTH_SHORT).show()
@@ -761,6 +795,7 @@ fun CameraScanScreen(
 
                 override fun onError(exception: ImageCaptureException) {
                     exception.printStackTrace()
+                    photoFile.delete()
                     showFlashEffect = false
                     isCapturing = false
                     Toast.makeText(
@@ -922,8 +957,9 @@ fun CameraScanScreen(
                         style = Stroke(width = 1.5.dp.toPx())
                     )
                 } else {
-                    val q = detectedQuad
-                    if (q != null) {
+                    val imageQ = detectedImageQuad
+                    if (imageQ != null) {
+                        val q = previewQuad(imageQ, detectionImageWidth, detectionImageHeight, size.width, size.height)
                         val p = Path().apply {
                             moveTo(q.topLeft.x * size.width, q.topLeft.y * size.height)
                             lineTo(q.topRight.x * size.width, q.topRight.y * size.height)

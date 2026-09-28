@@ -99,6 +99,7 @@ object PdfEngine {
             CompressionPreset.MAXIMUM -> 3200 // Lossless original scan detail
         }
 
+        var renderedPageCount = 0
         try {
             for (i in pagePathsAndOcr.indices) {
                 val (path, ocrText) = pagePathsAndOcr[i]
@@ -199,6 +200,7 @@ object PdfEngine {
                 }
 
                 pdfDocument.finishPage(page)
+                renderedPageCount++
 
                 // Immediately recycle to prevent OutOfMemory on multi-page batches
                 if (originalBitmap != renderBitmap) {
@@ -207,9 +209,16 @@ object PdfEngine {
                 originalBitmap.recycle()
             }
 
+            if (renderedPageCount == 0) {
+                throw IllegalArgumentException("No readable page images were available for PDF export")
+            }
+
             FileOutputStream(outputFile).use { out ->
                 pdfDocument.writeTo(out)
             }
+        } catch (e: Exception) {
+            outputFile.delete()
+            throw e
         } finally {
             pdfDocument.close()
         }
@@ -287,16 +296,28 @@ object PdfEngine {
                     put(MediaStore.MediaColumns.DISPLAY_NAME, safeName)
                     put(MediaStore.MediaColumns.MIME_TYPE, "application/pdf")
                     put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/MS_Scanner")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
                 }
                 val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, contentValues)
                     ?: return Pair(null, null)
 
-                context.contentResolver.openOutputStream(uri)?.use { out ->
-                    pdfFile.inputStream().use { input ->
-                        input.copyTo(out)
-                    }
+                try {
+                    val wrote = context.contentResolver.openOutputStream(uri)?.use { out ->
+                        pdfFile.inputStream().use { input ->
+                            input.copyTo(out)
+                        }
+                        true
+                    } ?: false
+                    if (!wrote) throw IOException("Unable to open Downloads output stream")
+
+                    contentValues.clear()
+                    contentValues.put(MediaStore.MediaColumns.IS_PENDING, 0)
+                    context.contentResolver.update(uri, contentValues, null, null)
+                    return Pair(uri, "Downloads/MS_Scanner/$safeName")
+                } catch (e: Exception) {
+                    context.contentResolver.delete(uri, null, null)
+                    throw e
                 }
-                return Pair(uri, "Downloads/MS_Scanner/$safeName")
             } else {
                 val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
                 val targetDir = File(downloadsDir, "MS_Scanner").apply { if (!exists()) mkdirs() }
@@ -324,12 +345,13 @@ object PdfEngine {
      */
     fun copyPdfToUri(context: Context, pdfFile: File, targetUri: Uri): Boolean {
         return try {
-            context.contentResolver.openOutputStream(targetUri)?.use { out ->
+            val wrote = context.contentResolver.openOutputStream(targetUri)?.use { out ->
                 pdfFile.inputStream().use { input ->
                     input.copyTo(out)
                 }
-            }
-            true
+                true
+            } ?: false
+            wrote
         } catch (e: Exception) {
             e.printStackTrace()
             false

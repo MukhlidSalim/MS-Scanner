@@ -22,10 +22,6 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
 
-  buildFeatures {
-    buildConfig = true
-  }
-
   signingConfigs {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
@@ -130,8 +126,6 @@ dependencies {
   implementation(libs.play.services.mlkit.document.scanner)
   implementation(libs.gms.module.install)
   implementation(libs.play.services.mlkit.text.recognition)
-  // ✅ دعم OCR العربي — أضف هذا في libs.versions.toml أيضاً
-  implementation("com.google.android.gms:play-services-mlkit-text-recognition-arabic:16.0.0-beta1")
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

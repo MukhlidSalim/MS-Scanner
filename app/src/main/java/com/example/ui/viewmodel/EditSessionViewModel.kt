@@ -488,7 +488,7 @@ class EditSessionViewModel(
             try {
                 val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath)
                 if (bmp != null) {
-                    val result = if (useDeepAi && com.example.BuildConfig.GEMINI_API_KEY.isNotEmpty()) {
+                    val result = if (useDeepAi) {
                         DocumentAiEngine.analyzeWithGemini(bmp)
                     } else {
                         DocumentAiEngine.performOfflineOcr(bmp, _uiState.value.ocrLanguage)

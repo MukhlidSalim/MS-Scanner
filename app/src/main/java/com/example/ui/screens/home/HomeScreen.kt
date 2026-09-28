@@ -1,10 +1,7 @@
 package com.example.ui.screens.home
 
-import android.Manifest
 import android.app.Activity
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -46,7 +43,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.DocumentEntity
@@ -184,13 +180,7 @@ fun HomeScreen(
         }
     }
 
-    // Gallery/Media Permission Logic
-    val galleryPermission = if (Build.VERSION.SDK_INT >= 33) {
-        Manifest.permission.READ_MEDIA_IMAGES
-    } else {
-        Manifest.permission.READ_EXTERNAL_STORAGE
-    }
-
+    // Android Photo Picker handles the permission boundary itself and falls back to ACTION_OPEN_DOCUMENT on older devices.
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
     ) { uris: List<Uri> ->
@@ -200,27 +190,10 @@ fun HomeScreen(
         }
     }
 
-    val galleryPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { isGranted ->
-        if (isGranted) {
-            photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-        } else {
-            Toast.makeText(
-                context,
-                if (isArabic) "إذن الاستوديو مطلوب لاستيراد الصور" else "Gallery permission required to import photos",
-                Toast.LENGTH_SHORT
-            ).show()
-        }
-    }
-
     val launchGalleryImport = {
-        val permissionCheck = ContextCompat.checkSelfPermission(context, galleryPermission)
-        if (permissionCheck == PackageManager.PERMISSION_GRANTED) {
-            photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-        } else {
-            galleryPermissionLauncher.launch(galleryPermission)
-        }
+        photoPickerLauncher.launch(
+            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+        )
     }
 
     val takePictureLauncher = rememberLauncherForActivityResult(

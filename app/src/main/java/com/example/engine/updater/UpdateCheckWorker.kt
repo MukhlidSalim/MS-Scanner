@@ -24,7 +24,7 @@ class UpdateCheckWorker(
             Result.success()
         } catch (e: Exception) {
             e.printStackTrace()
-            Result.retry()
+            if (runAttemptCount < 3) Result.retry() else Result.failure()
         }
     }
 }

@@ -1,6 +1,8 @@
 package com.example.ui.screens.viewer
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -52,6 +54,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import com.example.R
@@ -277,7 +280,22 @@ fun DocumentViewerScreen(
                 },
                 actions = {
                     if (selectionMode) {
-                        // Toggle Select All / Deselect All
+                    
+    val saveGalleryPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            viewModel.saveDocumentToGallery(context, docId)
+        } else {
+            Toast.makeText(
+                context,
+                "Storage permission is required to save images to the gallery on this Android version",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
+    // Toggle Select All / Deselect All
                         IconButton(onClick = {
                             selectedPageIds = if (selectedPageIds.size == pages.size) {
                                 emptySet()
@@ -466,7 +484,13 @@ fun DocumentViewerScreen(
                                 leadingIcon = { Icon(Icons.Default.Save, null, tint = MaterialTheme.colorScheme.primary) },
                                 onClick = {
                                     showOverflowMenu = false
-                                    viewModel.saveDocumentToGallery(context, docId)
+                                    if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P &&
+                                        ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED
+                                    ) {
+                                        saveGalleryPermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                                    } else {
+                                        viewModel.saveDocumentToGallery(context, docId)
+                                    }
                                 }
                             )
 

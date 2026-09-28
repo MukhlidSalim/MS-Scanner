@@ -3,6 +3,9 @@ package com.example
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.PointF
+import android.graphics.Canvas
+import android.graphics.Color
+import kotlinx.coroutines.runBlocking
 import androidx.test.core.app.ApplicationProvider
 import com.example.data.model.CompressionPreset
 import com.example.data.model.DocumentCategory
@@ -109,4 +112,70 @@ class ExampleRobolectricTest {
         assertFalse(doc.isTrash)
         assertFalse(doc.isFavorite)
     }
+    @Test
+    fun testDocumentDetectionFindsSyntheticBorder() = runBlocking {
+        val bitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(Color.rgb(55, 55, 55))
+        val paint = android.graphics.Paint().apply { color = Color.WHITE; style = android.graphics.Paint.Style.FILL }
+        canvas.drawRect(80f, 60f, 560f, 420f, paint)
+        val ink = android.graphics.Paint().apply { color = Color.rgb(25, 25, 25); strokeWidth = 5f }
+        for (y in 120..360 step 35) {
+            canvas.drawLine(120f, y.toFloat(), 520f, y.toFloat(), ink)
+        }
+
+        val detection = ImageProcessor.detectDocument(bitmap)
+        assertNotNull(detection)
+        assertTrue(detection!!.confidence >= 0.58f)
+        assertTrue(detection.quad.topLeft.x < 0.30f)
+        assertTrue(detection.quad.topLeft.y < 0.25f)
+        assertTrue(detection.quad.bottomRight.x > 0.70f)
+        assertTrue(detection.quad.bottomRight.y > 0.75f)
+        bitmap.recycle()
+    }
+
+
+    @Test
+    fun testDocumentDetectionFindsPerspectiveQuadAndRejectsBlankFrame() = runBlocking {
+        val bitmap = Bitmap.createBitmap(640, 480, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        canvas.drawColor(Color.rgb(50, 50, 50))
+        val documentPath = android.graphics.Path().apply {
+            moveTo(120f, 70f)
+            lineTo(520f, 48f)
+            lineTo(570f, 410f)
+            lineTo(70f, 380f)
+            close()
+        }
+        val documentPaint = android.graphics.Paint().apply {
+            color = Color.WHITE
+            style = android.graphics.Paint.Style.FILL
+        }
+        canvas.drawPath(documentPath, documentPaint)
+
+        val detection = ImageProcessor.detectDocument(bitmap)
+        assertNotNull(detection)
+        assertTrue(detection!!.confidence >= 0.58f)
+        assertTrue(detection.quad.topLeft.x < 0.30f)
+        assertTrue(detection.quad.topRight.x > 0.70f)
+        assertTrue(detection.quad.bottomRight.y > 0.70f)
+        bitmap.recycle()
+
+        val blank = Bitmap.createBitmap(480, 640, Bitmap.Config.ARGB_8888)
+        Canvas(blank).drawColor(Color.rgb(128, 128, 128))
+        assertNull(ImageProcessor.detectDocument(blank))
+        blank.recycle()
+    }
+
+    @Test
+    fun testInvalidCrossingQuadIsRejected() {
+        val crossing = DocumentQuad(
+            topLeft = PointF(0.1f, 0.1f),
+            topRight = PointF(0.9f, 0.9f),
+            bottomRight = PointF(0.1f, 0.9f),
+            bottomLeft = PointF(0.9f, 0.1f)
+        )
+        assertFalse(ImageProcessor.isQuadValid(crossing))
+    }
+
 }

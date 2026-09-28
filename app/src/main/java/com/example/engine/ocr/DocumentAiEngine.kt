@@ -51,7 +51,7 @@ object DocumentAiEngine {
         .build()
 
     /**
-     * Offline OCR text extractor using ML Kit Text Recognition with Arabic support
+     * Offline OCR text extractor using ML Kit Text Recognition (Latin script)
      */
     suspend fun performOfflineOcr(
         bitmap: Bitmap,
@@ -106,6 +106,7 @@ object DocumentAiEngine {
                         else -> "Document - $dateStr"
                     }
 
+                    recognizer.close()
                     continuation.resume(
                         DocumentAnalysisResult(
                             fullText = fullText,
@@ -118,6 +119,7 @@ object DocumentAiEngine {
                     )
                 }
                 .addOnFailureListener { e ->
+                    recognizer.close()
                     continuation.resumeWithException(e)
                 }
             
@@ -147,13 +149,13 @@ object DocumentAiEngine {
     }
 
     /**
-     * Deep AI Document Intelligence using Gemini 2.5 Flash for complete Arabic + English OCR,
+     * Deep AI Document Intelligence using the configured Gemini multimodal model for Arabic + English OCR,
      * table extraction, metadata, and category classification.
      */
     suspend fun analyzeWithGemini(bitmap: Bitmap, language: OcrLanguage = OcrLanguage.AUTO): DocumentAnalysisResult = withContext(Dispatchers.IO) {
         val apiKey = BuildConfig.GEMINI_API_KEY
         if (apiKey.isBlank() || apiKey == "MY_GEMINI_API_KEY") {
-            return@withContext performOfflineOcr(bitmap)
+            return@withContext performOfflineOcr(bitmap, language)
         }
         
         val languagePrompt = when (language) {
@@ -208,17 +210,18 @@ object DocumentAiEngine {
             }
 
             val request = Request.Builder()
-                .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey")
+                .url("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=$apiKey")
                 .post(requestBodyJson.toString().toRequestBody("application/json".toMediaType()))
                 .build()
 
-            val response = okHttpClient.newCall(request).execute()
-            if (!response.isSuccessful) {
-                return@withContext performOfflineOcr(bitmap)
-            }
+            okHttpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) {
+                    return@withContext performOfflineOcr(bitmap, language)
+                }
 
-            val responseBody = response.body?.string() ?: return@withContext performOfflineOcr(bitmap)
-            val jsonRoot = JSONObject(responseBody)
+                val responseBody = response.body?.string()
+                    ?: return@withContext performOfflineOcr(bitmap, language)
+                val jsonRoot = JSONObject(responseBody)
             val candidates = jsonRoot.optJSONArray("candidates")
             val candidate = candidates?.optJSONObject(0)
             val content = candidate?.optJSONObject("content")
@@ -251,16 +254,17 @@ object DocumentAiEngine {
                 }
             }
 
-            DocumentAnalysisResult(
-                fullText = fullText.ifBlank { "Text extracted from document" },
-                suggestedTitle = suggestedTitle,
-                detectedCategory = category,
-                fields = fieldsList,
-                confidence = parsedObj.optDouble("confidence", 0.95).toFloat(),
-                isAiPowered = true
-            )
+                DocumentAnalysisResult(
+                    fullText = fullText.ifBlank { "Text extracted from document" },
+                    suggestedTitle = suggestedTitle,
+                    detectedCategory = category,
+                    fields = fieldsList,
+                    confidence = parsedObj.optDouble("confidence", 0.95).toFloat(),
+                    isAiPowered = true
+                )
+            }
         } catch (e: Exception) {
-            performOfflineOcr(bitmap)
+            performOfflineOcr(bitmap, language)
         }
     }
 
@@ -273,7 +277,14 @@ object DocumentAiEngine {
             bitmap
         }
         val out = ByteArrayOutputStream()
-        scaled.compress(Bitmap.CompressFormat.JPEG, 80, out)
-        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        return try {
+            scaled.compress(Bitmap.CompressFormat.JPEG, 80, out)
+            Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+        } finally {
+            if (scaled !== bitmap) {
+                scaled.recycle()
+            }
+            out.close()
+        }
     }
 }
