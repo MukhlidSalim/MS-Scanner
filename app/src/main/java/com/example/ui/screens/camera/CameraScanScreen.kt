@@ -41,6 +41,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -78,13 +79,12 @@ import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 import kotlin.math.max
 
-enum class ScanCameraMode(val titleEn: String, val titleAr: String, val shortTitleAr: String) {
-    DOCUMENT("Document", "تصوير", "تصوير"),
-    BATCH("Multi-Page", "تصوير متعدد", "متعدد"),
-    ID_CARD("ID Card", "تصوير بطاقة", "بطاقة"),
-    PASSPORT("Passport", "تصوير جواز", "جواز")
+enum class ScanCameraMode(val titleEn: String, val titleAr: String) {
+    DOCUMENT("Document", "مستند"),
+    BATCH("Batch", "متعدد"),
+    ID_CARD("ID Card", "بطاقة"),
+    PASSPORT("Passport", "جواز")
 }
-
 
 private fun quadDistance(a: DocumentQuad, b: DocumentQuad): Float {
     val pointsA = listOf(a.topLeft, a.topRight, a.bottomRight, a.bottomLeft)
@@ -95,6 +95,7 @@ private fun quadDistance(a: DocumentQuad, b: DocumentQuad): Float {
         kotlin.math.sqrt(dx * dx + dy * dy)
     }.average().toFloat()
 }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraScanScreen(
@@ -111,6 +112,10 @@ fun CameraScanScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
+
+    // Multi-page batch toggle
+    var isMultiPage by remember { mutableStateOf(initialMode == ScanCameraMode.DOCUMENT) } // Default to multi-page if doc
+    var scanMode by remember { mutableStateOf(initialMode) }
 
     // Camera runtime permission state
     var hasCameraPermission by remember {
@@ -181,7 +186,6 @@ fun CameraScanScreen(
     var rollAngle by remember { mutableStateOf(0f) }
     var isPhoneFlat by remember { mutableStateOf(false) }
 
-    var scanMode by remember { mutableStateOf(initialMode) }
     var isAutoCaptureEnabled by remember { mutableStateOf(true) }
 
     var detectedImageQuad by remember { mutableStateOf<DocumentQuad?>(null) }
@@ -193,8 +197,13 @@ fun CameraScanScreen(
 
     // Automatically activate auto-capture whenever in document scanning mode
     LaunchedEffect(scanMode) {
-        if (scanMode == ScanCameraMode.DOCUMENT) {
+        if (scanMode == ScanCameraMode.DOCUMENT || scanMode == ScanCameraMode.BATCH) {
             isAutoCaptureEnabled = true
+        }
+        if (scanMode == ScanCameraMode.BATCH) {
+            isMultiPage = true
+        } else if (scanMode == ScanCameraMode.DOCUMENT) {
+            isMultiPage = false
         }
         detectedImageQuad = null
         detectionConfidence = 0f
@@ -215,8 +224,10 @@ fun CameraScanScreen(
     // Multi-page batch, ID card and passport accumulation
     val batchPages = remember { mutableStateListOf<Pair<String, String>>() }
     var idCardFrontPath by remember { mutableStateOf<String?>(null) }
+    var idCardFrontRawPath by remember { mutableStateOf<String?>(null) }
     var isIdCardFrontDone by remember { mutableStateOf(false) }
     var passportFrontPath by remember { mutableStateOf<String?>(null) }
+    var passportFrontRawPath by remember { mutableStateOf<String?>(null) }
     var isPassportFrontDone by remember { mutableStateOf(false) }
 
     // Shutter animation flash
@@ -285,16 +296,14 @@ fun CameraScanScreen(
                     if (importedList.isNotEmpty()) {
                         triggerHapticFeedback()
                         when (scanMode) {
-                            ScanCameraMode.DOCUMENT -> {
-                                onDocumentCaptured(importedList)
-                            }
-                            ScanCameraMode.BATCH -> {
-                                batchPages.addAll(importedList)
+                            ScanCameraMode.DOCUMENT, ScanCameraMode.BATCH -> {
+                                if (isMultiPage) batchPages.addAll(importedList)
+                                else onDocumentCaptured(importedList)
                             }
                             ScanCameraMode.PASSPORT -> {
                                 if (importedList.size >= 2) {
                                     onPassportCaptured?.invoke(importedList[0].second, importedList[1].second)
-                                        ?: onIdCardCaptured(importedList[0].second, importedList[1].second)
+                                        ?: onDocumentCaptured(listOf(importedList[0], importedList[1]))
                                 } else {
                                     val first = importedList[0].second
                                     if (!isPassportFrontDone) {
@@ -302,13 +311,13 @@ fun CameraScanScreen(
                                         isPassportFrontDone = true
                                     } else {
                                         val front = passportFrontPath ?: first
-                                        onPassportCaptured?.invoke(front, first) ?: onIdCardCaptured(front, first)
+                                        onDocumentCaptured(listOf(Pair("", front), Pair("", first)))
                                     }
                                 }
                             }
                             ScanCameraMode.ID_CARD -> {
                                 if (importedList.size >= 2) {
-                                    onIdCardCaptured(importedList[0].second, importedList[1].second)
+                                    onDocumentCaptured(listOf(importedList[0], importedList[1]))
                                 } else {
                                     val first = importedList[0].second
                                     if (!isIdCardFrontDone) {
@@ -316,7 +325,7 @@ fun CameraScanScreen(
                                         isIdCardFrontDone = true
                                     } else {
                                         val front = idCardFrontPath ?: first
-                                        onIdCardCaptured(front, first)
+                                        onDocumentCaptured(listOf(Pair("", front), Pair("", first)))
                                     }
                                 }
                             }
@@ -383,8 +392,9 @@ fun CameraScanScreen(
 
                         triggerHapticFeedback()
                         when (scanMode) {
-                            ScanCameraMode.DOCUMENT -> {
-                                onDocumentCaptured(listOf(Pair(rawPath, procPath)))
+                            ScanCameraMode.DOCUMENT, ScanCameraMode.BATCH -> {
+                                if (isMultiPage) batchPages.add(Pair(rawPath, procPath))
+                                else onDocumentCaptured(listOf(Pair(rawPath, procPath)))
                             }
                             ScanCameraMode.PASSPORT -> {
                                 if (!isPassportFrontDone) {
@@ -392,11 +402,8 @@ fun CameraScanScreen(
                                     isPassportFrontDone = true
                                 } else {
                                     val front = passportFrontPath ?: procPath
-                                    onPassportCaptured?.invoke(front, procPath) ?: onIdCardCaptured(front, procPath)
+                                    onDocumentCaptured(listOf(Pair(rawPath, front), Pair(rawPath, procPath)))
                                 }
-                            }
-                            ScanCameraMode.BATCH -> {
-                                batchPages.add(Pair(rawPath, procPath))
                             }
                             ScanCameraMode.ID_CARD -> {
                                 if (!isIdCardFrontDone) {
@@ -404,7 +411,7 @@ fun CameraScanScreen(
                                     isIdCardFrontDone = true
                                 } else {
                                     val front = idCardFrontPath ?: procPath
-                                    onIdCardCaptured(front, procPath)
+                                    onDocumentCaptured(listOf(Pair(rawPath, front), Pair(rawPath, procPath)))
                                 }
                             }
                         }
@@ -712,53 +719,52 @@ fun CameraScanScreen(
 
                                 triggerHapticFeedback()
 
-                                when (scanMode) {
-                                    ScanCameraMode.DOCUMENT -> {
-                                        onDocumentCaptured(listOf(Pair(rawPath, procPath)))
-                                    }
-                                    ScanCameraMode.PASSPORT -> {
-                                        if (!isPassportFrontDone) {
-                                            passportFrontPath = procPath
-                                            isPassportFrontDone = true
-                                            isCapturing = false
-                                            captureCooldown = true
-                                            stabilityCount = 0
-                                            isDocumentStable = false
-                                            autoCaptureProgress = 0f
-                                            delay(1000)
-                                            captureCooldown = false
-                                        } else {
-                                            isCapturing = false
-                                            val front = passportFrontPath ?: procPath
-                                            onPassportCaptured?.invoke(front, procPath) ?: onIdCardCaptured(front, procPath)
-                                        }
-                                    }
-                                    ScanCameraMode.BATCH -> {
-                                        batchPages.add(Pair(rawPath, procPath))
+                                if (scanMode == ScanCameraMode.DOCUMENT) {
+                                    onDocumentCaptured(listOf(Pair(rawPath, procPath)))
+                                } else if (scanMode == ScanCameraMode.BATCH) {
+                                    batchPages.add(Pair(rawPath, procPath))
+                                    isCapturing = false
+                                    captureCooldown = true
+                                    stabilityCount = 0
+                                    isDocumentStable = false
+                                    autoCaptureProgress = 0f
+                                    delay(1400)
+                                    captureCooldown = false
+                                } else if (scanMode == ScanCameraMode.PASSPORT) {
+                                    if (!isPassportFrontDone) {
+                                        passportFrontPath = procPath
+                                        passportFrontRawPath = rawPath
+                                        isPassportFrontDone = true
                                         isCapturing = false
                                         captureCooldown = true
                                         stabilityCount = 0
                                         isDocumentStable = false
                                         autoCaptureProgress = 0f
-                                        delay(1400)
+                                        delay(1000)
                                         captureCooldown = false
+                                    } else {
+                                        isCapturing = false
+                                        val fRaw = passportFrontRawPath ?: rawPath
+                                        val fProc = passportFrontPath ?: procPath
+                                        onDocumentCaptured(listOf(Pair(fRaw, fProc), Pair(rawPath, procPath)))
                                     }
-                                    ScanCameraMode.ID_CARD -> {
-                                        if (!isIdCardFrontDone) {
-                                            idCardFrontPath = procPath
-                                            isIdCardFrontDone = true
-                                            isCapturing = false
-                                            captureCooldown = true
-                                            stabilityCount = 0
-                                            isDocumentStable = false
-                                            autoCaptureProgress = 0f
-                                            delay(1000)
-                                            captureCooldown = false
-                                        } else {
-                                            isCapturing = false
-                                            val front = idCardFrontPath ?: procPath
-                                            onIdCardCaptured(front, procPath)
-                                        }
+                                } else if (scanMode == ScanCameraMode.ID_CARD) {
+                                    if (!isIdCardFrontDone) {
+                                        idCardFrontPath = procPath
+                                        idCardFrontRawPath = rawPath
+                                        isIdCardFrontDone = true
+                                        isCapturing = false
+                                        captureCooldown = true
+                                        stabilityCount = 0
+                                        isDocumentStable = false
+                                        autoCaptureProgress = 0f
+                                        delay(1000)
+                                        captureCooldown = false
+                                    } else {
+                                        isCapturing = false
+                                        val fRaw = idCardFrontRawPath ?: rawPath
+                                        val fProc = idCardFrontPath ?: procPath
+                                        onDocumentCaptured(listOf(Pair(fRaw, fProc), Pair(rawPath, procPath)))
                                     }
                                 }
                             } else {
@@ -1178,15 +1184,12 @@ fun CameraScanScreen(
                         ScanCameraMode.DOCUMENT -> if (isDocumentStable) {
                             if (isArabic) "ثبّت الهاتف — جاري التقاط المستند تلقائياً..." else "Hold steady — Auto-capturing document…"
                         } else {
-                            if (isArabic) "خاصية تصوير المستندات تلقائياً مفعلة — وجّه الكاميرا نحو المستند" else "Auto-capture active — Align document inside frame"
+                            if (isArabic) "تصوير مستند — وجه الكاميرا" else "Single Mode — Align document"
                         }
-                        ScanCameraMode.ID_CARD -> if (!isIdCardFrontDone) {
-                            if (isArabic) "الخطوة 1: مسح الوجه الأمامي للبطاقة" else "Step 1: Scan ID Front"
+                        ScanCameraMode.BATCH -> if (isDocumentStable) {
+                            if (isArabic) "ثبّت الهاتف — جاري الالتقاط..." else "Hold steady — Auto-capturing…"
                         } else {
-                            if (isArabic) "الخطوة 2: مسح الوجه الخلفي (أو اضغط 'تم' لاكتمال وجه واحد)" else "Step 2: Scan ID Back (or tap 'Done')"
-                        }
-                        ScanCameraMode.BATCH -> {
-                            if (isArabic) "تصوير متعدد: ${batchPages.size} صفحات ملتقطة" else "Batch Mode: ${batchPages.size} pages scanned"
+                            if (isArabic) "وضع التصوير المتعدد (${batchPages.size} صفحات)" else "Batch Mode (${batchPages.size} pages)"
                         }
                         ScanCameraMode.PASSPORT -> if (!isPassportFrontDone) {
                             if (isDocumentStable) {
@@ -1199,6 +1202,19 @@ fun CameraScanScreen(
                                 if (isArabic) "ثبّت الهاتف — جاري التقاط الصفحة الثانية..." else "Hold steady — Capturing 2nd page…"
                             } else {
                                 if (isArabic) "الخطوة 2: مسح صفحة إضافية (أو اضغط 'تم' لاكتمال الجواز)" else "Step 2: Scan additional page (or tap 'Done')"
+                            }
+                        }
+                        ScanCameraMode.ID_CARD -> if (!isIdCardFrontDone) {
+                            if (isDocumentStable) {
+                                if (isArabic) "ثبّت الهاتف — جاري التقاط الوجه الأمامي للبطاقة..." else "Hold steady — Capturing ID front…"
+                            } else {
+                                if (isArabic) "الخطوة 1: مسح الوجه الأمامي للبطاقة" else "Step 1: Scan ID card front"
+                            }
+                        } else {
+                            if (isDocumentStable) {
+                                if (isArabic) "ثبّت الهاتف — جاري التقاط الوجه الخلفي..." else "Hold steady — Capturing ID back…"
+                            } else {
+                                if (isArabic) "الخطوة 2: مسح الوجه الخلفي للبطاقة" else "Step 2: Scan ID card back"
                             }
                         }
                     }
@@ -1280,7 +1296,7 @@ fun CameraScanScreen(
                         onClick = { launchGalleryImport() },
                         modifier = Modifier
                             .size(50.dp)
-                            .background(Color.White.copy(alpha = 0.15f), CircleShape)
+                            .background(Color.Black.copy(alpha = 0.45f), CircleShape)
                     ) {
                         Icon(
                             imageVector = Icons.Default.PhotoLibrary,
@@ -1289,41 +1305,48 @@ fun CameraScanScreen(
                         )
                     }
 
-                    // Center Shutter Button with animated auto-capture countdown ring
-                    Box(
-                        modifier = Modifier
-                            .size(80.dp)
-                            .clickable { capturePhoto() }
-                            .testTag("camera_shutter_btn"),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (isAutoCaptureEnabled && autoCaptureProgress > 0f) {
-                            CircularProgressIndicator(
-                                progress = { autoCaptureProgress },
-                                modifier = Modifier.size(80.dp),
-                                color = Emerald400,
-                                strokeWidth = 4.dp
-                            )
-                        } else {
-                            Box(
-                                modifier = Modifier
-                                    .size(76.dp)
-                                    .clip(CircleShape)
-                                    .background(Color.White.copy(alpha = 0.25f))
-                            )
-                        }
+                    // Center: Shutter and Multi-page Toggle
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        // Multi-page Toggle
+                        // Removed redundant multi-page switch as it is now a Mode
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
 
-                        // Inner Shutter circle
                         Box(
                             modifier = Modifier
-                                .size(62.dp)
-                                .clip(CircleShape)
-                                .background(if (isDocumentStable) Emerald400 else Color.White)
-                        )
+                                .size(80.dp)
+                                .clickable { capturePhoto() }
+                                .testTag("camera_shutter_btn"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isAutoCaptureEnabled && autoCaptureProgress > 0f) {
+                                CircularProgressIndicator(
+                                    progress = { autoCaptureProgress },
+                                    modifier = Modifier.size(80.dp),
+                                    color = Emerald400,
+                                    strokeWidth = 4.dp
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(76.dp)
+                                        .clip(CircleShape)
+                                        .background(Color.White.copy(alpha = 0.25f))
+                                )
+                            }
+
+                            // Inner Shutter circle
+                            Box(
+                                modifier = Modifier
+                                    .size(62.dp)
+                                    .clip(CircleShape)
+                                    .background(if (isDocumentStable) Emerald400 else Color.White)
+                            )
+                        }
                     }
 
-                    // Right action: Done (in batch mode) or System Camera fallback
-                    if (scanMode == ScanCameraMode.BATCH && batchPages.isNotEmpty()) {
+                    // Right action: Done
+                    if (isMultiPage && batchPages.isNotEmpty()) {
                         Button(
                             onClick = { onDocumentCaptured(batchPages.toList()) },
                             colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
@@ -1422,7 +1445,7 @@ fun CameraScanScreen(
                                     Icon(
                                         imageVector = when (m) {
                                             ScanCameraMode.DOCUMENT -> Icons.Default.DocumentScanner
-                                            ScanCameraMode.BATCH -> Icons.Default.BurstMode
+                                            ScanCameraMode.BATCH -> Icons.Default.LibraryAdd
                                             ScanCameraMode.ID_CARD -> Icons.Default.Badge
                                             ScanCameraMode.PASSPORT -> Icons.Default.MenuBook
                                         },

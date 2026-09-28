@@ -35,7 +35,6 @@ import com.example.data.repository.DocumentRepository
 import com.example.ui.components.PinLockScreen
 import com.example.ui.components.OpenPdfActionDialog
 import com.example.ui.components.PdfViewerOverlay
-import com.example.ui.components.DefaultPdfAppPromptDialog
 import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
@@ -55,6 +54,7 @@ import com.example.ui.theme.DocScanTheme
 import com.example.ui.viewmodel.CameraViewModel
 import com.example.ui.viewmodel.DocumentListViewModel
 import com.example.ui.viewmodel.EditSessionViewModel
+import com.example.data.model.LockType
 
 import androidx.biometric.BiometricManager
 import androidx.biometric.BiometricPrompt
@@ -98,59 +98,12 @@ class MainViewModel : ViewModel() {
     private var _isPromptShowing = false
     val isPromptShowing: Boolean get() = _isPromptShowing
 
-    // Incoming PDF handling states
-    private val _incomingPdfFile = MutableStateFlow<File?>(null)
-    val incomingPdfFile: StateFlow<File?> = _incomingPdfFile.asStateFlow()
-
-    private val _showPdfActionDialog = MutableStateFlow(false)
-    val showPdfActionDialog: StateFlow<Boolean> = _showPdfActionDialog.asStateFlow()
-
-    private val _pdfViewerFile = MutableStateFlow<File?>(null)
-    val pdfViewerFile: StateFlow<File?> = _pdfViewerFile.asStateFlow()
-
-    private val _isConvertingPdf = MutableStateFlow(false)
-    val isConvertingPdf: StateFlow<Boolean> = _isConvertingPdf.asStateFlow()
-
-    private val _pdfConversionProgress = MutableStateFlow<Pair<Int, Int>?>(null)
-    val pdfConversionProgress: StateFlow<Pair<Int, Int>?> = _pdfConversionProgress.asStateFlow()
-
     fun setAuthenticated(value: Boolean) {
         _isAuthenticated.value = value
     }
 
     fun setPromptShowing(value: Boolean) {
         _isPromptShowing = value
-    }
-
-    fun setIncomingPdf(file: File) {
-        _incomingPdfFile.value = file
-        _showPdfActionDialog.value = true
-    }
-
-    fun clearIncomingPdf() {
-        _incomingPdfFile.value = null
-        _showPdfActionDialog.value = false
-    }
-
-    fun openPdfViewer(file: File) {
-        _pdfViewerFile.value = file
-        _showPdfActionDialog.value = false
-    }
-
-    fun closePdfViewer() {
-        _pdfViewerFile.value = null
-    }
-
-    fun setConverting(value: Boolean) {
-        _isConvertingPdf.value = value
-    }
-
-    fun setConversionProgress(current: Int, total: Int) {
-        _pdfConversionProgress.value = Pair(current, total)
-    }
-
-    fun clearConversionProgress() {
-        _pdfConversionProgress.value = null
     }
 }
 
@@ -166,11 +119,8 @@ class MainActivity : AppCompatActivity() {
         prefs = AppPreferences(applicationContext)
         mainViewModel = ViewModelProvider(this)[MainViewModel::class.java]
 
-        // Check if opened with a PDF intent
-        handleIncomingPdfIntent(intent)
-
-        // Initial state: if biometric is NOT enabled, we are already "authenticated"
-        if (!prefs.biometricEnabled) {
+        // Initial state: if lock is NOT enabled, we are already "authenticated"
+        if (prefs.lockType == LockType.NONE) {
             mainViewModel.setAuthenticated(true)
         }
 
@@ -203,17 +153,26 @@ class MainActivity : AppCompatActivity() {
                             mainViewModel = mainViewModel
                         )
                     } else {
-                        // Showing a lock icon while waiting for biometric authentication
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = androidx.compose.ui.Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Lock,
-                                contentDescription = "Locked",
-                                modifier = Modifier.size(64.dp),
-                                tint = MaterialTheme.colorScheme.primary
+                        if (prefs.lockType == LockType.PIN) {
+                            PinLockScreen(
+                                title = "DocScan Pro Locked",
+                                subtitle = "Enter 4-digit PIN to access documents",
+                                onPinEntered = { entered -> listViewModel.verifyPin(entered) },
+                                onSuccess = { mainViewModel.setAuthenticated(true) }
                             )
+                        } else {
+                            // Biometric or fallback
+                            Box(
+                                modifier = Modifier.fillMaxSize(),
+                                contentAlignment = androidx.compose.ui.Alignment.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Lock,
+                                    contentDescription = "Locked",
+                                    modifier = Modifier.size(64.dp),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
+                            }
                         }
                     }
                 }
@@ -221,48 +180,9 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onNewIntent(intent: android.content.Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        handleIncomingPdfIntent(intent)
-    }
-
-    private fun handleIncomingPdfIntent(intent: android.content.Intent?) {
-        if (intent == null) return
-        val action = intent.action
-        val isViewOrEdit = action == android.content.Intent.ACTION_VIEW || action == android.content.Intent.ACTION_EDIT
-        val isSend = action == android.content.Intent.ACTION_SEND
-
-        if (!isViewOrEdit && !isSend) return
-
-        val uri: Uri? = if (isSend) {
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM)
-            }
-        } else {
-            intent.data
-        }
-
-        if (uri != null) {
-            lifecycleScope.launch {
-                try {
-                    val localPdf = com.example.engine.pdf.PdfEngine.copyUriToLocalPdf(applicationContext, uri)
-                    if (localPdf != null) {
-                        mainViewModel.setIncomingPdf(localPdf)
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-        }
-    }
-
     override fun onResume() {
         super.onResume()
-        if (prefs.biometricEnabled && !mainViewModel.isAuthenticated.value) {
+        if (prefs.lockType == LockType.BIOMETRIC && !mainViewModel.isAuthenticated.value) {
             showBiometricPrompt()
         }
     }
@@ -276,8 +196,6 @@ class MainActivity : AppCompatActivity() {
         when (biometricManager.canAuthenticate(authenticators)) {
             BiometricManager.BIOMETRIC_SUCCESS -> { /* Proceed */ }
             else -> {
-                // If biometric is not available or enrolled, we fallback to authenticated 
-                // to prevent locking the user out, or you could fallback to PIN.
                 mainViewModel.setAuthenticated(true)
                 return
             }
@@ -290,7 +208,6 @@ class MainActivity : AppCompatActivity() {
                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                     super.onAuthenticationError(errorCode, errString)
                     mainViewModel.setPromptShowing(false)
-                    // If user cancels, we stay locked.
                 }
 
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
@@ -301,7 +218,6 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onAuthenticationFailed() {
                     super.onAuthenticationFailed()
-                    // Keep trying or stay locked
                 }
             })
 
@@ -316,8 +232,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
-        // Reset authentication state when app goes to background if biometric is enabled
-        if (prefs.biometricEnabled) {
+        if (prefs.lockType != LockType.NONE) {
             mainViewModel.setAuthenticated(false)
             mainViewModel.setPromptShowing(false)
         }
@@ -335,371 +250,209 @@ fun DocScanApp(
     val listUiState by listViewModel.uiState.collectAsState()
     val editUiState by editViewModel.uiState.collectAsState()
 
-    val incomingPdf by mainViewModel.incomingPdfFile.collectAsState()
-    val showPdfActionDialog by mainViewModel.showPdfActionDialog.collectAsState()
-    val activeViewerPdf by mainViewModel.pdfViewerFile.collectAsState()
-    val isConvertingPdf by mainViewModel.isConvertingPdf.collectAsState()
-    val pdfConversionProgress by mainViewModel.pdfConversionProgress.collectAsState()
-
     val context = androidx.compose.ui.platform.LocalContext.current
     val coroutineScope = rememberCoroutineScope()
 
-    val startEditingPdf: (File) -> Unit = { pdfFile ->
-        mainViewModel.setConverting(true)
-        mainViewModel.clearConversionProgress()
-        coroutineScope.launch {
-            try {
-                val pages = com.example.engine.pdf.PdfEngine.convertPdfToPages(context, pdfFile) { cur, tot ->
-                    mainViewModel.setConversionProgress(cur, tot)
-                }
-                if (pages.isNotEmpty()) {
-                    cameraViewModel.setPagesPendingEdit(pages)
-                    mainViewModel.clearIncomingPdf()
-                    mainViewModel.closePdfViewer()
-                    navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L)) {
-                        popUpTo(Screen.Home.route) { inclusive = false }
-                    }
-                } else {
-                    android.widget.Toast.makeText(
-                        context,
-                        context.getString(R.string.export_pdf_error, "Could not extract pages from PDF"),
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                }
-            } catch (e: Exception) {
-                android.widget.Toast.makeText(
-                    context,
-                    "Error reading PDF: ${e.localizedMessage}",
-                    android.widget.Toast.LENGTH_SHORT
-                ).show()
-            } finally {
-                mainViewModel.setConverting(false)
-                mainViewModel.clearConversionProgress()
-            }
-        }
-    }
-
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) {
-                listViewModel.lockApp()
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
-    }
-
-    if (listUiState.isAppLocked) {
-        PinLockScreen(
-            title = "DocScan Pro Locked",
-            subtitle = "Enter 4-digit PIN to access documents",
-            onPinEntered = { entered -> listViewModel.verifyPin(entered) },
-            onSuccess = { /* unmasked by verifyPin */ }
-        )
-    } else {
-        NavHost(
-            navController = navController,
-            startDestination = Screen.Home.route
-        ) {
-            // Home Screen
-            composable(Screen.Home.route) {
-                HomeScreen(
-                    listViewModel = listViewModel,
-                    onPagesCaptured = { pages -> cameraViewModel.setPagesPendingEdit(pages) },
-                    onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
-                    onOpenPdfFile = { file -> mainViewModel.setIncomingPdf(file) },
-                    onNavigateToSettings = {
-                        navController.navigate(Screen.Settings.route)
-                    },
-                    onNavigateToDocument = { docId ->
-                        navController.navigate(Screen.DocumentViewer.createRoute(docId))
-                    },
-                    onNavigateToScan = { modeStr ->
-                        navController.navigate(Screen.CameraScan.createRoute(mode = modeStr))
-                    },
-                    onNavigateToEditSession = { sourceType, docId ->
-                        navController.navigate(Screen.EditSession.createRoute(sourceType, docId))
-                    }
-                )
-            }
-
-            // In-App Advanced Camera Scan Screen
-            composable(
-                route = Screen.CameraScan.route,
-                arguments = listOf(
-                    navArgument("mode") {
-                        type = NavType.StringType
-                        defaultValue = "DOCUMENT"
-                    },
-                    navArgument("docId") {
-                        type = NavType.LongType
-                        defaultValue = 0L
-                    },
-                    navArgument("replacePageId") {
-                        type = NavType.LongType
-                        defaultValue = 0L
-                    }
-                )
-            ) { backStackEntry ->
-                val modeStr = backStackEntry.arguments?.getString("mode") ?: "DOCUMENT"
-                val cameraMode = when (modeStr.uppercase()) {
-                    "ID_CARD" -> ScanCameraMode.ID_CARD
-                    "BATCH" -> ScanCameraMode.BATCH
-                    "PASSPORT" -> ScanCameraMode.PASSPORT
-                    else -> ScanCameraMode.DOCUMENT
-                }
-                val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
-                val replacePageId = backStackEntry.arguments?.getLong("replacePageId") ?: 0L
-
-                CameraScanScreen(
-                    initialMode = cameraMode,
-                    docId = docId,
-                    replacePageId = replacePageId,
-                    onNavigateBack = {
-                        navController.popBackStack()
-                    },
-                    onDocumentCaptured = { pages ->
-                        if (replacePageId > 0L) {
-                            val firstPage = pages.firstOrNull()
-                            if (firstPage != null) {
-                                editViewModel.replacePage(replacePageId, firstPage.first, firstPage.second)
-                            }
-                            navController.popBackStack()
-                        } else {
-                            cameraViewModel.setPagesPendingEdit(pages)
-                            navController.navigate(Screen.EditSession.createRoute("CAMERA", docId)) {
-                                if (docId == 0L) {
-                                    popUpTo(Screen.Home.route)
-                                } else {
-                                    popUpTo(Screen.DocumentViewer.createRoute(docId))
-                                }
-                            }
-                        }
-                    },
-                    onIdCardCaptured = { frontPath, backPath ->
-                        navController.navigate(Screen.IdCardMerger.createRoute(frontPath, backPath, docId, isPassport = false))
-                    },
-                    onPassportCaptured = { frontPath, backPath ->
-                        navController.navigate(Screen.IdCardMerger.createRoute(frontPath, backPath, docId, isPassport = true))
-                    }
-                )
-            }
-
-            // ID Card & Passport Merger Screen
-            composable(
-                route = Screen.IdCardMerger.route,
-                arguments = listOf(
-                    navArgument("front") { type = NavType.StringType },
-                    navArgument("back") {
-                        type = NavType.StringType
-                        defaultValue = ""
-                    },
-                    navArgument("docId") {
-                        type = NavType.LongType
-                        defaultValue = 0L
-                    },
-                    navArgument("isPassport") {
-                        type = NavType.BoolType
-                        defaultValue = false
-                    }
-                )
-            ) { backStackEntry ->
-                val front = Uri.decode(backStackEntry.arguments?.getString("front") ?: "")
-                val back = Uri.decode(backStackEntry.arguments?.getString("back") ?: "")
-                val targetDocId = backStackEntry.arguments?.getLong("docId") ?: 0L
-                val isPassport = backStackEntry.arguments?.getBoolean("isPassport") ?: false
-
-                IdCardMergerScreen(
-                    frontImagePath = front,
-                    backImagePath = back,
-                    isPassportMode = isPassport,
-                    onMerged = { mergedPath ->
-                        cameraViewModel.setPagesPendingEdit(listOf(Pair(front, mergedPath)))
-                        navController.navigate(Screen.EditSession.createRoute("CAMERA", targetDocId)) {
-                            if (targetDocId > 0L) {
-                                popUpTo(Screen.DocumentViewer.route)
-                            } else {
-                                popUpTo(Screen.Home.route)
-                            }
-                        }
-                    },
-                    onCancel = {
-                        navController.popBackStack()
-                    }
-                )
-            }
-
-            // Document Viewer Screen
-            composable(
-                route = Screen.DocumentViewer.route,
-                arguments = listOf(navArgument("docId") { type = NavType.LongType })
-            ) { backStackEntry ->
-                val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
-                DocumentViewerScreen(
-                    docId = docId,
-                    viewModel = editViewModel,
-                    onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
-                    onNavigateBack = {
-                        navController.popBackStack()
-                    },
-                    onNavigateToScan = { dId, replacePageId ->
-                        navController.navigate(Screen.CameraScan.createRoute(mode = "DOCUMENT", docId = dId, replacePageId = replacePageId))
-                    },
-                    onNavigateToCrop = { dId, pageId ->
-                        navController.navigate(Screen.CropEditor.createRoute(dId, pageId))
-                    },
-                    onNavigateToOcr = { dId, pageId ->
-                        navController.navigate(Screen.Ocr.createRoute(dId, pageId))
-                    },
-                    onNavigateToAnnotate = { dId, pageId ->
-                        navController.navigate(Screen.Annotate.createRoute(dId, pageId))
-                    },
-                    onNavigateToEditSession = { sourceType, dId ->
-                        navController.navigate(Screen.EditSession.createRoute(sourceType, dId))
-                    }
-                )
-            }
-
-            // Crop & Document Editor Screen
-            composable(
-                route = Screen.CropEditor.route,
-                arguments = listOf(
-                    navArgument("docId") { type = NavType.LongType },
-                    navArgument("pageId") { type = NavType.LongType }
-                )
-            ) { backStackEntry ->
-                val pageId = backStackEntry.arguments?.getLong("pageId") ?: 0L
-                val activePage = editUiState.activePages.find { it.id == pageId }
-                val imagePath = activePage?.rawImagePath ?: activePage?.processedImagePath ?: ""
-
-                DocumentCropEditorScreen(
-                    imagePath = imagePath,
-                    onCropped = { newProcessedPath ->
-                        editViewModel.updateActivePageProcessedImage(newProcessedPath)
-                        navController.popBackStack()
-                    },
-                    onCancel = {
-                        navController.popBackStack()
-                    }
-                )
-            }
-
-            // OCR Screen
-            composable(
-                route = Screen.Ocr.route,
-                arguments = listOf(
-                    navArgument("docId") { type = NavType.LongType },
-                    navArgument("pageId") { type = NavType.LongType }
-                )
-            ) { backStackEntry ->
-                val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
-                val pageId = backStackEntry.arguments?.getLong("pageId") ?: 0L
-                OcrScreen(
-                    docId = docId,
-                    pageId = pageId,
-                    viewModel = editViewModel,
-                    onNavigateBack = {
-                        navController.popBackStack()
-                    }
-                )
-            }
-
-            // Annotation Screen
-            composable(
-                route = Screen.Annotate.route,
-                arguments = listOf(
-                    navArgument("docId") { type = NavType.LongType },
-                    navArgument("pageId") { type = NavType.LongType }
-                )
-            ) { backStackEntry ->
-                val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
-                val pageId = backStackEntry.arguments?.getLong("pageId") ?: 0L
-                AnnotationScreen(
-                    docId = docId,
-                    pageId = pageId,
-                    viewModel = editViewModel,
-                    onNavigateBack = {
-                        navController.popBackStack()
-                    }
-                )
-            }
-
-            // Settings Screen
-            composable(Screen.Settings.route) {
-                SettingsScreen(
-                    viewModel = listViewModel,
-                    onNavigateBack = {
-                        navController.popBackStack()
-                    }
-                )
-            }
-
-            // Edit Session Screen
-            composable(
-                route = Screen.EditSession.route,
-                arguments = listOf(
-                    navArgument("sourceType") { type = NavType.StringType },
-                    navArgument("docId") { type = NavType.LongType }
-                )
-            ) { backStackEntry ->
-                val sourceType = backStackEntry.arguments?.getString("sourceType") ?: "CAMERA"
-                val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
-                val cameraUiState by cameraViewModel.uiState.collectAsState()
-                val listUiState by listViewModel.uiState.collectAsState()
-
-                EditSessionScreen(
-                    editViewModel = editViewModel,
-                    pagesPendingEdit = cameraUiState.pagesPendingEdit,
-                    cameraIsLoading = cameraUiState.isLoading,
-                    onUpdatePendingPage = { idx, path -> cameraViewModel.updatePendingPageProcessedImage(idx, path) },
-                    onRotatePendingPage = { idx, cw -> cameraViewModel.rotatePendingPage(idx, cw) },
-                    onAnalyzePending = { cameraViewModel.analyzePendingFirstPage() },
-                    onCommitPending = { dId, onDone -> cameraViewModel.commitPendingPagesToDocument(dId, onDone) },
-                    onImportPages = { title, folder, onDone -> cameraViewModel.importPagesAsDocument(title, folder, onDone) },
-                    onClearPending = { cameraViewModel.clearPendingPages(deleteFiles = true) },
-                    selectedFolder = listUiState.selectedFolder,
-                    sourceType = sourceType,
-                    docId = docId,
-                    onNavigateBack = { navController.popBackStack() },
-                    onNavigateToFinish = { newDocId ->
-                        navController.navigate(Screen.DocumentViewer.createRoute(newDocId)) {
-                            popUpTo(Screen.Home.route) { inclusive = false }
-                        }
-                    }
-                )
-            }
-        }
-
-        // Dialog asking user: Browse Only vs Edit in Studio
-        if (showPdfActionDialog && incomingPdf != null) {
-            OpenPdfActionDialog(
-                pdfFile = incomingPdf!!,
-                isConverting = isConvertingPdf,
-                conversionProgress = pdfConversionProgress,
-                onDismiss = {
-                    mainViewModel.clearIncomingPdf()
+    NavHost(
+        navController = navController,
+        startDestination = Screen.Home.route
+    ) {
+        // Home Screen
+        composable(Screen.Home.route) {
+            HomeScreen(
+                listViewModel = listViewModel,
+                onPagesCaptured = { pages -> cameraViewModel.setPagesPendingEdit(pages) },
+                onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
+                onNavigateToSettings = {
+                    navController.navigate(Screen.Settings.route)
                 },
-                onBrowseOnly = {
-                    mainViewModel.openPdfViewer(incomingPdf!!)
+                onNavigateToDocument = { docId ->
+                    navController.navigate(Screen.DocumentViewer.createRoute(docId))
                 },
-                onEditInStudio = {
-                    startEditingPdf(incomingPdf!!)
+                onNavigateToScan = { modeStr ->
+                    navController.navigate(Screen.CameraScan.createRoute(mode = modeStr))
+                },
+                onNavigateToEditSession = { sourceType, docId ->
+                    navController.navigate(Screen.EditSession.createRoute(sourceType, docId))
                 }
             )
         }
 
-        // In-App PDF Viewer Overlay (When user chooses Browse Only)
-        activeViewerPdf?.let { pdfFile ->
-            PdfViewerOverlay(
-                pdfFile = pdfFile,
-                onDismiss = {
-                    mainViewModel.closePdfViewer()
+        // Camera Scan Screen
+        composable(
+            route = Screen.CameraScan.route,
+            arguments = listOf(
+                navArgument("mode") { type = NavType.StringType; defaultValue = "DOCUMENT" },
+                navArgument("docId") { type = NavType.LongType; defaultValue = 0L },
+                navArgument("replacePageId") { type = NavType.LongType; defaultValue = 0L }
+            )
+        ) { backStackEntry ->
+            val modeStr = backStackEntry.arguments?.getString("mode") ?: "DOCUMENT"
+            val cameraMode = when (modeStr.uppercase()) {
+                "ID_CARD" -> ScanCameraMode.ID_CARD
+                "PASSPORT" -> ScanCameraMode.PASSPORT
+                else -> ScanCameraMode.DOCUMENT
+            }
+            val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
+            val replacePageId = backStackEntry.arguments?.getLong("replacePageId") ?: 0L
+
+            CameraScanScreen(
+                initialMode = cameraMode,
+                docId = docId,
+                replacePageId = replacePageId,
+                onNavigateBack = { navController.popBackStack() },
+                onDocumentCaptured = { pages ->
+                    if (replacePageId > 0L) {
+                        val firstPage = pages.firstOrNull()
+                        if (firstPage != null) {
+                            editViewModel.replacePage(replacePageId, firstPage.first, firstPage.second)
+                        }
+                        navController.popBackStack()
+                    } else {
+                        cameraViewModel.setPagesPendingEdit(pages)
+                        navController.navigate(Screen.EditSession.createRoute("CAMERA", docId)) {
+                            if (docId == 0L) popUpTo(Screen.Home.route)
+                            else popUpTo(Screen.DocumentViewer.createRoute(docId))
+                        }
+                    }
                 },
-                onEditClick = {
-                    startEditingPdf(pdfFile)
+                onIdCardCaptured = { front, back ->
+                    // Logic moved internally to EditSession or component
+                },
+                onPassportCaptured = { front, back ->
+                    // Logic moved internally
+                }
+            )
+        }
+
+        // Document Viewer Screen
+        composable(
+            route = Screen.DocumentViewer.route,
+            arguments = listOf(navArgument("docId") { type = NavType.LongType })
+        ) { backStackEntry ->
+            val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
+            DocumentViewerScreen(
+                docId = docId,
+                viewModel = editViewModel,
+                onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToScan = { dId, replacePageId ->
+                    navController.navigate(Screen.CameraScan.createRoute(mode = "DOCUMENT", docId = dId, replacePageId = replacePageId))
+                },
+                onNavigateToCrop = { dId, pageId ->
+                    navController.navigate(Screen.CropEditor.createRoute(dId, pageId))
+                },
+                onNavigateToOcr = { dId, pageId ->
+                    navController.navigate(Screen.Ocr.createRoute(dId, pageId))
+                },
+                onNavigateToAnnotate = { dId, pageId ->
+                    navController.navigate(Screen.Annotate.createRoute(dId, pageId))
+                },
+                onNavigateToEditSession = { sourceType, dId ->
+                    navController.navigate(Screen.EditSession.createRoute(sourceType, dId))
+                }
+            )
+        }
+
+        // Crop Editor Screen
+        composable(
+            route = Screen.CropEditor.route,
+            arguments = listOf(
+                navArgument("docId") { type = NavType.LongType },
+                navArgument("pageId") { type = NavType.LongType }
+            )
+        ) { backStackEntry ->
+            val pageId = backStackEntry.arguments?.getLong("pageId") ?: 0L
+            val activePage = editUiState.activePages.find { it.id == pageId }
+            val imagePath = activePage?.rawImagePath ?: activePage?.processedImagePath ?: ""
+
+            DocumentCropEditorScreen(
+                imagePath = imagePath,
+                onCropped = { newPath ->
+                    editViewModel.updateActivePageProcessedImage(newPath)
+                    navController.popBackStack()
+                },
+                onCancel = { navController.popBackStack() }
+            )
+        }
+
+        // OCR Screen
+        composable(
+            route = Screen.Ocr.route,
+            arguments = listOf(
+                navArgument("docId") { type = NavType.LongType },
+                navArgument("pageId") { type = NavType.LongType }
+            )
+        ) { backStackEntry ->
+            val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
+            val pageId = backStackEntry.arguments?.getLong("pageId") ?: 0L
+            OcrScreen(
+                docId = docId,
+                pageId = pageId,
+                viewModel = editViewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        // Annotation Screen
+        composable(
+            route = Screen.Annotate.route,
+            arguments = listOf(
+                navArgument("docId") { type = NavType.LongType },
+                navArgument("pageId") { type = NavType.LongType }
+            )
+        ) { backStackEntry ->
+            val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
+            val pageId = backStackEntry.arguments?.getLong("pageId") ?: 0L
+            AnnotationScreen(
+                docId = docId,
+                pageId = pageId,
+                viewModel = editViewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        // Settings Screen
+        composable(Screen.Settings.route) {
+            SettingsScreen(
+                viewModel = listViewModel,
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+
+        // Edit Session Screen
+        composable(
+            route = Screen.EditSession.route,
+            arguments = listOf(
+                navArgument("sourceType") { type = NavType.StringType },
+                navArgument("docId") { type = NavType.LongType }
+            )
+        ) { backStackEntry ->
+            val sourceType = backStackEntry.arguments?.getString("sourceType") ?: "CAMERA"
+            val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
+            val cameraUiState by cameraViewModel.uiState.collectAsState()
+            val listUiState by listViewModel.uiState.collectAsState()
+
+            EditSessionScreen(
+                editViewModel = editViewModel,
+                pagesPendingEdit = cameraUiState.pagesPendingEdit,
+                cameraIsLoading = cameraUiState.isLoading,
+                onUpdatePendingPage = { idx, path -> cameraViewModel.updatePendingPageProcessedImage(idx, path) },
+                onRotatePendingPage = { idx, cw -> cameraViewModel.rotatePendingPage(idx, cw) },
+                onCommitPending = { dId, onDone -> cameraViewModel.commitPendingPagesToDocument(dId, onDone) },
+                onImportPages = { title, folder, onDone -> cameraViewModel.importPagesAsDocument(title, folder, onDone) },
+                onClearPending = { cameraViewModel.clearPendingPages(deleteFiles = true) },
+                selectedFolder = listUiState.selectedFolder,
+                sourceType = sourceType,
+                docId = docId,
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToFinish = { newDocId ->
+                    navController.navigate(Screen.DocumentViewer.createRoute(newDocId)) {
+                        popUpTo(Screen.Home.route) { inclusive = false }
+                    }
+                },
+                onNavigateToAnnotate = { dId, pageId ->
+                    navController.navigate(Screen.Annotate.createRoute(dId, pageId))
                 }
             )
         }

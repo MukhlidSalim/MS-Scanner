@@ -6,6 +6,7 @@ import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -31,6 +32,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.flow.collectLatest
+import com.example.data.model.LockType
 
 import com.example.ui.theme.CyanScan
 import com.example.ui.theme.Emerald400
@@ -249,9 +251,83 @@ fun SettingsScreen(
                 }
             }
 
-            // Backup & Restore
+            // App Lock Settings
             Text(
-                text = stringResource(R.string.txt_backup_restore),
+                text = if (isArabic) "قفل التطبيق" else "App Lock",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column {
+                            Text(if (isArabic) "نوع القفل" else "Lock Type", fontWeight = FontWeight.SemiBold)
+                            Text(if (isArabic) "اختر وسيلة حماية التطبيق" else "Choose how to protect your app", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val lockOptions = listOf(
+                            LockType.NONE to (if (isArabic) "إيقاف" else "Off"),
+                            LockType.PIN to (if (isArabic) "رمز PIN" else "PIN"),
+                            LockType.BIOMETRIC to (if (isArabic) "بصمة" else "Biometric")
+                        )
+                        lockOptions.forEach { pair ->
+                            val type = pair.first
+                            val label = pair.second
+                            val isSelected = uiState.lockType == type
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { 
+                                    if (type == LockType.PIN) showPinDialog = true
+                                    else viewModel.setLockType(type)
+                                },
+                                label = { Text(label) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // OCR Settings
+            Text(
+                text = if (isArabic) "إعدادات استخراج النص (OCR)" else "OCR Settings",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(if (isArabic) "اللغة الافتراضية" else "Default Language", fontWeight = FontWeight.SemiBold)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        com.example.engine.ocr.OcrLanguage.values().forEach { lang ->
+                            FilterChip(
+                                selected = uiState.ocrLanguage == lang,
+                                onClick = { viewModel.setOcrLanguage(lang) },
+                                label = { Text(lang.displayName) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Advanced: Backup & Restore
+            Text(
+                text = if (isArabic) "خيارات متقدمة" else "Advanced",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -268,172 +344,46 @@ fun SettingsScreen(
                         uri?.let { viewModel.restoreBackup(it) }
                     }
                     
-                    if (uiState.isLoading) {
-                        CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
-                    }
-                    
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(text = stringResource(R.string.txt_create_backup), fontWeight = FontWeight.SemiBold)
-                            Text(text = stringResource(R.string.txt_create_backup_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(text = stringResource(R.string.txt_backup_restore), fontWeight = FontWeight.SemiBold)
+                            Text(text = if (isArabic) "نسخ احتياطي واستعادة البيانات" else "Create or restore a backup", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
+                    }
+                    
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Button(
                             onClick = { 
                                 val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
                                 backupLauncher.launch("MS_Scanner_Backup_$dateStr.zip")
                             },
+                            modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text("Backup")
-                        }
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = stringResource(R.string.txt_restore_backup), fontWeight = FontWeight.SemiBold)
-                            Text(text = stringResource(R.string.txt_restore_backup_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Button(
-                            onClick = { restoreLauncher.launch(arrayOf("application/zip")) },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer)
-                        ) {
-                            Text("Restore")
-                        }
-                    }
-                }
-            }
-
-            // Security & App Lock
-            Text(
-                text = stringResource(R.string.txt_security_pin),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text(stringResource(R.string.txt_app_pin_protection), fontWeight = FontWeight.SemiBold)
-                            Text(
-                                text = if (uiState.hasPinConfigured) stringResource(R.string.txt_pin_configured) else stringResource(R.string.txt_no_pin),
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        Button(
-                            onClick = { showPinDialog = true },
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.testTag("set_pin_btn")
-                        ) {
-                            Text(if (uiState.hasPinConfigured) stringResource(R.string.txt_change_pin) else stringResource(R.string.txt_set_pin))
-                        }
-                    }
-
-                    if (uiState.hasPinConfigured) {
+                        ) { Text(if (isArabic) "نسخ احتياطي" else "Backup") }
+                        
                         OutlinedButton(
-                            onClick = {
-                                viewModel.setPin("")
-                                Toast.makeText(context, context.getString(R.string.txt_pin_disabled), Toast.LENGTH_SHORT).show()
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                        ) {
-                            Text(stringResource(R.string.txt_disable_pin_lock))
-                        }
+                            onClick = { restoreLauncher.launch(arrayOf("application/zip")) },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) { Text(if (isArabic) "استعادة" else "Restore") }
                     }
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column {
-                            Text("Biometric Lock", fontWeight = FontWeight.SemiBold)
-                            Text("Use fingerprint or face to unlock", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        Switch(
-                            checked = uiState.biometricEnabled,
-                            onCheckedChange = { viewModel.toggleBiometric(it) }
-                        )
+                    
+                    // Storage Stats
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(if (isArabic) "المساحة المستخدمة" else "Used Storage", fontSize = 13.sp)
+                        val totalMb = ((stats?.scansSizeBytes ?: 0L) + (stats?.cacheSizeBytes ?: 0L)) / (1024 * 1024f)
+                        Text(String.format("%.1f MB", totalMb), fontWeight = FontWeight.Bold)
                     }
-                }
-            }
-
-            // Default PDF App Setting
-            Text(
-                text = stringResource(R.string.pdf_default_app_title),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
+                    
+                    TextButton(
+                        onClick = { viewModel.clearCache() },
+                        modifier = Modifier.fillMaxWidth()
                     ) {
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(MaterialTheme.colorScheme.primaryContainer),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.PictureAsPdf,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(22.dp)
-                            )
-                        }
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = stringResource(R.string.pdf_default_app_title),
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                text = stringResource(R.string.pdf_default_app_desc),
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Button(
-                        onClick = { com.example.ui.components.openDefaultAppSettings(context) },
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(44.dp)
-                    ) {
-                        Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.CleaningServices, null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = stringResource(R.string.pdf_default_app_btn),
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text(stringResource(R.string.txt_clear_cache))
                     }
                 }
             }

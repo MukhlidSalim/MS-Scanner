@@ -47,7 +47,7 @@ fun OcrScreen(
     val ocrResult = uiState.ocrResult
 
     LaunchedEffect(pageId) {
-        viewModel.runOcrOnActivePage()
+        viewModel.runOcrInBackground(pageId)
     }
 
     var selectedTab by remember { mutableStateOf(0) } // 0: Structured Data, 1: Full Text
@@ -77,7 +77,7 @@ fun OcrScreen(
                 },
                 actions = {
                     IconButton(
-                        onClick = { viewModel.runOcrOnActivePage() },
+                        onClick = { viewModel.runOcrInBackground(pageId) },
                         modifier = Modifier.testTag("ocr_retry_btn")
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.desc_re_analyze))
@@ -333,7 +333,7 @@ fun OcrScreen(
                         Icon(Icons.Default.ErrorOutline, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.error)
                         Text(stringResource(R.string.txt_analysis_failed__please_tr), style = MaterialTheme.typography.bodyMedium)
                         Button(
-                            onClick = { viewModel.runOcrOnActivePage() },
+                            onClick = { viewModel.runOcrInBackground(pageId) },
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Text(stringResource(R.string.txt_retry_analysis), fontWeight = FontWeight.Bold)

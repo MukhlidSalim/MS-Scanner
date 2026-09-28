@@ -26,11 +26,6 @@ sealed class Screen(val route: String) {
         fun createRoute(docId: Long, pageId: Long) = "annotate/$docId/$pageId"
     }
 
-    object IdCardMerger : Screen("id_card_merger?front={front}&back={back}&docId={docId}&isPassport={isPassport}") {
-        fun createRoute(front: String, back: String, docId: Long = 0L, isPassport: Boolean = false) =
-            "id_card_merger?front=${Uri.encode(front)}&back=${Uri.encode(back)}&docId=$docId&isPassport=$isPassport"
-    }
-
     object Settings : Screen("settings")
     
     object EditSession : Screen("edit_session/{sourceType}/{docId}") {

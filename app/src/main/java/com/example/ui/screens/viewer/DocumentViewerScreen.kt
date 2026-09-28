@@ -112,7 +112,8 @@ fun DocumentViewerScreen(
 
     // Haptic feedback intentionally omitted to avoid permission/dependency complexity.
 
-    var isGridView by remember { mutableStateOf(true) } // Images inside documents are always grid by default
+    // Removed Grid View per user request. Pager is now the primary viewer.
+    var isGridView by remember { mutableStateOf(false) }
     var showPdfExportDialog by remember { mutableStateOf(false) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
     var isSharingMultiple by remember { mutableStateOf(false) }
@@ -124,13 +125,11 @@ fun DocumentViewerScreen(
     var renameInput by remember { mutableStateOf("") }
     var showOverflowMenu by remember { mutableStateOf(false) }
 
-    // Handle Back Press: selection mode -> grid view -> home screen
+    // Handle Back Press: selection mode -> home screen
     BackHandler {
         if (selectionMode) {
             selectionMode = false
             selectedPageIds = emptySet()
-        } else if (!isGridView) {
-            isGridView = true
         } else {
             onNavigateBack()
         }
@@ -226,11 +225,7 @@ fun DocumentViewerScreen(
                             }
                             if (pages.isNotEmpty()) {
                                 Text(
-                                    text = if (isGridView) {
-                                        if (isArabic) "${pages.size} صور / صفحات" else "${pages.size} pages"
-                                    } else {
-                                        stringResource(R.string.txt_page_of, pagerState.currentPage + 1, pages.size)
-                                    },
+                                    text = if (isArabic) "صفحة ${pagerState.currentPage + 1} من ${pages.size}" else "Page ${pagerState.currentPage + 1} of ${pages.size}",
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -242,10 +237,6 @@ fun DocumentViewerScreen(
                     if (selectionMode) {
                         IconButton(onClick = { selectionMode = false; selectedPageIds = emptySet() }) {
                             Icon(Icons.Default.Close, contentDescription = stringResource(R.string.txt_cancel_selection))
-                        }
-                    } else if (!isGridView) {
-                        IconButton(onClick = { isGridView = true }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = if (isArabic) "العودة للشبكة" else "Back to Grid")
                         }
                     } else {
                         IconButton(onClick = onNavigateBack) {
@@ -317,15 +308,6 @@ fun DocumentViewerScreen(
                             }
                         }
                     } else {
-                        // Grid / Reader View Switcher
-                        IconButton(onClick = { isGridView = !isGridView }) {
-                            Icon(
-                                imageVector = if (isGridView) Icons.Default.ViewCarousel else Icons.Default.GridView,
-                                contentDescription = if (isGridView) "View Full Pages" else "View Grid",
-                                tint = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-
                         // PDF Export Button
                         IconButton(
                             onClick = { showPdfExportDialog = true },
@@ -406,7 +388,7 @@ fun DocumentViewerScreen(
                                 // Reorder Pages
                                 if (pages.size > 1) {
                                     DropdownMenuItem(
-                                        text = { Text("Reorder Pages") },
+                                        text = { Text(if (isArabic) "إعادة ترتيب الصفحات" else "Reorder Pages") },
                                         leadingIcon = { Icon(Icons.Default.Reorder, null) },
                                         onClick = {
                                             showOverflowMenu = false
@@ -414,6 +396,16 @@ fun DocumentViewerScreen(
                                         }
                                     )
                                 }
+
+                                // Export As... (New requirement)
+                                DropdownMenuItem(
+                                    text = { Text(if (isArabic) "تصدير كـ..." else "Export As...") },
+                                    leadingIcon = { Icon(Icons.Default.Output, null) },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        showPdfExportDialog = true // Reuse the simplified export dialog
+                                    }
+                                )
 
                             // Replace Current Page
                             DropdownMenuItem(

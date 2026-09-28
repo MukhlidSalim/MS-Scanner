@@ -464,6 +464,7 @@ fun DocumentCropEditorScreen(
                 }
             }
         }
+    ) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -673,3 +674,4 @@ fun DocumentCropEditorScreen(
             }
         }
     }
+}

@@ -16,7 +16,6 @@ import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Dispatchers
-import java.io.File
 
 enum class ExportPdfAction {
     SHARE,
@@ -50,7 +49,8 @@ data class DocumentListUiState(
     val themeMode: String = "System",
     val defaultPdfPageSize: com.example.data.model.PageSizePreset = com.example.data.model.PageSizePreset.A4,
     val defaultPdfCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH,
-    val biometricEnabled: Boolean = false,
+    val lockType: com.example.data.model.LockType = com.example.data.model.LockType.NONE,
+    val ocrLanguage: com.example.engine.ocr.OcrLanguage = com.example.engine.ocr.OcrLanguage.AUTO,
     val isLoading: Boolean = false
 )
 
@@ -66,7 +66,8 @@ class DocumentListViewModel(
         themeMode = prefs.themeMode,
         defaultPdfPageSize = prefs.pdfPageSize,
         defaultPdfCompression = prefs.pdfCompression,
-        biometricEnabled = prefs.biometricEnabled
+        lockType = prefs.lockType,
+        ocrLanguage = com.example.engine.ocr.OcrLanguage.valueOf(prefs.ocrLanguage)
     ))
     val uiState: StateFlow<DocumentListUiState> = _uiState.asStateFlow()
 
@@ -502,9 +503,14 @@ class DocumentListViewModel(
         _uiState.update { it.copy(userPin = pin, hasPinConfigured = pin.length == 4) }
     }
 
-    fun toggleBiometric(enabled: Boolean) {
-        prefs.biometricEnabled = enabled
-        _uiState.update { it.copy(biometricEnabled = enabled) }
+    fun setLockType(type: com.example.data.model.LockType) {
+        prefs.lockType = type
+        _uiState.update { it.copy(lockType = type) }
+    }
+
+    fun setOcrLanguage(lang: com.example.engine.ocr.OcrLanguage) {
+        prefs.ocrLanguage = lang.name
+        _uiState.update { it.copy(ocrLanguage = lang) }
     }
 
     fun clearCache() {

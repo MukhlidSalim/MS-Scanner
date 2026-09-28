@@ -7,6 +7,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import com.example.ui.viewmodel.EditSessionViewModel
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.ui.input.pointer.pointerInput
@@ -32,7 +33,8 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.FastForward
-import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.ui.graphics.Color
 import coil.compose.AsyncImage
 import java.io.File
@@ -42,6 +44,9 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import com.example.ui.theme.Emerald400
+import com.example.ui.theme.GoldBase
+import com.example.ui.theme.GoldLight
+import com.example.ui.theme.TextSecondary
 import com.example.engine.cv.ImageProcessor
 import com.example.data.model.FilterType
 import kotlinx.coroutines.Dispatchers
@@ -78,7 +83,8 @@ fun EditSessionScreen(
     sourceType: String, // "CAMERA", "IMPORT", "EXISTING"
     docId: Long,
     onNavigateBack: () -> Unit,
-    onNavigateToFinish: (Long) -> Unit
+    onNavigateToFinish: (Long) -> Unit,
+    onNavigateToAnnotate: (Long, Long) -> Unit = { _, _ -> }
 ) {
     val editUiState by editViewModel.uiState.collectAsState()
     
@@ -108,12 +114,8 @@ fun EditSessionScreen(
         }
     }
     
-    // Auto-analyze first page for classification and OCR metadata
-    LaunchedEffect(pagesPendingEdit) {
-        if (sourceType != "EXISTING" && pagesPendingEdit.isNotEmpty()) {
-            onAnalyzePending()
-        }
-    }
+    // Auto-analyze first page for classification and OCR metadata - REMOVED per user request to not block edit
+    // LaunchedEffect(pagesPendingEdit) { ... }
 
     LaunchedEffect(pages.size) {
         if (pages.isNotEmpty() && pagerState.currentPage >= pages.size) {
@@ -135,6 +137,10 @@ fun EditSessionScreen(
     var showOriginalPreview by remember { mutableStateOf(false) }
     var contrast by remember { mutableStateOf(1f) }
     var isApplyingAdjustment by remember { mutableStateOf(false) }
+
+    // Multi-select for merging
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedIndices by remember { mutableStateOf(setOf<Int>()) }
 
     val snackbarHostState = remember { SnackbarHostState() }
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -322,38 +328,66 @@ fun EditSessionScreen(
             topBar = {
                 TopAppBar(
                     title = { 
-                        val current = if (pages.isEmpty()) 0 else pagerState.currentPage + 1
-                        Text(if (isArabic) "مراجعة الصفحات ($current/${pages.size})" else "Review Pages ($current/${pages.size})") 
+                        if (selectionMode) {
+                            Text(if (isArabic) "${selectedIndices.size} محدد" else "${selectedIndices.size} Selected")
+                        } else {
+                            val current = if (pages.isEmpty()) 0 else pagerState.currentPage + 1
+                            Text(if (isArabic) "مراجعة الصفحات ($current/${pages.size})" else "Review Pages ($current/${pages.size})") 
+                        }
+                    },
+                    navigationIcon = {
+                        if (selectionMode) {
+                            IconButton(onClick = { selectionMode = false; selectedIndices = emptySet() }) {
+                                Icon(Icons.Default.Close, contentDescription = "Cancel Selection")
+                            }
+                        }
                     },
                     actions = {
-                        TextButton(onClick = { 
-                            if (hasUnsavedChanges) {
-                                showDiscardDialog = true
-                            } else {
-                                if (sourceType != "EXISTING") onClearPending()
-                                else editViewModel.endEditingSession()
-                                onNavigateBack() 
+                        if (selectionMode) {
+                            IconButton(
+                                onClick = {
+                                    if (selectedIndices.size > 1) {
+                                        editViewModel.mergeSessionPages(selectedIndices) { _ ->
+                                            selectionMode = false
+                                            selectedIndices = emptySet()
+                                            hasUnsavedChanges = true
+                                        }
+                                    }
+                                },
+                                enabled = selectedIndices.size > 1
+                            ) {
+                                Icon(Icons.Default.Merge, contentDescription = "Merge", tint = Emerald400)
                             }
-                        }) { Text(stringResource(com.example.R.string.txt_cancel)) }
-                        Button(
-                            onClick = {
-                                if (sourceType == "EXISTING") {
-                                    editViewModel.commitEditingSessionChanges {
-                                        onNavigateToFinish(docId)
-                                    }
-                                } else if (docId > 0L) {
-                                    onCommitPending(docId) {
-                                        onNavigateToFinish(docId)
-                                    }
+                        } else {
+                            TextButton(onClick = { 
+                                if (hasUnsavedChanges) {
+                                    showDiscardDialog = true
                                 } else {
-                                    onImportPages(documentTitle, selectedFolder) { newDocId ->
-                                        onNavigateToFinish(newDocId)
-                                    }
+                                    if (sourceType != "EXISTING") onClearPending()
+                                    else editViewModel.endEditingSession()
+                                    onNavigateBack() 
                                 }
-                            },
-                            enabled = pages.isNotEmpty() && !editUiState.isLoading && !cameraIsLoading
-                        ) {
-                            Text(stringResource(com.example.R.string.txt_save))
+                            }) { Text(stringResource(com.example.R.string.txt_cancel)) }
+                            Button(
+                                onClick = {
+                                    if (sourceType == "EXISTING") {
+                                        editViewModel.commitEditingSessionChanges {
+                                            onNavigateToFinish(docId)
+                                        }
+                                    } else if (docId > 0L) {
+                                        onCommitPending(docId) {
+                                            onNavigateToFinish(docId)
+                                        }
+                                    } else {
+                                        onImportPages(documentTitle, selectedFolder) { newDocId ->
+                                            onNavigateToFinish(newDocId)
+                                        }
+                                    }
+                                },
+                                enabled = pages.isNotEmpty() && !editUiState.isLoading && !cameraIsLoading
+                            ) {
+                                Text(stringResource(com.example.R.string.txt_save))
+                            }
                         }
                     }
                 )
@@ -425,28 +459,34 @@ fun EditSessionScreen(
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(MaterialTheme.colorScheme.surfaceVariant)
                                     .clickable { 
-                                        coroutineScope.launch { pagerState.scrollToPage(index) } 
+                                        if (selectionMode) {
+                                            selectedIndices = if (selectedIndices.contains(index)) selectedIndices - index else selectedIndices + index
+                                        } else {
+                                            coroutineScope.launch { pagerState.scrollToPage(index) } 
+                                        }
                                     }
-                                    .then(if (pagerState.currentPage == index) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp)) else Modifier)
-                                    .pointerInput(Unit) {
-                                        detectDragGesturesAfterLongPress(
-                                            onDragStart = {
-                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                                draggingItemIndex = index
-                                            },
-                                            onDragEnd = { draggingItemIndex = null },
-                                            onDragCancel = { draggingItemIndex = null },
-                                            onDrag = { change, dragAmount ->
-                                                change.consume()
-                                                val targetIndex = (index + (dragAmount.x / 100).toInt()).coerceIn(0, pagesState.size - 1)
-                                                if (targetIndex != index) {
-                                                    val newPages = pagesState.toMutableList()
-                                                    newPages.add(targetIndex, newPages.removeAt(index))
-                                                    pagesState = newPages
-                                                    draggingItemIndex = targetIndex
+                                    .then(if (pagerState.currentPage == index && !selectionMode) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp)) else Modifier)
+                                    .pointerInput(selectionMode) {
+                                        if (!selectionMode) {
+                                            detectDragGesturesAfterLongPress(
+                                                onDragStart = {
+                                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                    draggingItemIndex = index
+                                                },
+                                                onDragEnd = { draggingItemIndex = null },
+                                                onDragCancel = { draggingItemIndex = null },
+                                                onDrag = { change, dragAmount ->
+                                                    change.consume()
+                                                    val targetIndex = (index + (dragAmount.x / 100).toInt()).coerceIn(0, pagesState.size - 1)
+                                                    if (targetIndex != index) {
+                                                        val newPages = pagesState.toMutableList()
+                                                        newPages.add(targetIndex, newPages.removeAt(index))
+                                                        pagesState = newPages
+                                                        draggingItemIndex = targetIndex
+                                                    }
                                                 }
-                                            }
-                                        )
+                                            )
+                                        }
                                     }
                             ) {
                                 if (imagePath.isNotEmpty()) {
@@ -456,16 +496,28 @@ fun EditSessionScreen(
                                         modifier = Modifier.fillMaxSize()
                                     )
                                 }
-                                Text(
-                                    text = "${index + 1}",
-                                    modifier = Modifier
-                                        .align(Alignment.TopStart)
-                                        .padding(4.dp)
-                                        .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
-                                        .padding(horizontal = 4.dp),
-                                    color = Color.White,
-                                    fontSize = 12.sp
-                                )
+                                
+                                if (selectionMode) {
+                                    Checkbox(
+                                        checked = selectedIndices.contains(index),
+                                        onCheckedChange = { 
+                                            selectedIndices = if (it) selectedIndices + index else selectedIndices - index
+                                        },
+                                        modifier = Modifier.align(Alignment.TopEnd),
+                                        colors = CheckboxDefaults.colors(checkedColor = Emerald400)
+                                    )
+                                } else {
+                                    Text(
+                                        text = "${index + 1}",
+                                        modifier = Modifier
+                                            .align(Alignment.TopStart)
+                                            .padding(4.dp)
+                                            .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                                            .padding(horizontal = 4.dp),
+                                        color = Color.White,
+                                        fontSize = 12.sp
+                                    )
+                                }
                             }
                         }
                     }
@@ -473,198 +525,188 @@ fun EditSessionScreen(
                     // Page Editor Toolbar (Rotate & Crop)
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                        horizontalArrangement = Arrangement.Center,
+                        horizontalArrangement = Arrangement.SpaceAround,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Rotate Left
                         IconButton(onClick = {
                             val currentIndex = pagerState.currentPage
-                            if (sourceType == "EXISTING") {
-                                editViewModel.rotateEditingSessionPage(currentIndex, false)
-                            } else {
-                                onRotatePendingPage(currentIndex, false)
-                            }
+                            if (sourceType == "EXISTING") editViewModel.rotateEditingSessionPage(currentIndex, false)
+                            else onRotatePendingPage(currentIndex, false)
                         }) {
-                            Icon(Icons.Default.RotateLeft, contentDescription = if (isArabic) "تدوير لليسار" else "Rotate Left")
+                            Icon(Icons.Default.RotateLeft, contentDescription = "Rotate Left")
                         }
                         
-                        // Crop
                         Button(
                             onClick = { showCropEditor = true },
                             colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
-                            modifier = Modifier.padding(horizontal = 8.dp)
+                            shape = RoundedCornerShape(12.dp)
                         ) {
                             Icon(Icons.Default.Crop, contentDescription = null)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text(if (isArabic) "قص" else "Crop")
+                            Text(if (isArabic) "قص وتعديل" else "Crop & Perspective")
                         }
 
-                        // Rotate Right
                         IconButton(onClick = {
                             val currentIndex = pagerState.currentPage
-                            if (sourceType == "EXISTING") {
-                                editViewModel.rotateEditingSessionPage(currentIndex, true)
-                            } else {
-                                onRotatePendingPage(currentIndex, true)
-                            }
+                            if (sourceType == "EXISTING") editViewModel.rotateEditingSessionPage(currentIndex, true)
+                            else onRotatePendingPage(currentIndex, true)
                         }) {
-                            Icon(Icons.Default.RotateRight, contentDescription = if (isArabic) "تدوير لليمين" else "Rotate Right")
+                            Icon(Icons.Default.RotateRight, contentDescription = "Rotate Right")
                         }
                     }
-                    
-                    // Edit Controls
+
+                    // Adjustments & Filters Section
                     Column(
                         modifier = Modifier
-                            .padding(16.dp)
+                            .fillMaxWidth()
+                            .weight(1.2f)
                             .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp)
                     ) {
-                        // Quick Filters
-                        Text(
-                            text = if (isArabic) "فلاتر الألوان السريعة" else "Quick Color Filters",
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
-                            modifier = Modifier.padding(bottom = 6.dp)
-                        )
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            FilterChip(
-                                selected = false,
-                                onClick = { applyQuickFilter(FilterType.AUTO) },
-                                label = { Text(if (isArabic) "تلقائي" else "Auto") }
-                            )
-                            FilterChip(
-                                selected = false,
-                                onClick = { applyQuickFilter(FilterType.MAGIC) },
-                                label = { Text(if (isArabic) "ألوان سحرية" else "Magic Color") }
-                            )
-                            FilterChip(
-                                selected = false,
-                                onClick = { applyQuickFilter(FilterType.DOCUMENT) },
-                                label = { Text(if (isArabic) "مستند نقي" else "Clean") }
-                            )
-                            FilterChip(
-                                selected = false,
-                                onClick = { applyQuickFilter(FilterType.BLACK_WHITE) },
-                                label = { Text(if (isArabic) "أبيض وأسود" else "B&W") }
-                            )
-                        }
-
-                        Divider(modifier = Modifier.padding(vertical = 8.dp))
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(bottom = 8.dp)
-                        ) {
-                            Checkbox(checked = applyToAll, onCheckedChange = { applyToAll = it })
-                            Text(if (isArabic) "تطبيق التعديلات على جميع الصفحات" else "Apply adjustments to all pages")
-                        }
-                        
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(if (isArabic) "السطوع" else "Brightness")
-                            Text(String.format(Locale.US, "%.0f%%", brightness * 100))
-                        }
-                        Slider(value = brightness, onValueChange = { brightness = it; hasUnsavedChanges = true }, valueRange = -1f..1f)
-                        
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(if (isArabic) "التباين" else "Contrast")
-                            Text(String.format(Locale.US, "%.1fx", contrast))
-                        }
-                        Slider(value = contrast, onValueChange = { contrast = it; hasUnsavedChanges = true }, valueRange = 0.5f..2.5f)
-
-                        // Action buttons for sliders
+                        // Quick Action Buttons
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                             horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            OutlinedButton(
-                                onClick = {
-                                    brightness = 0f
-                                    contrast = 1f
-                                    applyCurrentAdjustments()
-                                },
+                            Button(
+                                onClick = { editViewModel.smartEnhanceActivePage() },
                                 modifier = Modifier.weight(1f),
-                                enabled = !isApplyingAdjustment
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondaryContainer, contentColor = MaterialTheme.colorScheme.onSecondaryContainer),
+                                shape = RoundedCornerShape(12.dp)
                             ) {
-                                Icon(Icons.Default.RestartAlt, contentDescription = null, modifier = Modifier.size(16.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(if (isArabic) "إعادة تعيين" else "Reset")
+                                Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(if (isArabic) "تحسين تلقائي" else "Auto Enhance", fontSize = 12.sp)
                             }
+                            
+                            var showMoreMenu by remember { mutableStateOf(false) }
+                            Box(modifier = Modifier.weight(0.8f)) {
+                                OutlinedButton(
+                                    onClick = { showMoreMenu = true },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Icon(Icons.Default.MoreHoriz, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(if (isArabic) "المزيد" else "More", fontSize = 12.sp)
+                                }
+                                DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text(if (isArabic) "إضافة صفحة فارغة" else "Add Blank Page") },
+                                        leadingIcon = { Icon(Icons.Default.NoteAdd, null) },
+                                        onClick = { 
+                                            showMoreMenu = false
+                                            editViewModel.addBlankSessionPage()
+                                            hasUnsavedChanges = true
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(if (isArabic) "دمج الصفحات" else "Merge Pages") },
+                                        leadingIcon = { Icon(Icons.Default.Merge, null) },
+                                        onClick = { 
+                                            showMoreMenu = false
+                                            selectionMode = true
+                                            selectedIndices = setOf(pagerState.currentPage)
+                                        }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(if (isArabic) "إضافة ملاحظات" else "Markup") },
+                                        leadingIcon = { Icon(Icons.Default.Draw, null) },
+                                        onClick = { 
+                                            showMoreMenu = false
+                                            val currentPageId = when (val p = pages.getOrNull(pagerState.currentPage)) {
+                                                is com.example.data.model.PageEntity -> p.id
+                                                else -> 0L
+                                            }
+                                            if (currentPageId > 0L) {
+                                                onNavigateToAnnotate(docId, currentPageId)
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
 
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
+                        // Filters Scroll
+                        Text(if (isArabic) "الفلاتر" else "Filters", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        LazyRow(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            items(FilterType.entries) { filter ->
+                                FilterChip(
+                                    selected = false,
+                                    onClick = { applyQuickFilter(filter) },
+                                    label = { Text(if (isArabic) filter.displayNameAr else filter.displayNameEn, fontSize = 11.sp) }
+                                )
+                            }
+                        }
+
+                        // Adjustments
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = applyToAll, onCheckedChange = { applyToAll = it }, colors = CheckboxDefaults.colors(checkedColor = Emerald400))
+                            Text(if (isArabic) "تطبيق على الكل" else "Apply to all", fontSize = 13.sp)
+                        }
+
+                        AdjustmentSlider(
+                            label = if (isArabic) "السطوع" else "Brightness",
+                            value = brightness,
+                            onValueChange = { brightness = it; hasUnsavedChanges = true },
+                            valueRange = -1f..1f,
+                            icon = Icons.Default.Brightness6
+                        )
+                        AdjustmentSlider(
+                            label = if (isArabic) "التباين" else "Contrast",
+                            value = contrast,
+                            onValueChange = { contrast = it; hasUnsavedChanges = true },
+                            valueRange = 0.5f..2.5f,
+                            icon = Icons.Default.Contrast
+                        )
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
                             Button(
                                 onClick = { applyCurrentAdjustments() },
-                                modifier = Modifier.weight(1.4f),
-                                enabled = !isApplyingAdjustment
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(12.dp)
                             ) {
-                                if (isApplyingAdjustment) {
-                                    CircularProgressIndicator(
-                                        modifier = Modifier.size(16.dp),
-                                        color = MaterialTheme.colorScheme.onPrimary,
-                                        strokeWidth = 2.dp
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                } else {
-                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                }
-                                Text(if (isArabic) "تطبيق التعديلات" else "Apply")
-                            }
-                        }
-
-                        Divider(modifier = Modifier.padding(vertical = 8.dp))
-                        
-                        Text(if (isArabic) "ضغط ملف الـ PDF" else "PDF Compression")
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            com.example.data.model.CompressionPreset.values().forEach { preset ->
-                                FilterChip(
-                                    selected = editUiState.selectedCompression == preset,
-                                    onClick = { editViewModel.setCompression(preset) },
-                                    label = { Text(preset.name) }
-                                )
-                            }
-                        }
-
-                        Text(if (isArabic) "لغة استخراج النص (OCR)" else "OCR Language")
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceEvenly
-                        ) {
-                            com.example.engine.ocr.OcrLanguage.values().forEach { language ->
-                                FilterChip(
-                                    selected = editUiState.ocrLanguage == language,
-                                    onClick = { editViewModel.setOcrLanguage(language) },
-                                    label = { Text(language.displayName) }
-                                )
-                            }
-                        }
-                        
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
-                            horizontalArrangement = Arrangement.Center,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            // Smart Enhance
-                            IconButton(onClick = {
-                                editViewModel.smartEnhanceActivePage()
-                            }) {
-                                Icon(Icons.Default.AutoAwesome, contentDescription = "Smart Enhance")
+                                if (isApplyingAdjustment) CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
+                                else Text(if (isArabic) "تطبيق" else "Apply Changes")
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+@Composable
+fun AdjustmentSlider(
+    label: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    valueRange: ClosedFloatingPointRange<Float>,
+    icon: androidx.compose.ui.graphics.vector.ImageVector
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(icon, null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(label, style = MaterialTheme.typography.bodySmall)
+            Spacer(modifier = Modifier.weight(1f))
+            Text(String.format(Locale.US, "%.1f", value), style = MaterialTheme.typography.labelSmall)
+        }
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            valueRange = valueRange,
+            colors = SliderDefaults.colors(thumbColor = Emerald400, activeTrackColor = Emerald400)
+        )
     }
 }

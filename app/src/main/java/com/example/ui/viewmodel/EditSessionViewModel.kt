@@ -194,6 +194,11 @@ class EditSessionViewModel(
             originalSessionPages = emptyList()
             _uiState.update { it.copy(editingSessionPages = emptyList(), isEditingSession = false) }
             onComplete()
+            
+            // Trigger background processing for first page
+            pages.firstOrNull()?.id?.let { firstPageId ->
+                runOcrInBackground(firstPageId)
+            }
         }
     }
 
@@ -256,13 +261,13 @@ class EditSessionViewModel(
                         val cropped = if (valid) ImageProcessor.applyPerspectiveWarp(rawBmp, quad)
                                       else rawBmp.copy(rawBmp.config ?: android.graphics.Bitmap.Config.ARGB_8888, true)
                         try {
-                            val filtered = ImageProcessor.applyFilter(cropped, FilterType.MAGIC)
+                            val filtered = ImageProcessor.applyFilter(cropped, FilterType.AUTO)
                             try {
                                 val newPath = ImageProcessor.saveBitmapToFile(context, filtered, "batch_recrop_")
                                 val updated = page.copy(
                                     processedImagePath = newPath,
                                     cropQuadJson = if (valid) quad.toJson() else page.cropQuadJson,
-                                    filterType = FilterType.MAGIC.name
+                                    filterType = FilterType.AUTO.name
                                 )
                                 if (_uiState.value.isEditingSession) {
                                     val current = _uiState.value.editingSessionPages.toMutableList()
@@ -386,7 +391,7 @@ class EditSessionViewModel(
                         val newRotation = ((page.rotationDegrees + 90) % 360 + 360) % 360
                         val rotated = ImageProcessor.rotateBitmap(warped, newRotation)
                         try {
-                            val filter = runCatching { FilterType.valueOf(page.filterType) }.getOrDefault(FilterType.MAGIC)
+                            val filter = runCatching { FilterType.valueOf(page.filterType) }.getOrDefault(FilterType.AUTO)
                             val filtered = ImageProcessor.applyFilter(rotated, filter)
                             try {
                                 val newPath = ImageProcessor.saveBitmapToFile(context, filtered, "rotate_")
@@ -476,26 +481,107 @@ class EditSessionViewModel(
         }
     }
 
-    fun runOcrOnActivePage() {
-        val pages = _uiState.value.activePages
-        val idx = _uiState.value.selectedPageIndex
-        if (idx !in pages.indices) return
+    fun addBlankSessionPage() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val blankBmp = android.graphics.Bitmap.createBitmap(2480, 3508, android.graphics.Bitmap.Config.ARGB_8888)
+            blankBmp.eraseColor(android.graphics.Color.WHITE)
+            val path = ImageProcessor.saveBitmapToFile(context, blankBmp, "blank_session_")
+            blankBmp.recycle()
+            
+            withContext(Dispatchers.Main) {
+                val newPage = PageEntity(
+                    documentId = _uiState.value.activeDocument?.id ?: 0L,
+                    rawImagePath = path,
+                    processedImagePath = path,
+                    pageIndex = _uiState.value.editingSessionPages.size
+                )
+                val newList = _uiState.value.editingSessionPages.toMutableList()
+                newList.add(newPage)
+                _uiState.update { it.copy(editingSessionPages = newList) }
+            }
+        }
+    }
 
-        val page = pages[idx]
+    fun mergeSessionPages(indices: Set<Int>, onComplete: (String) -> Unit) {
+        val pages = _uiState.value.editingSessionPages
+        val selectedPages = indices.mapNotNull { pages.getOrNull(it) }
+        if (selectedPages.size < 2) return
+
         viewModelScope.launch(Dispatchers.Default) {
-            _uiState.update { it.copy(isOcrLoading = true) }
+            _uiState.update { it.copy(isLoading = true) }
             try {
-                val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath)
-                    ?: throw IllegalStateException("Unable to load page image")
-                try {
-                    val result = DocumentAiEngine.performOfflineOcr(bmp, _uiState.value.ocrLanguage)
-                    _uiState.update { it.copy(ocrResult = result) }
-                } finally {
-                    bmp.recycle()
+                val bitmaps = selectedPages.mapNotNull { ImageProcessor.loadBitmapFromFile(it.processedImagePath) }
+                if (bitmaps.size >= 2) {
+                    val merged = ImageProcessor.mergeBitmapsVertical(bitmaps)
+                    val path = ImageProcessor.saveBitmapToFile(context, merged, "merged_session_")
+                    bitmaps.forEach { it.recycle() }
+                    merged.recycle()
+
+                    withContext(Dispatchers.Main) {
+                        val firstIdx = indices.minOrNull() ?: 0
+                        val newPage = selectedPages.first().copy(processedImagePath = path, rawImagePath = path)
+                        
+                        val newList = pages.toMutableList()
+                        // Remove all selected indices (reverse order to keep indices valid)
+                        indices.sortedDescending().forEach { newList.removeAt(it) }
+                        // Insert merged at first position
+                        newList.add(firstIdx.coerceAtMost(newList.size), newPage)
+                        
+                        _uiState.update { it.copy(editingSessionPages = newList) }
+                        onComplete(path)
+                    }
                 }
             } catch (e: Exception) {
-                _events.send(UiEvent.Error("Analysis Failed: ${e.localizedMessage ?: "Unknown error"}"))
+                e.printStackTrace()
             } finally {
+                _uiState.update { it.copy(isLoading = false) }
+            }
+        }
+    }
+
+    fun addBlankPage(docId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val blankBmp = android.graphics.Bitmap.createBitmap(2480, 3508, android.graphics.Bitmap.Config.ARGB_8888)
+            blankBmp.eraseColor(android.graphics.Color.WHITE)
+            val path = ImageProcessor.saveBitmapToFile(context, blankBmp, "blank_")
+            blankBmp.recycle()
+            repository.addPageToDocument(docId, path, path)
+            loadDocument(docId)
+        }
+    }
+
+    fun runOcrInBackground(pageId: Long) {
+        viewModelScope.launch(Dispatchers.Default) {
+            try {
+                _uiState.update { it.copy(isOcrLoading = true) }
+                val page = repository.getPageById(pageId) ?: return@launch
+                
+                val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 1500) ?: return@launch
+                val result = DocumentAiEngine.performOfflineOcr(bmp, _uiState.value.ocrLanguage)
+                bmp.recycle()
+                
+                _uiState.update { it.copy(ocrResult = result, isOcrLoading = false) }
+
+                repository.updatePage(page.copy(
+                    ocrText = result.fullText
+                ))
+                
+                // Update document with suggested title and category
+                val doc = repository.getDocumentById(page.documentId)
+                if (doc != null) {
+                    val updatedDoc = doc.copy(
+                        suggestedTitle = result.suggestedTitle,
+                        category = result.detectedCategory.name
+                    )
+                    // If doc title is generic, update it
+                    if (doc.title.startsWith("Doc_") || doc.title.isBlank()) {
+                        repository.updateDocument(updatedDoc.copy(title = result.suggestedTitle))
+                    } else {
+                        repository.updateDocument(updatedDoc)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
                 _uiState.update { it.copy(isOcrLoading = false) }
             }
         }

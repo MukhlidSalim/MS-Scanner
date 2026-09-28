@@ -20,7 +20,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -90,7 +89,7 @@ class CameraViewModel(
                 val cropped = if (valid) ImageProcessor.applyPerspectiveWarp(rawBitmap, quad)
                               else rawBitmap.copy(rawBitmap.config ?: Bitmap.Config.ARGB_8888, true)
                 try {
-                    val filtered = ImageProcessor.applyFilter(cropped, com.example.data.model.FilterType.MAGIC)
+                    val filtered = ImageProcessor.applyFilter(cropped, com.example.data.model.FilterType.AUTO)
                     try {
                         val procPath = ImageProcessor.saveBitmapToFile(context, filtered, "import_proc_p${index + 1}_")
                         return@withContext Pair(rawPath, procPath)
@@ -115,7 +114,7 @@ class CameraViewModel(
                         val warped = if (valid) ImageProcessor.applyPerspectiveWarp(bmp, quad)
                                      else bmp.copy(bmp.config ?: Bitmap.Config.ARGB_8888, true)
                         try {
-                            val filtered = ImageProcessor.applyFilter(warped, com.example.data.model.FilterType.MAGIC)
+                            val filtered = ImageProcessor.applyFilter(warped, com.example.data.model.FilterType.AUTO)
                             try {
                                 val newPath = ImageProcessor.saveBitmapToFile(context, filtered, "recrop_p${index + 1}_")
                                 if (newPath.isNotBlank()) updated[index] = Pair(rawPath, newPath)

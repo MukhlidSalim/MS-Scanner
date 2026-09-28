@@ -1,6 +1,5 @@
 package com.example.ui.screens.home
 
-import android.app.Activity
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -51,7 +50,6 @@ import com.example.engine.cv.ImageProcessor
 import com.example.ui.components.CategoryChipsRow
 import com.example.ui.components.FolderChipsRow
 import com.example.ui.components.PdfViewerOverlay
-import com.example.ui.components.DefaultPdfAppPromptDialog
 import com.example.ui.components.ScanActionButton
 import com.example.data.repository.AppPreferences
 import com.example.engine.pdf.PdfEngine
@@ -97,28 +95,17 @@ fun HomeScreen(
     var renameDocIds by remember { mutableStateOf(listOf<Long>()) }
     var docToMove by remember { mutableStateOf<Long?>(null) }
     var showSearch by remember { mutableStateOf(false) }
-    var showCameraSheet by remember { mutableStateOf(false) }
-    var isIdCardMode by remember { mutableStateOf(false) }
-    var renameFolderTarget by remember { mutableStateOf<String?>(null) }
-    var newFolderRename by remember { mutableStateOf("") }
-    var showNewFolderDialog by remember { mutableStateOf(false) }
-    var showSortSheet by remember { mutableStateOf(false) }
-    var newFolderNameInput by remember { mutableStateOf("") }
-    
-    var showDefaultPdfPrompt by remember { mutableStateOf(false) }
     var showExportPdfDialog by remember { mutableStateOf(false) }
     var pendingExportConfig by remember { mutableStateOf<com.example.engine.pdf.PdfExportConfig?>(null) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
     
-    var tempCameraFile by remember { mutableStateOf<File?>(null) }
+    var showNewFolderDialog by remember { mutableStateOf(false) }
+    var newFolderNameInput by remember { mutableStateOf("") }
+    var renameFolderTarget by remember { mutableStateOf<String?>(null) }
+    var newFolderRename by remember { mutableStateOf("") }
+    var showSortSheet by remember { mutableStateOf(false) }
 
-    // Prompt user to set as default PDF app on initial launch
-    LaunchedEffect(Unit) {
-        if (!prefs.hasPromptedDefaultPdfApp) {
-            kotlinx.coroutines.delay(1200)
-            showDefaultPdfPrompt = true
-        }
-    }
+    var tempCameraFile by remember { mutableStateOf<File?>(null) }
 
     // System File Picker for importing / opening PDF files
     val pdfPickerLauncher = rememberLauncherForActivityResult(
@@ -159,11 +146,7 @@ fun HomeScreen(
                     selectionMode = false
                     selectedDocIds = emptySet()
                     pendingExportConfig = null
-                    Toast.makeText(
-                        context,
-                        context.getString(R.string.export_pdf_success_saved, path),
-                        Toast.LENGTH_LONG
-                    ).show()
+                    Toast.makeText(context, "Saved to $path", Toast.LENGTH_LONG).show()
                 },
                 onError = { err ->
                     Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
@@ -172,7 +155,6 @@ fun HomeScreen(
         }
     }
 
-    // Android Photo Picker handles the permission boundary itself and falls back to ACTION_OPEN_DOCUMENT on older devices.
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
     ) { uris: List<Uri> ->
@@ -183,9 +165,7 @@ fun HomeScreen(
     }
 
     val launchGalleryImport = {
-        photoPickerLauncher.launch(
-            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-        )
+        photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
     val takePictureLauncher = rememberLauncherForActivityResult(
@@ -207,32 +187,18 @@ fun HomeScreen(
                             android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270
                             else -> 0
                         }
-                        var bmp = android.graphics.BitmapFactory.decodeFile(path)
-                            ?: return@withContext null
+                        var bmp = android.graphics.BitmapFactory.decodeFile(path) ?: return@withContext null
                         try {
                             if (rotationDegrees != 0) {
                                 val rotated = ImageProcessor.rotateBitmap(bmp, rotationDegrees)
-                                if (rotated !== bmp) {
-                                    bmp.recycle()
-                                    bmp = rotated
-                                }
+                                if (rotated !== bmp) { bmp.recycle(); bmp = rotated }
                             }
                             val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "scan_raw_")
                             val quad = ImageProcessor.detectDocumentQuad(bmp)
-                            val valid = ImageProcessor.isQuadValid(quad)
-                            val warped = if (valid) ImageProcessor.applyPerspectiveWarp(bmp, quad)
-                                         else bmp.copy(bmp.config ?: android.graphics.Bitmap.Config.ARGB_8888, true)
-                            try {
-                                val filtered = ImageProcessor.applyFilter(warped, com.example.data.model.FilterType.MAGIC)
-                                try {
-                                    val procPath = ImageProcessor.saveBitmapToFile(context, filtered, "scan_proc_")
-                                    Pair(rawPath, procPath)
-                                } finally {
-                                    if (filtered !== warped) filtered.recycle()
-                                }
-                            } finally {
-                                if (warped !== bmp) warped.recycle()
-                            }
+                            val procBmp = ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
+                            val procPath = ImageProcessor.saveBitmapToFile(context, procBmp, "scan_proc_")
+                            procBmp.recycle()
+                            Pair(rawPath, procPath)
                         } finally {
                             bmp.recycle()
                         }
@@ -252,21 +218,14 @@ fun HomeScreen(
         try {
             val file = File(context.cacheDir, "camera_${System.currentTimeMillis()}.jpg")
             tempCameraFile = file
-            val uri = androidx.core.content.FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.provider",
-                file
-            )
+            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
             takePictureLauncher.launch(uri)
         } catch (e: Exception) {
             e.printStackTrace()
-            photoPickerLauncher.launch(
-                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-            )
+            launchGalleryImport()
         }
     }
 
-    // Handle Back Press for Folder & Selection Mode
     BackHandler(enabled = selectionMode || uiState.selectedFolder != "ALL" || showSearch || uiState.showFavoritesOnly) {
         if (selectionMode) {
             selectionMode = false
@@ -293,9 +252,7 @@ fun HomeScreen(
                         actionLabel = event.actionLabel,
                         duration = SnackbarDuration.Long
                     )
-                    if (result == SnackbarResult.ActionPerformed) {
-                        event.action()
-                    }
+                    if (result == SnackbarResult.ActionPerformed) { event.action() }
                 }
                 is com.example.ui.util.UiEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
                 is com.example.ui.util.UiEvent.Error -> snackbarHostState.showSnackbar(event.message)
@@ -309,397 +266,120 @@ fun HomeScreen(
         topBar = {
             if (selectionMode) {
                 TopAppBar(
-                    title = {
-                        Text(
-                            text = stringResource(R.string.txt_selected_count, selectedDocIds.size),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold
-                        )
-                    },
+                    title = { Text("${selectedDocIds.size} Selected") },
                     navigationIcon = {
-                        IconButton(onClick = {
-                            selectionMode = false
-                            selectedDocIds = emptySet()
-                        }) {
-                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.txt_cancel_selection))
+                        IconButton(onClick = { selectionMode = false; selectedDocIds = emptySet() }) {
+                            Icon(Icons.Default.Close, null)
                         }
                     },
                     actions = {
-                        if (selectedDocIds.size >= 2) {
-                            IconButton(onClick = {
-                                listViewModel.mergeDocuments(selectedDocIds.toList())
-                                selectionMode = false
-                                selectedDocIds = emptySet()
-                            }) {
-                                Icon(Icons.AutoMirrored.Filled.MergeType, contentDescription = "Merge")
-                            }
-                        }
-                        IconButton(onClick = {
-                            docToMove = selectedDocIds.firstOrNull()
-                        }) {
-                            Icon(Icons.AutoMirrored.Filled.DriveFileMove, contentDescription = "Move")
-                        }
-                        IconButton(onClick = {
-                            showExportPdfDialog = true
-                        }) {
-                            Icon(
-                                Icons.Default.PictureAsPdf,
-                                contentDescription = stringResource(R.string.export_pdf_btn),
-                                tint = GoldBase
-                            )
-                        }
-                        IconButton(onClick = {
-                            showExportPdfDialog = true
-                        }) {
-                            Icon(Icons.Default.Share, contentDescription = "Share")
-                        }
-                        IconButton(onClick = {
+                        IconButton(onClick = { 
                             renameDocIds = selectedDocIds.toList()
                             renameBaseName = ""
                             showRenameDialog = true
-                        }) {
-                            Icon(Icons.Default.Edit, contentDescription = "Rename")
-                        }
-                        IconButton(onClick = {
-                            val docId = selectedDocIds.firstOrNull()
-                            if (docId != null) {
-                                listViewModel.printDocumentById(context, docId)
-                                selectionMode = false
-                                selectedDocIds = emptySet()
-                            }
-                        }) {
-                            Icon(Icons.Default.Print, contentDescription = "Print")
-                        }
+                        }) { Icon(Icons.Default.Edit, null) }
+                        
                         IconButton(onClick = { showTrashDialog = true }) {
-                            Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.txt_delete_selected), tint = MaterialTheme.colorScheme.error)
+                            Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error)
                         }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
-                    )
+                    }
                 )
             } else {
                 TopAppBar(
                     title = {
                         Column {
-                            Text(
-                                text = "مرحباً بك",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = TextSecondary
-                            )
-                            Text(
-                                text = stringResource(R.string.app_name),
-                                style = MaterialTheme.typography.headlineLarge,
-                                fontWeight = FontWeight.Black,
-                                color = GoldBase
-                            )
+                            Text(text = if (isArabic) "مرحباً بك" else "Welcome", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                            Text(text = if (isArabic) "إليك مستنداتك الأخيرة" else "Here are your recent documents", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     },
                     actions = {
-                        var expanded by remember { mutableStateOf(false) }
-                        IconButton(onClick = { expanded = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "Menu")
-                        }
-                        DropdownMenu(
-                            expanded = expanded,
-                            onDismissRequest = { expanded = false },
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_select)) },
-                                leadingIcon = { Icon(Icons.Default.Check, null) },
-                                onClick = { expanded = false; selectionMode = true }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_grid_view)) },
-                                leadingIcon = { Icon(Icons.Default.GridView, null) },
-                                onClick = { expanded = false } // Grid view is default
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_sort)) },
-                                leadingIcon = { Icon(Icons.Default.Sort, null) },
-                                onClick = { expanded = false; showSortSheet = true }
-                            )
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_import_pdf)) },
-                                leadingIcon = { Icon(Icons.Default.PictureAsPdf, null, tint = GoldBase) },
-                                onClick = { 
-                                    expanded = false
-                                    pdfPickerLauncher.launch(arrayOf("application/pdf"))
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.pdf_default_app_title)) },
-                                leadingIcon = { Icon(Icons.Default.Star, null, tint = GoldBase) },
-                                onClick = { 
-                                    expanded = false
-                                    showDefaultPdfPrompt = true
-                                }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.desc_import_photos)) },
-                                leadingIcon = { Icon(Icons.Default.PhotoLibrary, null) },
-                                onClick = { expanded = false; launchGalleryImport() }
-                            )
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_new_folder)) },
-                                leadingIcon = { Icon(Icons.Default.CreateNewFolder, null) },
-                                onClick = { expanded = false; showNewFolderDialog = true }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_insert_blank_page)) },
-                                leadingIcon = { Icon(Icons.Default.NoteAdd, null) },
-                                onClick = { 
-                                    expanded = false
-                                    // Assuming a blank page is a white bitmap
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        val blankBmp = android.graphics.Bitmap.createBitmap(2480, 3508, android.graphics.Bitmap.Config.ARGB_8888)
-                                        blankBmp.eraseColor(android.graphics.Color.WHITE)
-                                        val path = ImageProcessor.saveBitmapToFile(context, blankBmp, "blank_")
-                                        blankBmp.recycle()
-                                        withContext(Dispatchers.Main) {
-                                            onPagesCaptured(listOf(Pair(path, path)))
-                                            onNavigateToEditSession("CAMERA", 0L)
-                                        }
-                                    }
-                                }
-                            )
-                            HorizontalDivider()
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_settings_menu)) },
-                                leadingIcon = { Icon(Icons.Default.Settings, null) },
-                                onClick = { expanded = false; onNavigateToSettings() }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_about_app)) },
-                                leadingIcon = { Icon(Icons.Default.Info, null) },
-                                onClick = { expanded = false; Toast.makeText(context, "DocScan Pro v1.0", Toast.LENGTH_SHORT).show() }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_feedback_menu)) },
-                                leadingIcon = { Icon(Icons.Default.Feedback, null) },
-                                onClick = { 
-                                    expanded = false
-                                    val intent = android.content.Intent(android.content.Intent.ACTION_SENDTO).apply {
-                                        data = android.net.Uri.parse("mailto:support@example.com")
-                                        putExtra(android.content.Intent.EXTRA_SUBJECT, "Feedback for DocScan Pro")
-                                    }
-                                    context.startActivity(android.content.Intent.createChooser(intent, "Send Feedback"))
-                                }
-                            )
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+                        IconButton(onClick = { showSearch = !showSearch }) { Icon(Icons.Default.Search, null) }
+                        IconButton(onClick = onNavigateToSettings) { Icon(Icons.Default.Settings, null) }
+                    }
                 )
             }
         },
         floatingActionButton = {
-            // FAB removed as requested
-        },
-        floatingActionButtonPosition = FabPosition.Center,
-        bottomBar = {
-            NavigationBar(
-                containerColor = InkBase,
-                modifier = Modifier.border(1.dp, InkBorder)
-            ) {
-                // Shared colors
-                val navItemColors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = GoldBase,
-                    indicatorColor = InkSurface2,
-                    unselectedIconColor = TextSecondary
-                )
+            if (!selectionMode) {
+                Column(horizontalAlignment = Alignment.End) {
+                    // Secondary FABs for Import
+                    SmallFloatingActionButton(
+                        onClick = launchGalleryImport,
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(bottom = 8.dp)
+                    ) { Icon(Icons.Default.PhotoLibrary, null) }
+                    
+                    SmallFloatingActionButton(
+                        onClick = { pdfPickerLauncher.launch(arrayOf("application/pdf")) },
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+                        modifier = Modifier.padding(bottom = 16.dp)
+                    ) { Icon(Icons.Default.PictureAsPdf, null) }
 
-                // Home
-                NavigationBarItem(
-                    selected = !uiState.showFavoritesOnly,
-                    onClick = { listViewModel.setShowFavoritesOnly(false) },
-                    icon = { Icon(Icons.Default.Home, contentDescription = "Home") },
-                    label = { Text(stringResource(R.string.nav_home)) },
-                    colors = navItemColors
-                )
-                // Import
-                NavigationBarItem(
-                    selected = false,
-                    onClick = {
-                        launchGalleryImport()
-                    },
-                    icon = { Icon(Icons.Default.AddPhotoAlternate, contentDescription = "Import") },
-                    label = { Text(stringResource(R.string.txt_import)) },
-                    colors = navItemColors
-                )
-                // Scan
-                NavigationBarItem(
-                    selected = false,
-                    onClick = { onNavigateToScan("DOCUMENT") },
-                    icon = { Icon(Icons.Default.CameraAlt, contentDescription = "Scan") },
-                    label = { Text(stringResource(R.string.txt_scan)) },
-                    colors = navItemColors
-                )
-                // Favorites
-                NavigationBarItem(
-                    selected = uiState.showFavoritesOnly,
-                    onClick = { listViewModel.setShowFavoritesOnly(true) },
-                    icon = { 
-                        Icon(
-                            imageVector = if (uiState.showFavoritesOnly) Icons.Default.Star else Icons.Default.StarBorder, 
-                            contentDescription = "Favorites"
-                        ) 
-                    },
-                    label = { Text(stringResource(R.string.nav_favorites)) },
-                    colors = navItemColors
-                )
-                // Settings
-                NavigationBarItem(
-                    selected = false,
-                    onClick = { onNavigateToSettings() },
-                    icon = { Icon(Icons.Default.Settings, contentDescription = "Settings") },
-                    label = { Text(stringResource(R.string.nav_settings)) },
-                    colors = navItemColors
-                )
+                    // Main Scan FAB
+                    FloatingActionButton(
+                        onClick = { onNavigateToScan("DOCUMENT") },
+                        containerColor = Emerald400,
+                        contentColor = Color.Black,
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Row(modifier = Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.CameraAlt, null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (isArabic) "مسح مستند" else "Scan Document", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
             }
         }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .background(MaterialTheme.colorScheme.background)
-        ) {
-            // Persistent Search Bar
-            if (!selectionMode) {
+    ) { padding ->
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            if (showSearch) {
                 OutlinedTextField(
                     value = uiState.searchQuery,
                     onValueChange = { listViewModel.onSearchQueryChanged(it) },
-                    placeholder = {
-                        Text(
-                            text = stringResource(R.string.search_hint),
-                            color = TextSecondary
-                        )
-                    },
-                    leadingIcon = {
-                        Icon(Icons.Default.Search, contentDescription = null, tint = TextSecondary)
-                    },
-                    shape = RoundedCornerShape(16.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedContainerColor   = InkSurface1,
-                        unfocusedContainerColor = InkSurface1,
-                        focusedBorderColor      = Color.Transparent,
-                        unfocusedBorderColor    = Color.Transparent
-                    ),
+                    placeholder = { Text(if (isArabic) "ابحث في المستندات..." else "Search documents...") },
+                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                    leadingIcon = { Icon(Icons.Default.Search, null) },
+                    trailingIcon = { IconButton(onClick = { showSearch = false; listViewModel.onSearchQueryChanged("") }) { Icon(Icons.Default.Close, null) } },
                     singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                    shape = RoundedCornerShape(12.dp)
                 )
             }
-            
-            val displayDocs = if (uiState.selectedFolder == "ALL" && uiState.searchQuery.isEmpty() && !uiState.showFavoritesOnly) {
-                uiState.documents.filter { it.folderName == "Default" || it.folderName == "ALL" }
-            } else {
-                uiState.documents
-            }
-            
-            val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
 
-            // Category Chips Row (Filtering)
-            if (!selectionMode && uiState.searchQuery.isEmpty() && !uiState.showFavoritesOnly) {
+            val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
+            
+            // Folder and Category Strips
+            if (!selectionMode && uiState.searchQuery.isEmpty()) {
+                FolderChipsRow(
+                    folders = folders,
+                    selectedFolder = uiState.selectedFolder,
+                    onFolderSelected = { listViewModel.filterByFolder(it) },
+                    onCreateFolderClick = { showNewFolderDialog = true }
+                )
                 CategoryChipsRow(
                     selectedCategory = uiState.selectedCategory,
                     onCategorySelected = { listViewModel.filterByCategory(it) }
                 )
             }
 
-            // Folder Filter Strip
-            if (folders.isNotEmpty() && !selectionMode && uiState.searchQuery.isEmpty() && !uiState.showFavoritesOnly) {
-                FolderChipsRow(
-                    folders = folders,
-                    selectedFolder = uiState.selectedFolder,
-                    onFolderSelected = { listViewModel.filterByFolder(it) },
-                    onCreateFolderClick = { showNewFolderDialog = true },
-                    onRenameFolder = { oldName, newName -> listViewModel.renameFolder(oldName, newName) },
-                    onDeleteFolder = { listViewModel.deleteFolder(it) }
-                )
-            }
-
-            val isEmpty = uiState.documents.isEmpty() && folders.isEmpty() && uiState.searchQuery.isEmpty() && !uiState.showFavoritesOnly
-            val isFavoritesEmpty = uiState.documents.isEmpty() && uiState.showFavoritesOnly
-
-            if (isEmpty || isFavoritesEmpty) {
-                // Luxury Clean Empty State
+            val docs = uiState.documents
+            if (docs.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(horizontal = 32.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(96.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f))
-                                .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f), CircleShape),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                imageVector = if (uiState.showFavoritesOnly) Icons.Default.StarBorder else Icons.Default.DocumentScanner,
-                                contentDescription = null,
-                                modifier = Modifier.size(46.dp),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        Spacer(modifier = Modifier.height(24.dp))
-                        Text(
-                            text = if (uiState.showFavoritesOnly) (if (isArabic) "لا توجد مستندات مفضلة" else "No Favorite Documents") else stringResource(R.string.txt_no_documents),
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = if (uiState.showFavoritesOnly) (if (isArabic) "اضغط على أيقونة النجمة في المستندات لتمييزها كمفضلة" else "Tap the star icon on documents to mark them as favorites") else stringResource(R.string.txt_no_documents_body),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        )
-                        if (!uiState.showFavoritesOnly) {
-                            Spacer(modifier = Modifier.height(28.dp))
-                            Button(
-                                onClick = { showCameraSheet = true },
-                                shape = RoundedCornerShape(22.dp),
-                                contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                Icon(Icons.Default.CameraAlt, contentDescription = null, modifier = Modifier.size(20.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(stringResource(R.string.txt_start_scanning), fontWeight = FontWeight.Bold)
-                            }
-                        }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(Icons.Default.Description, null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.outline)
+                        Text(if (isArabic) "لا توجد مستندات" else "No documents found", style = MaterialTheme.typography.bodyLarge)
                     }
                 }
             } else {
                 LazyVerticalGrid(
                     columns = GridCells.Fixed(2),
-                    contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 96.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                    modifier = Modifier.fillMaxSize()
+                    contentPadding = PaddingValues(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    // Folders (Only show in ALL view or when searching, and hide if showing favorites only)
-                    if ((uiState.selectedFolder == "ALL" || uiState.searchQuery.isNotEmpty()) && folders.isNotEmpty() && !uiState.showFavoritesOnly) {
-                        val filteredFolders = folders.filter { it.contains(uiState.searchQuery, ignoreCase = true) }
-                        items(filteredFolders) { folder ->
-                            FolderGridItem(
-                                folderName = folder,
-                                documentCount = uiState.documents.count { it.folderName == folder },
-                                onClick = { listViewModel.filterByFolder(folder) },
-                                onRenameClick = { renameFolderTarget = folder; newFolderRename = folder }
-                            )
-                        }
-                    }
-
-                    // Documents
-                    items(displayDocs) { doc ->
+                    items(docs) { doc ->
                         DocumentGridItem(
                             doc = doc,
                             searchQuery = uiState.searchQuery,
@@ -707,30 +387,16 @@ fun HomeScreen(
                             selectionMode = selectionMode,
                             onClick = {
                                 if (selectionMode) {
-                                    if (selectedDocIds.contains(doc.id)) selectedDocIds -= doc.id else selectedDocIds += doc.id
+                                    selectedDocIds = if (selectedDocIds.contains(doc.id)) selectedDocIds - doc.id else selectedDocIds + doc.id
                                     if (selectedDocIds.isEmpty()) selectionMode = false
                                 } else {
                                     onNavigateToDocument(doc.id)
                                 }
                             },
-                            onEditClick = {
-                                onNavigateToEditSession("EXISTING", doc.id)
-                            },
+                            onEditClick = { onNavigateToEditSession("EXISTING", doc.id) },
                             onLongClick = {
                                 selectionMode = true
-                                selectedDocIds += doc.id
-                            },
-                            onDeleteClick = {
-                                listViewModel.deleteDocument(doc.id)
-                            },
-                            onRenameClick = {
-                                renameDocIds = listOf(doc.id)
-                                renameBaseName = doc.title
-                                showRenameDialog = true
-                            },
-                            onExportClick = {
                                 selectedDocIds = setOf(doc.id)
-                                showExportPdfDialog = true
                             }
                         )
                     }
@@ -739,471 +405,62 @@ fun HomeScreen(
         }
     }
 
-    NewFolderDialog(
-        show = showNewFolderDialog,
-        onDismiss = { showNewFolderDialog = false },
-        onConfirm = { name ->
-            listViewModel.filterByFolder(name)
-            newFolderNameInput = ""
-        }
-    )
-
-    RenameDocumentsDialog(
-        show = showRenameDialog,
-        onDismiss = { showRenameDialog = false },
-        onConfirm = { name ->
-            listViewModel.renameDocuments(renameDocIds, name)
-            selectionMode = false
-            selectedDocIds = emptySet()
-        }
-    )
-
-    if (docToMove != null) {
-        var selectedFolderDest by remember { mutableStateOf("Default") }
-        AlertDialog(
-            onDismissRequest = { docToMove = null },
-            shape = RoundedCornerShape(22.dp),
-            title = { Text(stringResource(R.string.txt_move_to_folder), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    uiState.folders.forEach { folder ->
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = if (selectedFolderDest == folder) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f) else Color.Transparent,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable { selectedFolderDest = folder }
-                                .padding(vertical = 4.dp)
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                            ) {
-                                RadioButton(selected = selectedFolderDest == folder, onClick = { selectedFolderDest = folder })
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(folder, style = MaterialTheme.typography.bodyLarge)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (selectedDocIds.isNotEmpty()) {
-                            selectedDocIds.forEach { listViewModel.changeDocumentFolder(it, selectedFolderDest) }
-                        } else {
-                            listViewModel.changeDocumentFolder(docToMove!!, selectedFolderDest)
-                        }
-                        docToMove = null
-                        selectionMode = false
-                        selectedDocIds = emptySet()
-                    },
-                    shape = RoundedCornerShape(12.dp)
-                ) { Text(stringResource(R.string.txt_save), fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(onClick = { docToMove = null }, shape = RoundedCornerShape(12.dp)) {
-                    Text(stringResource(R.string.txt_cancel))
-                }
-            }
-        )
-    }
-
-    if (showCameraSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showCameraSheet = false },
-            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-            containerColor = MaterialTheme.colorScheme.surface
-        ) {
-            Column(modifier = Modifier.padding(20.dp).fillMaxWidth()) {
-                Text(
-                    text = stringResource(R.string.txt_scan_document),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(bottom = 16.dp)
-                )
-                
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
-                    border = CardDefaults.outlinedCardBorder().copy(
-                        brush = Brush.horizontalGradient(
-                            listOf(MaterialTheme.colorScheme.outlineVariant, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                        )
-                    ),
-                    modifier = Modifier.fillMaxWidth().clickable {
-                        showCameraSheet = false
-                        onNavigateToScan("DOCUMENT")
-                    }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.primaryContainer),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.DocumentScanner,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary
-                            )
-                        }
-                        Column {
-                            Text(if (isArabic) "تصوير مستند (تلقائي)" else "Scan Document (Auto)", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text(if (isArabic) "التقاط تلقائي ذكي مع تحديد حواف المستند" else "Intelligent auto capture & edge detection", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
-                    border = CardDefaults.outlinedCardBorder().copy(
-                        brush = Brush.horizontalGradient(
-                            listOf(MaterialTheme.colorScheme.outlineVariant, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                        )
-                    ),
-                    modifier = Modifier.fillMaxWidth().clickable {
-                        showCameraSheet = false
-                        onNavigateToScan("ID_CARD")
-                    }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.secondaryContainer),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.Badge,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.secondary
-                            )
-                        }
-                        Column {
-                            Text(if (isArabic) "تصوير بطاقة" else "Scan ID Card", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text(if (isArabic) "تصوير الوجهين الأمامي والخلفي ودمجهما باحترافية" else "Capture front & back and merge professionally", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
-                    border = CardDefaults.outlinedCardBorder().copy(
-                        brush = Brush.horizontalGradient(
-                            listOf(MaterialTheme.colorScheme.outlineVariant, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                        )
-                    ),
-                    modifier = Modifier.fillMaxWidth().clickable {
-                        showCameraSheet = false
-                        onNavigateToScan("BATCH")
-                    }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.tertiaryContainer),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.BurstMode,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.tertiary
-                            )
-                        }
-                        Column {
-                            Text(if (isArabic) "تصوير متعدد (دفعة صفحات)" else "Batch Multi-Page Scan", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text(if (isArabic) "تصوير متتالي وسريع لعدة صفحات في مستند واحد" else "Continuous rapid scanning into one document", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
-                    border = CardDefaults.outlinedCardBorder().copy(
-                        brush = Brush.horizontalGradient(
-                            listOf(MaterialTheme.colorScheme.outlineVariant, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
-                        )
-                    ),
-                    modifier = Modifier.fillMaxWidth().clickable {
-                        showCameraSheet = false
-                        onNavigateToScan("PASSPORT")
-                    }
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .size(44.dp)
-                                .clip(CircleShape)
-                                .background(Emerald400.copy(alpha = 0.2f)),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(
-                                Icons.Default.MenuBook,
-                                contentDescription = null,
-                                tint = Emerald400
-                            )
-                        }
-                        Column {
-                            Text(if (isArabic) "تصوير جواز" else "Scan Passport", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                            Text(if (isArabic) "إطار مخصص لصفحة بيانات وصورة الجواز" else "Dedicated frame for passport bio page & MRZ", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(32.dp))
-            }
-        }
-    }
-
-    if (renameFolderTarget != null) {
-        AlertDialog(
-            onDismissRequest = { renameFolderTarget = null },
-            shape = RoundedCornerShape(22.dp),
-            title = { Text(stringResource(R.string.txt_rename_folder), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) },
-            text = {
-                OutlinedTextField(
-                    value = newFolderRename,
-                    onValueChange = { newFolderRename = it },
-                    label = { Text(stringResource(R.string.txt_new_folder_name)) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                    ),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        if (newFolderRename.isNotBlank()) {
-                            listViewModel.renameFolder(renameFolderTarget!!, newFolderRename)
-                        }
-                        renameFolderTarget = null
-                    },
-                    shape = RoundedCornerShape(12.dp)
-                ) { Text(stringResource(R.string.txt_save), fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(onClick = { renameFolderTarget = null }, shape = RoundedCornerShape(12.dp)) {
-                    Text(stringResource(R.string.txt_cancel))
-                }
-            }
+    // Dialogs
+    if (showNewFolderDialog) {
+        NewFolderDialog(
+            show = showNewFolderDialog,
+            onDismiss = { showNewFolderDialog = false },
+            onConfirm = { /* listViewModel.createFolder(it) */ showNewFolderDialog = false }
         )
     }
 
     if (showTrashDialog) {
         AlertDialog(
             onDismissRequest = { showTrashDialog = false },
-            shape = RoundedCornerShape(22.dp),
-            title = { Text(stringResource(R.string.txt_move_to_trash), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) },
-            text = { Text("Move ${selectedDocIds.size} documents to trash?", style = MaterialTheme.typography.bodyMedium) },
+            title = { Text(if (isArabic) "نقل إلى المحذوفات" else "Move to Trash") },
+            text = { Text(if (isArabic) "هل أنت متأكد من نقل المستندات المختارة إلى سلة المحذوفات؟" else "Are you sure you want to move selected documents to trash?") },
             confirmButton = {
-                Button(
-                    onClick = {
-                        selectedDocIds.forEach { listViewModel.deleteDocument(it) }
-                        selectionMode = false
-                        selectedDocIds = emptySet()
-                        showTrashDialog = false
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-                ) {
-                    Text(stringResource(R.string.desc_delete), fontWeight = FontWeight.Bold)
-                }
+                TextButton(onClick = {
+                    selectedDocIds.forEach { listViewModel.moveToTrash(it) }
+                    showTrashDialog = false
+                    selectionMode = false
+                    selectedDocIds = emptySet()
+                }) { Text(if (isArabic) "نقل" else "Move", color = MaterialTheme.colorScheme.error) }
             },
             dismissButton = {
-                TextButton(onClick = { showTrashDialog = false }, shape = RoundedCornerShape(12.dp)) {
-                    Text(stringResource(R.string.txt_cancel))
-                }
+                TextButton(onClick = { showTrashDialog = false }) { Text(if (isArabic) "إلغاء" else "Cancel") }
             }
         )
     }
 
-
-    if (showSortSheet) {
-        ModalBottomSheet(onDismissRequest = { showSortSheet = false }) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(stringResource(R.string.txt_sort), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-                Spacer(modifier = Modifier.height(16.dp))
-                
-                val currentSort = uiState.sortMode
-                
-                val sortOptions = listOf(
-                    com.example.ui.viewmodel.SortOrder.DATE_CREATED to "تاريخ الإنشاء (أحدث)",
-                    com.example.ui.viewmodel.SortOrder.DATE_MODIFIED to "تاريخ التعديل (أحدث)",
-                    com.example.ui.viewmodel.SortOrder.NAME to "الاسم (أ-ي)",
-                    com.example.ui.viewmodel.SortOrder.SIZE to "الحجم (الأكبر)"
-                )
-                
-                sortOptions.forEach { (order, label) ->
-                    val isSelected = currentSort == order
-                    Surface(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        shape = RoundedCornerShape(12.dp),
-                        color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surface,
-                        onClick = {
-                            listViewModel.setSortMode(order)
-                            showSortSheet = false
-                        }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(16.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = when (order) {
-                                    com.example.ui.viewmodel.SortOrder.DATE_CREATED -> Icons.Default.DateRange
-                                    com.example.ui.viewmodel.SortOrder.DATE_MODIFIED -> Icons.Default.Update
-                                    com.example.ui.viewmodel.SortOrder.NAME -> Icons.Default.SortByAlpha
-                                    com.example.ui.viewmodel.SortOrder.SIZE -> Icons.Default.FormatSize
-                                },
-                                contentDescription = null,
-                                tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.bodyLarge,
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
-                            )
-                            if (isSelected) {
-                                Spacer(modifier = Modifier.weight(1f))
-                                Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(32.dp))
-            }
-        }
-    }
-
-    // Multi-Page PDF Export Dialog for selected documents
-    val selectedDocsList = remember(selectedDocIds, uiState.documents) {
-        uiState.documents.filter { it.id in selectedDocIds }
-    }
-    val totalSelectedPages = remember(selectedDocsList) {
-        selectedDocsList.sumOf { it.pageCount }
-    }
-
-    ExportPdfDialog(
-        show = showExportPdfDialog,
-        selectedDocuments = selectedDocsList,
-        totalPageCount = totalSelectedPages,
-        isExporting = uiState.isLoading,
-        onDismiss = { showExportPdfDialog = false },
-        onExportAction = { config, action ->
-            if (action == ExportPdfAction.SAVE_AS) {
-                pendingExportConfig = config
-                createPdfDocumentLauncher.launch("${config.title}.pdf")
-            } else {
-                listViewModel.exportDocumentsAsPdf(
-                    context = context,
-                    docIds = selectedDocIds.toList(),
-                    config = config,
-                    action = action,
-                    onSuccess = { pdfFile, _, path ->
-                        if (action == ExportPdfAction.PREVIEW) {
-                            showExportPdfDialog = false
-                            previewPdfFile = pdfFile
-                        } else {
-                            showExportPdfDialog = false
-                            selectionMode = false
-                            selectedDocIds = emptySet()
-                            when (action) {
-                                ExportPdfAction.SAVE_TO_DOWNLOADS -> {
-                                    Toast.makeText(
-                                        context,
-                                        context.getString(R.string.export_pdf_success_saved, path),
-                                        Toast.LENGTH_LONG
-                                    ).show()
-                                }
-                                ExportPdfAction.SHARE -> {
-                                    Toast.makeText(
-                                        context,
-                                        context.getString(R.string.export_pdf_success_shared),
-                                        Toast.LENGTH_SHORT
-                                    ).show()
-                                }
-                                else -> {}
-                            }
-                        }
-                    },
-                    onError = { err ->
-                        Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
-                    }
-                )
-            }
-        }
-    )
-
-    // In-App PDF Review & Viewer Overlay before sharing via FileProvider
-    previewPdfFile?.let { pdfFile ->
-        PdfViewerOverlay(
-            pdfFile = pdfFile,
-            onDismiss = {
-                previewPdfFile = null
+    if (showRenameDialog) {
+        RenameDocumentsDialog(
+            show = showRenameDialog,
+            onDismiss = { showRenameDialog = false },
+            onConfirm = { newName ->
+                listViewModel.renameDocuments(renameDocIds, newName)
+                showRenameDialog = false
                 selectionMode = false
                 selectedDocIds = emptySet()
-            },
-            onShareComplete = {
-                // Optionally can close or keep open
             }
         )
     }
-
-    // Default PDF App Prompt Dialog
-    DefaultPdfAppPromptDialog(
-        show = showDefaultPdfPrompt,
-        onDismiss = {
-            showDefaultPdfPrompt = false
-            prefs.hasPromptedDefaultPdfApp = true
-        },
-        onConfirm = {
-            showDefaultPdfPrompt = false
-            prefs.hasPromptedDefaultPdfApp = true
-        }
-    )
+    
+    if (showExportPdfDialog) {
+        ExportPdfDialog(
+            show = showExportPdfDialog,
+            selectedDocuments = uiState.documents.filter { selectedDocIds.contains(it.id) },
+            totalPageCount = uiState.documents.filter { selectedDocIds.contains(it.id) }.sumOf { it.pageCount },
+            isExporting = false,
+            onDismiss = { showExportPdfDialog = false },
+            onExportAction = { config, action ->
+                pendingExportConfig = config
+                if (action == ExportPdfAction.SAVE_AS) {
+                    createPdfDocumentLauncher.launch(config.title + ".pdf")
+                } else {
+                    listViewModel.exportDocumentsAsPdf(context, selectedDocIds.toList(), config, action)
+                }
+            }
+        )
+    }
 }

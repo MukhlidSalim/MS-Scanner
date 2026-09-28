@@ -3,10 +3,15 @@ package com.example.data.repository
 import android.content.Context
 import android.content.SharedPreferences
 import com.example.data.model.CompressionPreset
+import com.example.data.model.LockType
 import com.example.data.model.PageSizePreset
 
 class AppPreferences(context: Context) {
     private val prefs: SharedPreferences = context.getSharedPreferences("app_prefs", Context.MODE_PRIVATE)
+
+    var lockType: LockType
+        get() = LockType.valueOf(prefs.getString("lock_type", LockType.NONE.name) ?: LockType.NONE.name)
+        set(value) = prefs.edit().putString("lock_type", value.name).apply()
 
     var userPin: String
         get() = prefs.getString("user_pin", "") ?: ""
@@ -24,11 +29,7 @@ class AppPreferences(context: Context) {
         get() = CompressionPreset.valueOf(prefs.getString("pdf_compression", CompressionPreset.HIGH.name) ?: CompressionPreset.HIGH.name)
         set(value) = prefs.edit().putString("pdf_compression", value.name).apply()
 
-    var biometricEnabled: Boolean
-        get() = prefs.getBoolean("biometric_enabled", false)
-        set(value) = prefs.edit().putBoolean("biometric_enabled", value).apply()
-
-    var hasPromptedDefaultPdfApp: Boolean
-        get() = prefs.getBoolean("has_prompted_default_pdf", false)
-        set(value) = prefs.edit().putBoolean("has_prompted_default_pdf", value).apply()
+    var ocrLanguage: String
+        get() = prefs.getString("ocr_language", "AUTO") ?: "AUTO"
+        set(value) = prefs.edit().putString("ocr_language", value).apply()
 }

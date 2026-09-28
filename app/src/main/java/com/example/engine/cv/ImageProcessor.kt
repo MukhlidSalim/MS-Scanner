@@ -1621,6 +1621,20 @@ object ImageProcessor {
         }
     }
 
+    suspend fun mergeBitmapsVertical(bitmaps: List<Bitmap>): Bitmap = withContext(Dispatchers.Default) {
+        val totalWidth = bitmaps.maxOf { it.width }
+        val totalHeight = bitmaps.sumOf { it.height }
+        val result = Bitmap.createBitmap(totalWidth, totalHeight, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(result)
+        canvas.drawColor(Color.WHITE)
+        var currentY = 0f
+        for (bitmap in bitmaps) {
+            canvas.drawBitmap(bitmap, 0f, currentY, null)
+            currentY += bitmap.height
+        }
+        result
+    }
+
     suspend fun loadBitmapFromFile(path: String, maxDim: Int = 2400): Bitmap? = withContext(Dispatchers.IO) {
         try {
             val file = File(path)
