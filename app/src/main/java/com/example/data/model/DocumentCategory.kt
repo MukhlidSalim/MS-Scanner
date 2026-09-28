@@ -20,6 +20,7 @@ enum class FilterType(val displayNameEn: String, val displayNameAr: String) {
     DOCUMENT("Document", "مستند"),
     TEXT("Text", "نص"),
     BLACK_WHITE("B&W", "أبيض وأسود"),
+    HIGH_CONTRAST("High Contrast", "تباين عالي"),
     GRAYSCALE("Grayscale", "تدرج رمادي"),
     VIBRANT("Vibrant", "حيوي")
 }

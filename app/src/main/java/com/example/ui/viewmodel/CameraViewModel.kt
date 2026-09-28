@@ -7,6 +7,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.*
 import com.example.data.model.DocumentCategory
 import com.example.data.repository.DocumentRepository
+import com.example.engine.cv.BatchProcessingQueue
+import com.example.engine.cv.BatchQueueState
 import com.example.engine.cv.ImageProcessingWorker
 import com.example.engine.cv.ImageProcessor
 import com.example.engine.ocr.DocumentAiEngine
@@ -21,7 +23,8 @@ data class CameraUiState(
     val importedUrisPending: List<Uri> = emptyList(),
     val isLoading: Boolean = false,
     val detectedCategory: DocumentCategory = DocumentCategory.OTHER,
-    val detectedOcrText: String = ""
+    val detectedOcrText: String = "",
+    val batchQueueState: BatchQueueState = BatchQueueState()
 )
 
 class CameraViewModel(
@@ -36,54 +39,78 @@ class CameraViewModel(
     val events = _events.receiveAsFlow()
 
     private val workManager = WorkManager.getInstance(context)
+    val batchProcessingQueue = BatchProcessingQueue(viewModelScope)
+
+    init {
+        // Collect batch queue state continuously to drive non-blocking UI updates
+        viewModelScope.launch {
+            batchProcessingQueue.queueState.collectLatest { queueState ->
+                _uiState.update { it.copy(batchQueueState = queueState) }
+            }
+        }
+    }
 
     fun setPagesPendingEdit(pages: List<Pair<String, String>>) {
         _uiState.update { it.copy(pagesPendingEdit = pages) }
     }
 
-    fun setImportedUrisPendingEdit(uris: List<Uri>) {
-        _uiState.update { it.copy(importedUrisPending = uris, pagesPendingEdit = emptyList()) }
-        processImportedUris(uris)
+    fun setImportedUrisPendingEdit(uris: List<Uri>, autoCrop: Boolean = true) {
+        _uiState.update { 
+            it.copy(
+                importedUrisPending = uris,
+                pagesPendingEdit = emptyList(),
+                isLoading = false // Non-blocking: UI remains interactive immediately
+            ) 
+        }
+        processImportedUrisWithBatchQueue(uris, autoCrop)
     }
 
-    private fun processImportedUris(uris: List<Uri>) {
-        val workRequest = OneTimeWorkRequestBuilder<ImageProcessingWorker>()
-            .setInputData(workDataOf(
-                ImageProcessingWorker.KEY_OPERATION to ImageProcessingWorker.OP_IMPORT,
-                ImageProcessingWorker.KEY_URIS to uris.map { it.toString() }.toTypedArray()
-            ))
-            .build()
+    private fun processImportedUrisWithBatchQueue(uris: List<Uri>, autoCrop: Boolean) {
+        val completedPagesMap = mutableMapOf<Int, Pair<String, String>>()
 
-        _uiState.update { it.copy(isLoading = true) }
-        
-        workManager.enqueueUniqueWork(
-            "import_images_${System.currentTimeMillis()}",
-            ExistingWorkPolicy.REPLACE,
-            workRequest
-        )
+        batchProcessingQueue.enqueueUris(
+            context = context,
+            uris = uris,
+            autoCrop = autoCrop,
+            onPageReady = { index, rawPath, procPath, _ ->
+                completedPagesMap[index] = Pair(rawPath, procPath)
+                // Build contiguous ordered list of completed pages so user can view/swipe immediately
+                val orderedList = (0..completedPagesMap.keys.maxOrNull()!!)
+                    .mapNotNull { completedPagesMap[it] }
+                _uiState.update { it.copy(pagesPendingEdit = orderedList) }
 
-        viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(workRequest.id).collectLatest { workInfo ->
-                if (workInfo != null) {
-                    when (workInfo.state) {
-                        WorkInfo.State.SUCCEEDED -> {
-                            val resultStrings = workInfo.outputData.getStringArray(ImageProcessingWorker.KEY_RESULT_PAGES)
-                            val processedPages = resultStrings?.map {
-                                val parts = it.split("|")
-                                Pair(parts[0], parts[1])
-                            } ?: emptyList()
-                            _uiState.update { it.copy(pagesPendingEdit = processedPages, isLoading = false) }
-                        }
-                        WorkInfo.State.FAILED -> {
-                            _uiState.update { it.copy(isLoading = false) }
-                            viewModelScope.launch { _events.send(UiEvent.Error("Failed to process imported images")) }
-                        }
-                        else -> {}
-                    }
+                // Auto-analyze OCR & category on the very first page as soon as it arrives
+                if (index == 0) {
+                    analyzePendingFirstPage()
+                }
+            },
+            onAllComplete = {
+                // Ensure final pages list is updated
+                val finalPages = (0 until uris.size).mapNotNull { completedPagesMap[it] }
+                if (finalPages.isNotEmpty()) {
+                    _uiState.update { it.copy(pagesPendingEdit = finalPages) }
                 }
             }
-        }
+        )
     }
+
+    fun autoCropAllPendingPages() {
+        val currentPages = _uiState.value.pagesPendingEdit
+        if (currentPages.isEmpty()) return
+
+        batchProcessingQueue.enqueueExistingPagePairs(
+            context = context,
+            pages = currentPages,
+            onPageUpdated = { index, newProcPath, _ ->
+                updatePendingPageProcessedImage(index, newProcPath)
+            }
+        )
+    }
+
+    fun pauseBatchQueue() = batchProcessingQueue.pause()
+    fun resumeBatchQueue() = batchProcessingQueue.resume()
+    fun skipRemainingAutoCrop() = batchProcessingQueue.skipRemaining()
+    fun cancelBatchQueue() = batchProcessingQueue.cancel()
 
     fun rotatePendingPage(index: Int, clockwise: Boolean) {
         val pages = _uiState.value.pagesPendingEdit.toMutableList()

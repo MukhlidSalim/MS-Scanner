@@ -124,7 +124,6 @@ dependencies {
   implementation(libs.play.services.mlkit.document.scanner)
   implementation(libs.gms.module.install)
   implementation(libs.play.services.mlkit.text.recognition)
-  // implementation(libs.text.recognition.arabic)
   implementation(libs.retrofit)
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)

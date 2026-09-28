@@ -110,7 +110,10 @@ class DocumentListViewModel(
                     filtered = filtered.filter { it.isFavorite }
                 }
                 if (filter.query.isNotBlank()) {
-                    filtered = filtered.filter { it.title.contains(filter.query, ignoreCase = true) }
+                    filtered = filtered.filter { 
+                        it.title.contains(filter.query, ignoreCase = true) ||
+                        it.tagsCsv.contains(filter.query, ignoreCase = true)
+                    }
                 }
                 applySorting(filtered, filter.sort)
             }.collectLatest { sortedAndFiltered ->

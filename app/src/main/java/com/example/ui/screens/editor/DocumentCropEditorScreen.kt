@@ -279,8 +279,8 @@ fun DocumentCropEditorScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
-        },
-        bottomBar = {
+        }
+    ) { innerPadding ->
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -387,6 +387,31 @@ fun DocumentCropEditorScreen(
                                     .padding(horizontal = 16.dp, vertical = 8.dp),
                                 verticalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
+                                // Smart Enhance Button
+                                Button(
+                                    onClick = {
+                                        coroutineScope.launch {
+                                            isProcessing = true
+                                            val bmp = currentBitmap
+                                            if (bmp != null) {
+                                                val enhanced = withContext(Dispatchers.IO) { ImageProcessor.applySmartEnhance(bmp) }
+                                                currentBitmap = enhanced
+                                                // Reset adjustments to reflect enhanced state
+                                                brightness = 0f
+                                                contrast = 1.0f
+                                                isSharpenEnabled = true
+                                                pushHistory()
+                                            }
+                                            isProcessing = false
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.AutoFixHigh, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Smart Enhance")
+                                }
+
                                 // Brightness Slider
                                 Row(
                                     verticalAlignment = Alignment.CenterVertically,
@@ -502,7 +527,7 @@ fun DocumentCropEditorScreen(
                                         }
                                     }
 
-                                    if (closestDist < 0.22f) {
+                                    if (closestDist < 0.35f) {
                                         activeHandleIndex = closestIdx
                                         activeTouchOffset = startPt
                                     }

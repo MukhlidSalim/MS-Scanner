@@ -608,60 +608,6 @@ fun DocumentViewerScreen(
                                 }
                             }
                         }
-                        
-                        // Primary Document Action Bar
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.SpaceAround
-                        ) {
-                            val activePage = pages.getOrNull(pagerState.currentPage)
-                            
-                            // Filters
-                            IconButton(onClick = { showFilterSheet = true }) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(Icons.Default.ColorLens, contentDescription = null, tint = GoldBase)
-                                    Text(stringResource(R.string.txt_filter), style = MaterialTheme.typography.labelSmall, color = GoldBase)
-                                }
-                            }
-
-                            // Crop / Document Editor
-                            IconButton(onClick = {
-                                if (activePage != null) {
-                                    onNavigateToCrop(docId, activePage.id)
-                                }
-                            }) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(Icons.Default.Crop, contentDescription = "Edit & Crop", tint = GoldBase)
-                                    Text("Edit", style = MaterialTheme.typography.labelSmall, color = GoldBase)
-                                }
-                            }
-
-                            // OCR & AI Text
-                            IconButton(onClick = {
-                                if (activePage != null) {
-                                    onNavigateToOcr(docId, activePage.id)
-                                }
-                            }) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(Icons.Default.TextFields, contentDescription = stringResource(R.string.desc_ocr), tint = GoldBase)
-                                    Text(stringResource(R.string.txt_ocr), style = MaterialTheme.typography.labelSmall, color = GoldBase)
-                                }
-                            }
-
-                            // Annotate & Sign
-                            IconButton(onClick = {
-                                if (activePage != null) {
-                                    onNavigateToAnnotate(docId, activePage.id)
-                                }
-                            }) {
-                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                    Icon(Icons.Default.Draw, contentDescription = stringResource(R.string.desc_sign___annotate), tint = GoldBase)
-                                    Text(stringResource(R.string.txt_sign), style = MaterialTheme.typography.labelSmall, color = GoldBase)
-                                }
-                            }
-                        }
                     }
                 }
             }
@@ -726,6 +672,69 @@ fun DocumentViewerScreen(
             }
 
             // Main Document Page View (Grid or Pager)
+            if (!isGridView && pages.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.SpaceAround
+                ) {
+                    val activePage = pages.getOrNull(pagerState.currentPage)
+                    
+                    // Filters
+                    IconButton(onClick = { 
+                        if (activePage != null) {
+                            showFilterSheet = true 
+                        }
+                    }) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.ColorLens, contentDescription = null, tint = GoldBase)
+                            Text(stringResource(R.string.txt_filter), style = MaterialTheme.typography.labelSmall, color = GoldBase)
+                        }
+                    }
+
+                    // Crop / Document Editor
+                    IconButton(onClick = {
+                        val currentPage = pages.getOrNull(pagerState.currentPage)
+                        if (currentPage != null) {
+                            onNavigateToCrop(docId, currentPage.id)
+                        }
+                    }) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.Crop, contentDescription = "Edit & Crop", tint = GoldBase)
+                            Text("Edit", style = MaterialTheme.typography.labelSmall, color = GoldBase)
+                        }
+                    }
+
+                    // OCR & AI Text
+                    IconButton(onClick = {
+                        val currentPage = pages.getOrNull(pagerState.currentPage)
+                        if (currentPage != null) {
+                            onNavigateToOcr(docId, currentPage.id)
+                        }
+                    }) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.TextFields, contentDescription = stringResource(R.string.desc_ocr), tint = GoldBase)
+                            Text(stringResource(R.string.txt_ocr), style = MaterialTheme.typography.labelSmall, color = GoldBase)
+                        }
+                    }
+
+                    // Annotate & Sign
+                    IconButton(onClick = {
+                        val currentPage = pages.getOrNull(pagerState.currentPage)
+                        if (currentPage != null) {
+                            onNavigateToAnnotate(docId, currentPage.id)
+                        }
+                    }) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(Icons.Default.Draw, contentDescription = stringResource(R.string.desc_sign___annotate), tint = GoldBase)
+                            Text(stringResource(R.string.txt_sign), style = MaterialTheme.typography.labelSmall, color = GoldBase)
+                        }
+                    }
+                }
+            }
+
+            // Main Document Page View (Grid or Pager)
             if (pages.isNotEmpty()) {
                 if (isGridView) {
                     LazyVerticalGrid(
@@ -750,12 +759,7 @@ fun DocumentViewerScreen(
                                                         selectionMode = false
                                                     }
                                                 } else {
-                                                    // Single tap opens image in full screen with editing tools active!
-                                                    coroutineScope.launch {
-                                                        pagerState.scrollToPage(index)
-                                                        viewModel.selectPageIndex(index)
-                                                        isGridView = false
-                                                    }
+                                                    onNavigateToCrop(docId, page.id)
                                                 }
                                             },
                                             onLongPress = {

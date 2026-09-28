@@ -269,11 +269,18 @@ class ImageProcessingWorker(
                     val bmp = BitmapFactory.decodeStream(stream)
                     if (bmp != null) {
                         val rawPath = ImageProcessor.saveBitmapToFile(applicationContext, bmp, "import_raw_")
-                        val proc = ImageProcessor.applyFilter(bmp, FilterType.MAGIC)
+                        val quad = ImageProcessor.detectDocumentQuad(bmp)
+                        val cropped = if (ImageProcessor.isQuadValid(quad)) {
+                            ImageProcessor.applyPerspectiveWarp(bmp, quad)
+                        } else {
+                            bmp
+                        }
+                        val proc = ImageProcessor.applyFilter(cropped, FilterType.MAGIC)
                         val procPath = ImageProcessor.saveBitmapToFile(applicationContext, proc, "import_proc_")
                         
                         processedPages.add("$rawPath|$procPath")
                         
+                        if (cropped != bmp && cropped != proc) cropped.recycle()
                         if (bmp != proc) bmp.recycle()
                         proc.recycle()
                     }

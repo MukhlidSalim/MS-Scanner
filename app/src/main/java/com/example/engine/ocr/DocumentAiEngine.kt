@@ -55,64 +55,95 @@ object DocumentAiEngine {
      */
     suspend fun performOfflineOcr(
         bitmap: Bitmap,
-        language: OcrLanguage = OcrLanguage.AUTO
-    ): DocumentAnalysisResult = suspendCancellableCoroutine { continuation ->
-        val recognizer = TextRecognition.getClient()
-        val image = com.google.mlkit.vision.common.InputImage.fromBitmap(bitmap, 0)
-
-        recognizer.process(image)
-            .addOnSuccessListener { text ->
-                val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                val fields = mutableListOf<ExtractedField>()
-
-                // Heuristic extraction
-                fields.add(ExtractedField("Date Scanned", "تاريخ المسح", dateStr))
-                fields.add(ExtractedField("Resolution", "الدقة", "${bitmap.width}x${bitmap.height} px"))
-
-                val fullText = text.text
-                val category = when {
-                    fullText.contains("فاتورة") || fullText.contains("invoice", ignoreCase = true) -> DocumentCategory.INVOICE
-                    fullText.contains("هوية") || fullText.contains("ID", ignoreCase = false) || fullText.contains("id", ignoreCase = false) -> DocumentCategory.ID_CARD
-                    fullText.contains("عقد") || fullText.contains("contract", ignoreCase = true) -> DocumentCategory.CONTRACT
-                    else -> DocumentCategory.OTHER
+        language: OcrLanguage = OcrLanguage.AUTO,
+        retryCount: Int = 0
+    ): DocumentAnalysisResult {
+        return try {
+            performOfflineOcrInternal(bitmap)
+        } catch (e: Exception) {
+            if (e is com.google.mlkit.common.MlKitException && e.message?.contains("downloaded", ignoreCase = true) == true) {
+                if (retryCount < 3) {
+                    kotlinx.coroutines.delay(3000)
+                    performOfflineOcr(bitmap, language, retryCount + 1)
+                } else {
+                    handleOcrFailureSync(e)
                 }
-
-                val suggestedTitle = when (category) {
-                    DocumentCategory.INVOICE -> "Invoice - $dateStr"
-                    DocumentCategory.ID_CARD -> "ID Card - $dateStr"
-                    DocumentCategory.CONTRACT -> "Contract - $dateStr"
-                    DocumentCategory.RECEIPT -> "Receipt - $dateStr"
-                    else -> "Document - $dateStr"
-                }
-
-                continuation.resume(
-                    DocumentAnalysisResult(
-                        fullText = fullText,
-                        suggestedTitle = suggestedTitle,
-                        detectedCategory = category,
-                        fields = fields,
-                        confidence = 0.8f,
-                        isAiPowered = false
-                    )
-                )
+            } else {
+                handleOcrFailureSync(e)
             }
-            .addOnFailureListener {
-                val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
-                continuation.resume(
-                    DocumentAnalysisResult(
-                        fullText = "OCR Failed: ${it.message}",
-                        suggestedTitle = "Document - $dateStr",
-                        detectedCategory = DocumentCategory.OTHER,
-                        fields = emptyList(),
-                        confidence = 0f,
-                        isAiPowered = false
-                    )
-                )
-            }
-        
-        continuation.invokeOnCancellation {
-            recognizer.close()
         }
+    }
+
+    private suspend fun performOfflineOcrInternal(
+        bitmap: Bitmap
+    ): DocumentAnalysisResult = suspendCancellableCoroutine { continuation ->
+        try {
+            val recognizer = TextRecognition.getClient(com.google.mlkit.vision.text.latin.TextRecognizerOptions.DEFAULT_OPTIONS)
+            val image = InputImage.fromBitmap(bitmap, 0)
+
+            recognizer.process(image)
+                .addOnSuccessListener { text ->
+                    val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+                    val fields = mutableListOf<ExtractedField>()
+
+                    // Heuristic extraction
+                    fields.add(ExtractedField("Date Scanned", "تاريخ المسح", dateStr))
+                    fields.add(ExtractedField("Resolution", "الدقة", "${bitmap.width}x${bitmap.height} px"))
+
+                    val fullText = text.text
+                    val category = when {
+                        fullText.contains("فاتورة") || fullText.contains("invoice", ignoreCase = true) -> DocumentCategory.INVOICE
+                        fullText.contains("هوية") || fullText.contains("ID", ignoreCase = false) || fullText.contains("id", ignoreCase = false) -> DocumentCategory.ID_CARD
+                        fullText.contains("عقد") || fullText.contains("contract", ignoreCase = true) -> DocumentCategory.CONTRACT
+                        else -> DocumentCategory.OTHER
+                    }
+
+                    val suggestedTitle = when (category) {
+                        DocumentCategory.INVOICE -> "Invoice - $dateStr"
+                        DocumentCategory.ID_CARD -> "ID Card - $dateStr"
+                        DocumentCategory.CONTRACT -> "Contract - $dateStr"
+                        DocumentCategory.RECEIPT -> "Receipt - $dateStr"
+                        else -> "Document - $dateStr"
+                    }
+
+                    continuation.resume(
+                        DocumentAnalysisResult(
+                            fullText = fullText,
+                            suggestedTitle = suggestedTitle,
+                            detectedCategory = category,
+                            fields = fields,
+                            confidence = 0.8f,
+                            isAiPowered = false
+                        )
+                    )
+                }
+                .addOnFailureListener { e ->
+                    continuation.resumeWithException(e)
+                }
+            
+            continuation.invokeOnCancellation {
+                recognizer.close()
+            }
+        } catch (e: Exception) {
+            continuation.resumeWithException(e)
+        }
+    }
+
+    private fun handleOcrFailureSync(e: Exception): DocumentAnalysisResult {
+        val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val errorMessage = if (e is com.google.mlkit.common.MlKitException && e.message?.contains("downloaded", ignoreCase = true) == true) {
+            "Model is still downloading. Please wait a few seconds and try again."
+        } else {
+            "OCR Failed: ${e.message}"
+        }
+        return DocumentAnalysisResult(
+            fullText = errorMessage,
+            suggestedTitle = "Document - $dateStr",
+            detectedCategory = DocumentCategory.OTHER,
+            fields = emptyList(),
+            confidence = 0f,
+            isAiPowered = false
+        )
     }
 
     /**

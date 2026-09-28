@@ -19,6 +19,7 @@ class ScannerApplication : Application() {
         super.onCreate()
         instance = this
         
+        // scanner warm-up without crashing
         applicationScope.launch {
             try {
                 // Safely attempt scanner warm-up without crashing
@@ -49,7 +50,8 @@ class ScannerApplication : Application() {
 
     companion object {
         @Volatile
-        private var instance: ScannerApplication? = null
+        var instance: ScannerApplication? = null
+            private set
         @Volatile
         private var scannerInstance: GmsDocumentScanner? = null
 

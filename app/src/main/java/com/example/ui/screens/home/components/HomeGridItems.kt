@@ -34,10 +34,48 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
+
+@Composable
+fun HighlightedText(
+    text: String,
+    query: String,
+    style: androidx.compose.ui.text.TextStyle = LocalTextStyle.current,
+    highlightColor: Color = MaterialTheme.colorScheme.primaryContainer,
+    modifier: Modifier = Modifier
+) {
+    if (query.isBlank()) {
+        Text(text = text, style = style, modifier = modifier, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        return
+    }
+
+    val annotatedString = buildAnnotatedString {
+        var lastIndex = 0
+        val lowerText = text.lowercase()
+        val lowerQuery = query.lowercase()
+        
+        var index = lowerText.indexOf(lowerQuery)
+        while (index != -1) {
+            append(text.substring(lastIndex, index))
+            withStyle(style = SpanStyle(background = highlightColor)) {
+                append(text.substring(index, index + query.length))
+            }
+            lastIndex = index + query.length
+            index = lowerText.indexOf(lowerQuery, lastIndex)
+        }
+        append(text.substring(lastIndex))
+    }
+    
+    Text(text = annotatedString, style = style, modifier = modifier, maxLines = 1, overflow = TextOverflow.Ellipsis)
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DocumentGridItem(
     doc: DocumentEntity,
+    searchQuery: String,
     isSelected: Boolean,
     selectionMode: Boolean,
     modifier: Modifier = Modifier,
@@ -123,19 +161,25 @@ fun DocumentGridItem(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
+                        HighlightedText(
                             text = doc.title,
-                            style = MaterialTheme.typography.titleSmall,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            query = searchQuery,
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Bold)
                         )
-                        Text(
-                            text = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(doc.updatedAt)),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
+                        if (doc.tagsCsv.isNotBlank()) {
+                            HighlightedText(
+                                text = doc.tagsCsv,
+                                query = searchQuery,
+                                style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            )
+                        } else {
+                            Text(
+                                text = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(doc.updatedAt)),
+                                style = MaterialTheme.typography.bodySmall,
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                     // Document Options Menu
                     var expanded by remember { mutableStateOf(false) }

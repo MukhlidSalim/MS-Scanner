@@ -6,13 +6,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import com.example.ui.viewmodel.EditSessionViewModel
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.pager.PagerState
+import androidx.compose.ui.unit.sp
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.RotateLeft
 import androidx.compose.material.icons.filled.RotateRight
@@ -21,6 +28,11 @@ import androidx.compose.material.icons.filled.Title
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.RestartAlt
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.FastForward
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.ui.graphics.Color
 import coil.compose.AsyncImage
 import java.io.File
@@ -35,6 +47,19 @@ import com.example.data.model.FilterType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+import com.example.engine.cv.BatchQueueState
+import com.example.ui.screens.editor.components.BatchProcessingQueueBanner
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 
 @OptIn(ExperimentalMaterial3Api::class, androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
@@ -59,6 +84,10 @@ fun EditSessionScreen(
 ) {
     val editUiState by editViewModel.uiState.collectAsState()
     
+    // Add batch queue state and controls
+    val batchQueueState by editViewModel.batchProcessingQueue.queueState.collectAsState()
+    val effectiveQueueState = if (sourceType == "EXISTING") editUiState.batchQueueState else batchQueueState
+    
     // Determine which pages to show
     val pages: List<Any> = when (sourceType) {
         "EXISTING" -> editUiState.activePages
@@ -66,6 +95,10 @@ fun EditSessionScreen(
     }
     
     val pagerState = rememberPagerState(pageCount = { pages.size })
+    var pagesState by remember { mutableStateOf(pages) }
+    LaunchedEffect(pages) { pagesState = pages }
+    val haptic = LocalHapticFeedback.current
+    var draggingItemIndex by remember { mutableStateOf<Int?>(null) }
 
     // If source is EXISTING and not already in editing session, load it
     LaunchedEffect(sourceType, docId) {
@@ -105,6 +138,8 @@ fun EditSessionScreen(
     var brightness by remember { mutableStateOf(0f) }
     var hasUnsavedChanges by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
+    var showOriginalPreview by remember { mutableStateOf(false) }
+    var showSaveWhileProcessingDialog by remember { mutableStateOf(false) }
     var contrast by remember { mutableStateOf(1f) }
     var isApplyingAdjustment by remember { mutableStateOf(false) }
 
@@ -112,6 +147,22 @@ fun EditSessionScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val isArabic = remember { Locale.getDefault().language == "ar" }
+
+    val performSave = {
+        if (sourceType == "EXISTING") {
+            editViewModel.commitEditingSessionChanges {
+                onNavigateToFinish(docId)
+            }
+        } else if (docId > 0L) {
+            onCommitPending(docId) {
+                onNavigateToFinish(docId)
+            }
+        } else {
+            onImportPages(documentTitle, selectedFolder) { newDocId ->
+                onNavigateToFinish(newDocId)
+            }
+        }
+    }
 
     fun applyCurrentAdjustments() {
         val targetIndices = if (applyToAll) (0 until pages.size).toList() else listOf(pagerState.currentPage)
@@ -246,6 +297,45 @@ fun EditSessionScreen(
         )
     }
 
+    if (showSaveWhileProcessingDialog) {
+        AlertDialog(
+            onDismissRequest = { showSaveWhileProcessingDialog = false },
+            icon = { Icon(Icons.Default.HourglassEmpty, null, tint = MaterialTheme.colorScheme.primary) },
+            title = { Text(if (isArabic) "المعالجة التلقائية جارية" else "Auto-Crop Still Running") },
+            text = {
+                Text(
+                    if (isArabic)
+                        "طابور القص التلقائي يحلل حالياً الصفحات المتبقية (${effectiveQueueState.completedCount}/${effectiveQueueState.totalCount}). هل ترغب بالانتظار لاكتمال كافة الصفحات، أم الحفظ الفوري؟"
+                    else
+                        "Background auto-crop is still analyzing remaining pages (${effectiveQueueState.completedCount}/${effectiveQueueState.totalCount}). Would you like to wait for all pages, or save immediately?"
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    showSaveWhileProcessingDialog = false
+                    performSave()
+                }) {
+                    Text(if (isArabic) "حفظ الجاهز الآن (${pages.size})" else "Save Ready Pages (${pages.size})")
+                }
+            },
+            dismissButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton(onClick = {
+                        showSaveWhileProcessingDialog = false
+                        if (sourceType == "EXISTING") editViewModel.skipRemainingAutoCrop()
+                        else editViewModel.batchProcessingQueue.skipRemaining()
+                        performSave()
+                    }) {
+                        Text(if (isArabic) "تخطي وحفظ الكل" else "Skip & Save All")
+                    }
+                    TextButton(onClick = { showSaveWhileProcessingDialog = false }) {
+                        Text(if (isArabic) "انتظار" else "Wait")
+                    }
+                }
+            }
+        )
+    }
+
     if (showCropEditor) {
         val currentPage = pages.getOrNull(pagerState.currentPage)
         val imagePath = when (currentPage) {
@@ -325,6 +415,19 @@ fun EditSessionScreen(
                 }
             } else {
                 Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+                    // Batch Processing Banner
+                    if (effectiveQueueState.isProcessing || effectiveQueueState.isPaused) {
+                        BatchProcessingQueueBanner(
+                            queueState = effectiveQueueState,
+                            currentPageIndex = pagerState.currentPage,
+                            onPageSelected = { coroutineScope.launch { pagerState.scrollToPage(it) } },
+                            onPause = { editViewModel.batchProcessingQueue.pause() },
+                            onResume = { editViewModel.batchProcessingQueue.resume() },
+                            onSkipRemaining = { editViewModel.batchProcessingQueue.skipRemaining() },
+                            onCancel = { editViewModel.batchProcessingQueue.cancel() }
+                        )
+                    }
+
                     // Title Editor
                     if (sourceType != "EXISTING") {
                         OutlinedTextField(
@@ -337,28 +440,134 @@ fun EditSessionScreen(
                         )
                     }
 
+                    // Main Image Pager
                     HorizontalPager(
                         state = pagerState,
-                        modifier = Modifier.weight(1f)
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .padding(vertical = 8.dp)
                     ) { pageIndex ->
-                        val page = pages.getOrNull(pageIndex)
-                        val imagePath = when (page) {
-                            is com.example.data.model.PageEntity -> page.processedImagePath
-                            is Pair<*, *> -> (page as Pair<String, String>).second
+                        val pageItem = pagesState.getOrNull(pageIndex)
+                        val imagePath = when (pageItem) {
+                            is com.example.data.model.PageEntity -> pageItem.processedImagePath
+                            is Pair<*, *> -> (pageItem as Pair<String, String>).second
                             else -> ""
                         }
-                        
-                        Column(
-                            modifier = Modifier.fillMaxSize().padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            if (imagePath.isNotEmpty()) {
-                                AsyncImage(
-                                    model = File(imagePath),
-                                    contentDescription = "Page ${pageIndex + 1}",
-                                    modifier = Modifier.weight(1f).fillMaxWidth()
+                        if (imagePath.isNotEmpty()) {
+                            AsyncImage(
+                                model = File(imagePath),
+                                contentDescription = "Page ${pageIndex + 1}",
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+
+                    // Reorderable Page List
+                    LazyRow(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp)
+                    ) {
+                        itemsIndexed(pagesState) { index, page ->
+                            val imagePath = when (page) {
+                                is com.example.data.model.PageEntity -> page.processedImagePath
+                                is Pair<*, *> -> (page as Pair<String, String>).second
+                                else -> ""
+                            }
+                            
+                            Box(
+                                modifier = Modifier
+                                    .size(100.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                                    .clickable { 
+                                        coroutineScope.launch { pagerState.scrollToPage(index) } 
+                                    }
+                                    .then(if (pagerState.currentPage == index) Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp)) else Modifier)
+                                    .pointerInput(Unit) {
+                                        detectDragGesturesAfterLongPress(
+                                            onDragStart = {
+                                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                                draggingItemIndex = index
+                                            },
+                                            onDragEnd = { draggingItemIndex = null },
+                                            onDragCancel = { draggingItemIndex = null },
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                val targetIndex = (index + (dragAmount.x / 100).toInt()).coerceIn(0, pagesState.size - 1)
+                                                if (targetIndex != index) {
+                                                    val newPages = pagesState.toMutableList()
+                                                    newPages.add(targetIndex, newPages.removeAt(index))
+                                                    pagesState = newPages
+                                                    draggingItemIndex = targetIndex
+                                                }
+                                            }
+                                        )
+                                    }
+                            ) {
+                                if (imagePath.isNotEmpty()) {
+                                    AsyncImage(
+                                        model = File(imagePath),
+                                        contentDescription = "Page ${index + 1}",
+                                        modifier = Modifier.fillMaxSize()
+                                    )
+                                }
+                                Text(
+                                    text = "${index + 1}",
+                                    modifier = Modifier
+                                        .align(Alignment.TopStart)
+                                        .padding(4.dp)
+                                        .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 4.dp),
+                                    color = Color.White,
+                                    fontSize = 12.sp
                                 )
                             }
+                        }
+                    }
+
+                    // Page Editor Toolbar (Rotate & Crop)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Rotate Left
+                        IconButton(onClick = {
+                            val currentIndex = pagerState.currentPage
+                            if (sourceType == "EXISTING") {
+                                editViewModel.rotateEditingSessionPage(currentIndex, false)
+                            } else {
+                                onRotatePendingPage(currentIndex, false)
+                            }
+                        }) {
+                            Icon(Icons.Default.RotateLeft, contentDescription = if (isArabic) "تدوير لليسار" else "Rotate Left")
+                        }
+                        
+                        // Crop
+                        Button(
+                            onClick = { showCropEditor = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
+                            modifier = Modifier.padding(horizontal = 8.dp)
+                        ) {
+                            Icon(Icons.Default.Crop, contentDescription = null)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(if (isArabic) "قص" else "Crop")
+                        }
+
+                        // Rotate Right
+                        IconButton(onClick = {
+                            val currentIndex = pagerState.currentPage
+                            if (sourceType == "EXISTING") {
+                                editViewModel.rotateEditingSessionPage(currentIndex, true)
+                            } else {
+                                onRotatePendingPage(currentIndex, true)
+                            }
+                        }) {
+                            Icon(Icons.Default.RotateRight, contentDescription = if (isArabic) "تدوير لليمين" else "Rotate Right")
                         }
                     }
                     
@@ -505,37 +714,11 @@ fun EditSessionScreen(
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            // Smart Enhance
                             IconButton(onClick = {
-                                if (sourceType == "EXISTING") {
-                                    editViewModel.rotateEditingSessionPage(pagerState.currentPage, false)
-                                } else {
-                                    onRotatePendingPage(pagerState.currentPage, false)
-                                }
+                                editViewModel.smartEnhanceActivePage()
                             }) {
-                                Icon(Icons.Default.RotateLeft, contentDescription = if (isArabic) "تدوير لليسار" else "Rotate Left")
-                            }
-                            
-                            Spacer(modifier = Modifier.width(16.dp))
-                            
-                            Button(
-                                onClick = { showCropEditor = true },
-                                colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black)
-                            ) {
-                                Icon(Icons.Default.Crop, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(if (isArabic) "قص وضبط احترافي" else "Crop & Adjust")
-                            }
-
-                            Spacer(modifier = Modifier.width(16.dp))
-
-                            IconButton(onClick = {
-                                if (sourceType == "EXISTING") {
-                                    editViewModel.rotateEditingSessionPage(pagerState.currentPage, true)
-                                } else {
-                                    onRotatePendingPage(pagerState.currentPage, true)
-                                }
-                            }) {
-                                Icon(Icons.Default.RotateRight, contentDescription = if (isArabic) "تدوير لليمين" else "Rotate Right")
+                                Icon(Icons.Default.AutoAwesome, contentDescription = "Smart Enhance")
                             }
                         }
                     }

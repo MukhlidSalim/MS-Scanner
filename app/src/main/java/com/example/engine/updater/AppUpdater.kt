@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.net.Uri
 import android.os.Environment
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.example.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -72,10 +73,11 @@ object AppUpdater {
             }
         }
         // Register receiver for when download is complete
-        context.registerReceiver(
+        ContextCompat.registerReceiver(
+            context,
             receiver,
             IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE),
-            Context.RECEIVER_EXPORTED
+            ContextCompat.RECEIVER_EXPORTED
         )
     }
 

@@ -39,7 +39,8 @@ data class EditSessionUiState(
     val defaultPdfCompression: CompressionPreset = CompressionPreset.HIGH,
     val selectedCompression: CompressionPreset = CompressionPreset.HIGH,
     val ocrLanguage: com.example.engine.ocr.OcrLanguage = com.example.engine.ocr.OcrLanguage.AUTO,
-    val isLoading: Boolean = false
+    val isLoading: Boolean = false,
+    val batchQueueState: com.example.engine.cv.BatchQueueState = com.example.engine.cv.BatchQueueState()
 )
 
 class EditSessionViewModel(
@@ -60,9 +61,15 @@ class EditSessionViewModel(
 
     private val qualityCache = mutableMapOf<Long, QualityReport>()
     private val workManager = WorkManager.getInstance(context)
+    val batchProcessingQueue = com.example.engine.cv.BatchProcessingQueue(viewModelScope)
 
     init {
         loadSignatures()
+        viewModelScope.launch {
+            batchProcessingQueue.queueState.collectLatest { queueState ->
+                _uiState.update { it.copy(batchQueueState = queueState) }
+            }
+        }
     }
 
     private fun loadSignatures() {
@@ -243,6 +250,40 @@ class EditSessionViewModel(
         }
     }
 
+    fun batchAutoCropAllSessionPages() {
+        val pages = if (_uiState.value.isEditingSession) _uiState.value.editingSessionPages else _uiState.value.activePages
+        if (pages.isEmpty()) return
+
+        val pagePairs = pages.map { Pair(it.rawImagePath.ifBlank { it.processedImagePath }, it.processedImagePath) }
+        batchProcessingQueue.enqueueExistingPagePairs(
+            context = context,
+            pages = pagePairs,
+            onPageUpdated = { index, newProcPath, _ ->
+                if (_uiState.value.isEditingSession) {
+                    updateEditingSessionPageProcessedImage(index, newProcPath)
+                } else {
+                    val page = pages.getOrNull(index)
+                    if (page != null) {
+                        viewModelScope.launch {
+                            val updated = page.copy(processedImagePath = newProcPath)
+                            repository.updatePage(updated)
+                            val currentPages = _uiState.value.activePages.toMutableList()
+                            if (index in currentPages.indices) {
+                                currentPages[index] = updated
+                                _uiState.update { it.copy(activePages = currentPages) }
+                            }
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    fun pauseBatchQueue() = batchProcessingQueue.pause()
+    fun resumeBatchQueue() = batchProcessingQueue.resume()
+    fun skipRemainingAutoCrop() = batchProcessingQueue.skipRemaining()
+    fun cancelBatchQueue() = batchProcessingQueue.cancel()
+
     fun applyFilterToActivePage(filter: FilterType) {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
@@ -304,6 +345,36 @@ class EditSessionViewModel(
                     _uiState.update { state -> state.copy(isLoading = false) }
                     viewModelScope.launch { _events.send(UiEvent.Error("Failed to rotate page")) }
                 }
+            }
+        }
+    }
+
+    fun smartEnhanceActivePage() {
+        val pages = _uiState.value.activePages
+        val idx = _uiState.value.selectedPageIndex
+        if (idx !in pages.indices) return
+
+        val page = pages[idx]
+        
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath)
+                if (bmp != null) {
+                    val enhanced = ImageProcessor.applySmartEnhance(bmp)
+                    val newPath = ImageProcessor.saveBitmapToFile(context, enhanced, "smart_enh_")
+                    bmp.recycle()
+                    enhanced.recycle()
+                    
+                    // Update in repository
+                    repository.updatePage(page.copy(processedImagePath = newPath))
+                    qualityCache.remove(page.id)
+                    loadDocument(page.documentId)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _uiState.update { it.copy(isLoading = false) }
+                _events.send(UiEvent.Error("Smart enhance failed"))
             }
         }
     }

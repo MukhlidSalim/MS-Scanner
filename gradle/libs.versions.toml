@@ -43,7 +43,7 @@ googleServices = "4.5.0"
 credentials = "1.5.0"
 googleid = "1.1.1"
 mlkitDocumentScanner = "16.0.0"
-mlkitTextRecognition = "16.0.0"
+mlkitTextRecognition = "18.0.0"
 mlkitTextRecognitionArabic = "16.0.0-beta1"
 biometric = "1.1.0"
 

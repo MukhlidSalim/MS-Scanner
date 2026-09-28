@@ -316,6 +316,7 @@ object ImageProcessor {
             FilterType.BLACK_WHITE -> applyHighContrastBW(src)
             FilterType.TEXT -> applyTextSharpening(src)
             FilterType.DOCUMENT -> applyCleanDocument(src)
+            FilterType.HIGH_CONTRAST -> applyHighContrast(src)
             FilterType.VIBRANT -> applyVibrant(src)
         }
     }
@@ -530,6 +531,32 @@ object ImageProcessor {
     }
 
     /**
+     * High Contrast filter
+     */
+    private fun applyHighContrast(src: Bitmap): Bitmap {
+        val width = src.width
+        val height = src.height
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+
+        val contrast = 2.0f
+        val brightness = -20f
+        val colorMatrix = ColorMatrix(
+            floatArrayOf(
+                contrast, 0f, 0f, 0f, brightness,
+                0f, contrast, 0f, 0f, brightness,
+                0f, 0f, contrast, 0f, brightness,
+                0f, 0f, 0f, 1f, 0f
+            )
+        )
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+            colorFilter = ColorMatrixColorFilter(colorMatrix)
+        }
+        canvas.drawBitmap(src, 0f, 0f, paint)
+        return output
+    }
+
+    /**
      * High Contrast Black & White filter: binary thresholding for line art / receipts
      */
     private fun applyHighContrastBW(src: Bitmap): Bitmap {
@@ -578,6 +605,28 @@ object ImageProcessor {
         }
         canvas.drawBitmap(src, 0f, 0f, paint)
         return output
+    }
+
+    /**
+     * Intelligent Smart Enhance: analyzes image quality and applies optimized
+     * adjustments for brightness, contrast, and clarity.
+     */
+    suspend fun applySmartEnhance(src: Bitmap): Bitmap = withContext(Dispatchers.IO) {
+        val report = analyzeQuality(src)
+        
+        var brightness = 0f
+        var contrast = 1.0f
+        
+        if (report.isDark) {
+            brightness = 15f
+        }
+        
+        if (report.isLowContrast) {
+            contrast = 1.3f
+        }
+        
+        // Always apply sharpening for readability
+        adjustEnhancements(src, brightness, contrast, sharpen = true)
     }
 
     /**

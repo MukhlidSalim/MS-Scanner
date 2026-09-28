@@ -700,8 +700,7 @@ fun CameraScanScreen(
 
                                 when (scanMode) {
                                     ScanCameraMode.DOCUMENT -> {
-                                        isCapturing = false
-                                        reviewPage = Pair(rawPath, procPath)
+                                        onDocumentCaptured(listOf(Pair(rawPath, procPath)))
                                     }
                                     ScanCameraMode.PASSPORT -> {
                                         if (!isPassportFrontDone) {
@@ -1031,77 +1030,8 @@ fun CameraScanScreen(
                 }
             }
 
-            // Capture Review Overlay (Single Page)
-            reviewPage?.let { page ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.9f))
-                        .clickable(enabled = false) {},
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        modifier = Modifier.fillMaxSize().padding(24.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        Text(
-                            text = if (isArabic) "مراجعة الصورة" else "Review Capture",
-                            color = Color.White,
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold
-                        )
-                        Spacer(modifier = Modifier.height(16.dp))
-                        
-                        Card(
-                            modifier = Modifier.weight(1f).aspectRatio(0.707f),
-                            shape = RoundedCornerShape(12.dp),
-                            elevation = CardDefaults.cardElevation(8.dp)
-                        ) {
-                            AsyncImage(
-                                model = File(page.second),
-                                contentDescription = null,
-                                contentScale = ContentScale.Fit,
-                                modifier = Modifier.fillMaxSize().background(Color.DarkGray)
-                            )
-                        }
-                        
-                        Spacer(modifier = Modifier.height(24.dp))
-                        
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(16.dp)
-                        ) {
-                            OutlinedButton(
-                                onClick = { 
-                                    try { File(page.first).delete(); File(page.second).delete() } catch(e:Exception){}
-                                    reviewPage = null 
-                                },
-                                modifier = Modifier.weight(1f),
-                                border = BorderStroke(1.dp, Color.White),
-                                colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
-                            ) {
-                                Icon(Icons.Default.Refresh, null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(if (isArabic) "إعادة تصوير" else "Retake")
-                            }
-                            
-                            Button(
-                                onClick = { 
-                                    onDocumentCaptured(listOf(page))
-                                    reviewPage = null
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black)
-                            ) {
-                                Icon(Icons.Default.Check, null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(if (isArabic) "استخدام" else "Confirm")
-                            }
-                        }
-                    }
-                }
-            }
+
+            // Removed Capture Review Overlay
 
             // Top Controls Bar
             Row(

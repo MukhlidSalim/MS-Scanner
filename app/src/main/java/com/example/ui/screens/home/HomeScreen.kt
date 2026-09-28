@@ -802,6 +802,7 @@ fun HomeScreen(
                     items(displayDocs) { doc ->
                         DocumentGridItem(
                             doc = doc,
+                            searchQuery = uiState.searchQuery,
                             isSelected = selectedDocIds.contains(doc.id),
                             selectionMode = selectionMode,
                             onClick = {
