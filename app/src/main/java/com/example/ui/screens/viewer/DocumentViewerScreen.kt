@@ -57,6 +57,8 @@ import com.example.ui.components.MergePagesDialog
 import com.example.ui.components.PageActionsBottomSheet
 import com.example.ui.components.PdfViewerOverlay
 import com.example.ui.components.ScanActionButton
+import com.example.ui.screens.viewer.components.PdfSettingsDialog
+import com.example.ui.screens.viewer.components.SaveShareSheet
 import com.example.ui.screens.viewer.components.SelectionActionBar
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.GoldBase
@@ -101,6 +103,8 @@ fun DocumentViewerScreen(
     fun t(en: String, ar: String) = if (isArabic) ar else en
 
     var showShareSheet by remember { mutableStateOf(false) }
+    var shareScope by remember { mutableStateOf(com.example.ui.screens.viewer.components.ShareScope.DOCUMENT) }
+    var showDocInfo by remember { mutableStateOf(false) }
     // Background OCR / classification progress (WorkManager). Never blocks viewing, saving or sharing.
     val analysisFlow = remember(docId) { DocumentAnalysisWorker.observeProgress(context, docId) }
     val analysisProgress by analysisFlow.collectAsState(initial = null)
@@ -384,7 +388,10 @@ fun DocumentViewerScreen(
                             )
                         }
                         if (selectedPageIds.isNotEmpty()) {
-                            IconButton(onClick = { showShareSheet = true }) {
+                            IconButton(onClick = {
+                                shareScope = com.example.ui.screens.viewer.components.ShareScope.SELECTED
+                                showShareSheet = true
+                            }) {
                                 Icon(Icons.Default.Share, contentDescription = t("Save & Share Selected", "حفظ ومشاركة المحدد"), tint = MaterialTheme.colorScheme.primary)
                             }
                             IconButton(onClick = { showDeleteSelectedConfirmDialog = true }) {
@@ -393,8 +400,18 @@ fun DocumentViewerScreen(
                         }
                     } else {
                         // Primary action: one entry point for every Save / Share / Export option.
+                        IconButton(onClick = { doc?.let { viewModel.updateDocumentMetadata(it.id, favorite = !it.isFavorite) } }) {
+                            Icon(
+                                if (doc?.isFavorite == true) Icons.Default.Star else Icons.Default.StarBorder,
+                                contentDescription = t("Favorite", "المفضلة"),
+                                tint = if (doc?.isFavorite == true) GoldBase else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
                         IconButton(
-                            onClick = { showShareSheet = true },
+                            onClick = {
+                                shareScope = com.example.ui.screens.viewer.components.ShareScope.DOCUMENT
+                                showShareSheet = true
+                            },
                             enabled = pages.isNotEmpty(),
                             modifier = Modifier.testTag("save_share_btn")
                         ) {
@@ -413,6 +430,11 @@ fun DocumentViewerScreen(
                                 shape = RoundedCornerShape(16.dp),
                                 containerColor = MaterialTheme.colorScheme.surface
                             ) {
+                                DropdownMenuItem(
+                                    text = { Text(t("Document info (title, category, tags)", "معلومات المستند (الاسم، التصنيف، الوسوم)")) },
+                                    leadingIcon = { Icon(Icons.Default.Info, null) },
+                                    onClick = { showOverflowMenu = false; showDocInfo = true }
+                                )
                                 DropdownMenuItem(
                                     text = { Text(t("Select pages", "تحديد صفحات")) },
                                     leadingIcon = { Icon(Icons.Default.Checklist, null) },
@@ -502,7 +524,10 @@ fun DocumentViewerScreen(
                         initialMergePageIds = selectedPageIds.toList()
                         showMergeDialog = true
                     },
-                    onShare = { showShareSheet = true },
+                    onShare = {
+                        shareScope = com.example.ui.screens.viewer.components.ShareScope.SELECTED
+                        showShareSheet = true
+                    },
                     onExportPdf = { showPdfExportDialog = true },
                     onPrint = { print(targetPages()) },
                     onDuplicate = {
@@ -762,12 +787,37 @@ fun DocumentViewerScreen(
     // ================================================================================== sheets & dialogs
 
     if (showShareSheet) {
-        val targets = targetPages()
+        val selectedInOrder = pages.filter { it.id in selectedPageIds }
+        val currentPage = pages.getOrNull(pagerState.currentPage)
+        val effectiveScope = when {
+            shareScope == com.example.ui.screens.viewer.components.ShareScope.SELECTED && selectedInOrder.isEmpty() ->
+                com.example.ui.screens.viewer.components.ShareScope.DOCUMENT
+            shareScope == com.example.ui.screens.viewer.components.ShareScope.CURRENT_PAGE && currentPage == null ->
+                com.example.ui.screens.viewer.components.ShareScope.DOCUMENT
+            else -> shareScope
+        }
+        val targets = when (effectiveScope) {
+            com.example.ui.screens.viewer.components.ShareScope.DOCUMENT -> pages
+            com.example.ui.screens.viewer.components.ShareScope.CURRENT_PAGE -> listOfNotNull(currentPage)
+            com.example.ui.screens.viewer.components.ShareScope.SELECTED -> selectedInOrder // e.g. 1 + 3 + 5 -> one PDF
+        }
         SaveShareSheet(
             isArabic = isArabic,
             pageCount = targets.size,
-            isSelection = selectionMode && selectedPageIds.isNotEmpty(),
+            isSelection = effectiveScope == com.example.ui.screens.viewer.components.ShareScope.SELECTED,
             onDismiss = { showShareSheet = false },
+            scope = effectiveScope,
+            documentPageCount = pages.size,
+            currentPageNumber = pagerState.currentPage + 1,
+            selectedCount = selectedInOrder.size,
+            onScopeChange = { shareScope = it },
+            onSelectPages = {
+                showShareSheet = false
+                selectionMode = true
+                isGridView = true
+                if (selectedPageIds.isEmpty()) pages.getOrNull(pagerState.currentPage)?.let { selectedPageIds = setOf(it.id) }
+                toast(t("Tap pages to select them, then tap Share", "اضغط على الصفحات لتحديدها ثم اضغط مشاركة"))
+            },
             onSavePdf = { showShareSheet = false; savePdf(targets) },
             onSavePdfAs = { showShareSheet = false; savePdfAs(targets) },
             onSaveImages = { showShareSheet = false; saveImages(targets) },
@@ -897,20 +947,26 @@ fun DocumentViewerScreen(
             initialCompression = uiState.defaultPdfCompression,
             isExporting = uiState.isExportingPdf,
             onDismiss = { showPdfExportDialog = false },
-            onExport = { size, compression, includeOcr, includeNumbers, watermark ->
+            onExport = { size, compression, includeOcr, includeNumbers, watermark, password ->
                 val config = PdfExportConfig(
                     title = docTitle,
                     pageSize = size,
                     compression = compression,
                     includeSearchableText = includeOcr,
                     includePageNumbers = includeNumbers,
-                    watermarkText = watermark
+                    watermarkText = watermark,
+                    password = password
                 )
                 val ids = if (selectionMode && selectedPageIds.isNotEmpty()) selectedPageIds else null
                 viewModel.exportDocumentToPdf(config, ids) { generatedPdf ->
                     showPdfExportDialog = false
                     exitSelection()
-                    previewPdfFile = generatedPdf
+                    if (password != null) {
+                        // The in-app viewer (PdfRenderer) cannot open encrypted files: go straight to sharing.
+                        PdfEngine.sharePdf(context, generatedPdf, t("Share protected PDF", "مشاركة PDF محمي"))
+                    } else {
+                        previewPdfFile = generatedPdf
+                    }
                 }
             },
             onPrint = {
@@ -972,7 +1028,9 @@ fun DocumentViewerScreen(
             },
             onDeleteClick = {
                 pageForActions = null
-                deletePages(listOf(targetPage.id))
+                // Always confirmed (page files are removed for good).
+                selectedPageIds = setOf(targetPage.id)
+                showDeleteSelectedConfirmDialog = true
             }
         )
     }
@@ -996,6 +1054,61 @@ fun DocumentViewerScreen(
         )
     }
 
+    if (showDocInfo && doc != null) {
+        var title by remember(doc.id) { mutableStateOf(doc.title) }
+        var tags by remember(doc.id) { mutableStateOf(doc.tagsCsv) }
+        var category by remember(doc.id) {
+            mutableStateOf(runCatching { com.example.data.model.DocumentCategory.valueOf(doc.category) }
+                .getOrDefault(com.example.data.model.DocumentCategory.OTHER))
+        }
+        AlertDialog(
+            onDismissRequest = { showDocInfo = false },
+            title = { Text(t("Document info", "معلومات المستند"), fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = title, onValueChange = { title = it }, singleLine = true,
+                        label = { Text(t("Title", "الاسم")) }, modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(t("Category", "التصنيف"), style = MaterialTheme.typography.labelLarge)
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        com.example.data.model.DocumentCategory.values()
+                            .filter { it != com.example.data.model.DocumentCategory.ALL }
+                            .forEach { c ->
+                                FilterChip(
+                                    selected = category == c,
+                                    onClick = { category = c },
+                                    label = { Text(if (isArabic) c.displayNameAr else c.displayNameEn) }
+                                )
+                            }
+                    }
+                    OutlinedTextField(
+                        value = tags, onValueChange = { tags = it }, singleLine = true,
+                        label = { Text(t("Tags (comma separated)", "الوسوم (مفصولة بفاصلة)")) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Text(
+                        t("${pages.size} page(s)", "${pages.size} صفحة") + " · " +
+                            java.text.SimpleDateFormat("dd MMM yyyy HH:mm", java.util.Locale.getDefault()).format(java.util.Date(doc.createdAt)),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = {
+                    viewModel.updateDocumentMetadata(
+                        doc.id,
+                        title = title.trim().ifBlank { doc.title },
+                        category = category.name,
+                        tagsCsv = tags.split(',', '،').map { it.trim() }.filter { it.isNotEmpty() }.distinct().joinToString(", ")
+                    )
+                    showDocInfo = false
+                }) { Text(stringResource(R.string.txt_save)) }
+            },
+            dismissButton = { TextButton(onClick = { showDocInfo = false }) { Text(stringResource(R.string.txt_cancel)) } }
+        )
+    }
     previewPdfFile?.let { file ->
         PdfViewerOverlay(pdfFile = file, onDismiss = { previewPdfFile = null })
     }
@@ -1009,177 +1122,4 @@ private fun PageTool(icon: ImageVector, label: String, onClick: () -> Unit) {
             Text(label, style = MaterialTheme.typography.labelSmall, color = GoldBase, maxLines = 1)
         }
     }
-}
-
-/** The single Save & Share entry point (document or selected pages). */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun SaveShareSheet(
-    isArabic: Boolean,
-    pageCount: Int,
-    isSelection: Boolean,
-    onDismiss: () -> Unit,
-    onSavePdf: () -> Unit,
-    onSavePdfAs: () -> Unit,
-    onSaveImages: () -> Unit,
-    onSharePdf: () -> Unit,
-    onShareImages: () -> Unit,
-    onPrint: () -> Unit,
-    onPdfSettings: () -> Unit
-) {
-    fun t(en: String, ar: String) = if (isArabic) ar else en
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        containerColor = MaterialTheme.colorScheme.surface
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp)
-                .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            Text(t("Save & Share", "حفظ ومشاركة"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-            Text(
-                if (isSelection) t("$pageCount selected page(s)", "$pageCount صفحة محددة")
-                else t("Whole document · $pageCount page(s)", "المستند كاملاً · $pageCount صفحة"),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(Modifier.height(6.dp))
-            SheetSection(t("Share", "مشاركة"))
-            SheetAction(Icons.Default.PictureAsPdf, t("Share as PDF", "مشاركة كملف PDF"), t("One PDF file", "ملف PDF واحد"), Emerald400, onSharePdf)
-            SheetAction(Icons.Default.Collections, t("Share as images", "مشاركة كصور"), t("JPEG, one per page", "صورة JPEG لكل صفحة"), Emerald400, onShareImages)
-            SheetSection(t("Save to device", "الحفظ على الجهاز"))
-            SheetAction(Icons.Default.Download, t("Save as PDF", "حفظ كملف PDF"), t("Downloads / MS Scanner", "التنزيلات / MS Scanner"), MaterialTheme.colorScheme.primary, onSavePdf)
-            SheetAction(Icons.Default.FolderOpen, t("Save PDF as…", "حفظ PDF باسم…"), t("Choose name and location", "اختيار الاسم والمكان"), MaterialTheme.colorScheme.primary, onSavePdfAs)
-            SheetAction(Icons.Default.Image, t("Save as images", "حفظ كصور"), t("Gallery / MS Scanner", "المعرض / MS Scanner"), MaterialTheme.colorScheme.primary, onSaveImages)
-            SheetSection(t("More", "المزيد"))
-            SheetAction(Icons.Default.Print, t("Print", "طباعة"), t("Printer or system “Save as PDF”", "طابعة أو حفظ PDF من النظام"), MaterialTheme.colorScheme.secondary, onPrint)
-            SheetAction(Icons.Default.Tune, t("PDF settings…", "إعدادات PDF…"), t("Page size, quality, watermark", "حجم الصفحة، الجودة، العلامة المائية"), MaterialTheme.colorScheme.secondary, onPdfSettings)
-        }
-    }
-}
-
-@Composable
-private fun SheetSection(title: String) {
-    Text(
-        title,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
-    )
-}
-
-@Composable
-private fun SheetAction(icon: ImageVector, title: String, subtitle: String, tint: Color, onClick: () -> Unit) {
-    Surface(
-        shape = RoundedCornerShape(14.dp),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick)
-    ) {
-        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(38.dp).clip(CircleShape).background(tint.copy(alpha = 0.15f)),
-                contentAlignment = Alignment.Center
-            ) { Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp)) }
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
-                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
-    }
-}
-
-/** Advanced PDF export (page size, quality, OCR layer, numbers, watermark) with in-app preview. */
-@Composable
-private fun PdfSettingsDialog(
-    isArabic: Boolean,
-    pageCount: Int,
-    initialSize: PageSizePreset,
-    initialCompression: CompressionPreset,
-    isExporting: Boolean,
-    onDismiss: () -> Unit,
-    onExport: (PageSizePreset, CompressionPreset, Boolean, Boolean, String?) -> Unit,
-    onPrint: () -> Unit
-) {
-    fun t(en: String, ar: String) = if (isArabic) ar else en
-    var selectedSize by remember { mutableStateOf(initialSize) }
-    var selectedCompression by remember { mutableStateOf(initialCompression) }
-    var includeOcr by remember { mutableStateOf(true) }
-    var includePageNumbers by remember { mutableStateOf(true) }
-    var selectedWatermark by remember { mutableStateOf<String?>(null) }
-    val formattedSize = remember(selectedCompression, pageCount) {
-        PdfEngine.formatEstimatedSize(PdfEngine.estimatePdfSizeBytes(pageCount, selectedCompression))
-    }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(24.dp),
-        title = { Text(stringResource(R.string.txt_export_document_as_pdf), fontWeight = FontWeight.Bold) },
-        text = {
-            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(
-                    t("Estimated size: ~$formattedSize ($pageCount pages)", "الحجم التقريبي: ~$formattedSize ($pageCount صفحات)"),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-                Text(stringResource(R.string.txt_page_format), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PageSizePreset.values().forEach { size ->
-                        FilterChip(selected = size == selectedSize, onClick = { selectedSize = size }, label = { Text(size.name, fontSize = 11.sp) })
-                    }
-                }
-                Text(stringResource(R.string.txt_quality___compression), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CompressionPreset.values().forEach { comp ->
-                        val label = when (comp) {
-                            CompressionPreset.LOW -> t("Small", "صغير")
-                            CompressionPreset.MEDIUM -> t("Medium", "متوسط")
-                            CompressionPreset.HIGH -> t("High (Print)", "عالي (طباعة)")
-                            CompressionPreset.MAXIMUM -> t("Maximum", "أقصى دقة")
-                        }
-                        FilterChip(selected = comp == selectedCompression, onClick = { selectedCompression = comp }, label = { Text(label, fontSize = 11.sp) })
-                    }
-                }
-                Text(t("Watermark (optional)", "العلامة المائية (اختياري)"), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(
-                        null to t("None", "بدون"),
-                        "CONFIDENTIAL" to t("Confidential", "سري"),
-                        "APPROVED" to t("Approved", "معتمد"),
-                        "DRAFT" to t("Draft", "مسودة")
-                    ).forEach { (wm, label) ->
-                        FilterChip(selected = selectedWatermark == wm, onClick = { selectedWatermark = wm }, label = { Text(label, fontSize = 11.sp) })
-                    }
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(t("Include page numbers", "ترقيم الصفحات"), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                    Switch(checked = includePageNumbers, onCheckedChange = { includePageNumbers = it })
-                }
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.txt_searchable_ocr_text_layer), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
-                    Switch(checked = includeOcr, onCheckedChange = { includeOcr = it })
-                }
-                TextButton(onClick = onPrint) {
-                    Icon(Icons.Default.Print, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
-                    Text(t("Print / system Save as PDF", "طباعة / حفظ PDF من النظام"))
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = { onExport(selectedSize, selectedCompression, includeOcr, includePageNumbers, selectedWatermark) },
-                enabled = !isExporting,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.testTag("export_pdf_confirm_btn")
-            ) {
-                if (isExporting) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                else Text(stringResource(R.string.txt_export___share), fontWeight = FontWeight.Bold)
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.txt_cancel)) } }
-    )
 }

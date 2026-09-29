@@ -15,6 +15,9 @@ import com.example.engine.cv.QuadStore
 import com.example.engine.ocr.DocumentAiEngine
 import com.example.engine.ocr.DocumentAnalysisResult
 import com.example.engine.ocr.DocumentAnalysisWorker
+import com.example.engine.ocr.OcrLanguage
+import com.example.engine.ocr.OcrLayoutStore
+import com.example.engine.ocr.TessDataManager
 import com.example.engine.pdf.PdfEngine
 import com.example.engine.pdf.PdfExportConfig
 import com.example.ui.screens.editor.CropEditorResult
@@ -60,7 +63,9 @@ class EditSessionViewModel(
     private var originalSessionPages = listOf<PageEntity>()
     private val _uiState = MutableStateFlow(EditSessionUiState(
         defaultPdfPageSize = prefs.pdfPageSize,
-        defaultPdfCompression = prefs.pdfCompression
+        defaultPdfCompression = prefs.pdfCompression,
+        // Previously always AUTO here: the language chosen in Settings was ignored by the OCR screen.
+        ocrLanguage = runCatching { OcrLanguage.valueOf(prefs.ocrLanguage) }.getOrDefault(OcrLanguage.AUTO)
     ))
     val uiState: StateFlow<EditSessionUiState> = _uiState.asStateFlow()
     private val _events = Channel<UiEvent>(Channel.BUFFERED)
@@ -114,6 +119,7 @@ class EditSessionViewModel(
             _uiState.update { s -> s.copy(activePages = s.activePages.map { if (it.id == page.id) updatedPage else it }) }
             qualityCache.remove(page.id)
             if (idx == 0) refreshThumbnail(page.documentId, newPath)
+            DocumentAnalysisWorker.enqueue(context, page.documentId, generatedTitle = false)
         }
     }
 
@@ -133,6 +139,8 @@ class EditSessionViewModel(
             }
             qualityCache.remove(pageId)
             if (page.pageIndex == 0) refreshThumbnail(page.documentId, result.processedPath)
+            // New crop / rotation = new text positions: refresh OCR + searchable layer in the background.
+            DocumentAnalysisWorker.enqueue(context, page.documentId, generatedTitle = false)
         }
     }
 
@@ -425,8 +433,15 @@ class EditSessionViewModel(
             cropQuadJson = quadFor(page).toJson()
         )
         repository.updatePage(updated)
+        if (rotation == page.rotationDegrees) {
+            // Same geometry (filter only): the text layout is still exact, no new OCR needed.
+            OcrLayoutStore.copy(page.processedImagePath, newPath)
+        } else {
+            DocumentAnalysisWorker.enqueue(context, page.documentId, generatedTitle = false)
+        }
         if (page.processedImagePath != page.rawImagePath && page.processedImagePath != newPath) {
             runCatching { File(page.processedImagePath).delete() }
+            OcrLayoutStore.delete(page.processedImagePath)
         }
         qualityCache.remove(page.id)
         if (page.pageIndex == 0) refreshThumbnail(page.documentId, newPath)
@@ -471,7 +486,11 @@ class EditSessionViewModel(
                         bmp.recycle()
                     }
                     repository.updatePage(page.copy(processedImagePath = newPath))
-                    if (page.processedImagePath != page.rawImagePath) runCatching { File(page.processedImagePath).delete() }
+                    OcrLayoutStore.copy(page.processedImagePath, newPath)
+                    if (page.processedImagePath != page.rawImagePath) {
+                        runCatching { File(page.processedImagePath).delete() }
+                        OcrLayoutStore.delete(page.processedImagePath)
+                    }
                     qualityCache.remove(page.id)
                 }
             } catch (e: CancellationException) {
@@ -508,6 +527,28 @@ class EditSessionViewModel(
         val pages = _uiState.value.activePages
         val page = pages.getOrNull(_uiState.value.selectedPageIndex) ?: return
         deletePageById(page.id)
+    }
+
+    /** Favorite / title / category / tags of the open document; the screen updates immediately. */
+    fun updateDocumentMetadata(
+        docId: Long,
+        title: String? = null,
+        category: String? = null,
+        tagsCsv: String? = null,
+        favorite: Boolean? = null
+    ) {
+        viewModelScope.launch {
+            val doc = repository.getDocumentById(docId) ?: return@launch
+            val updated = doc.copy(
+                title = title?.takeIf { it.isNotBlank() } ?: doc.title,
+                category = category ?: doc.category,
+                tagsCsv = tagsCsv ?: doc.tagsCsv,
+                isFavorite = favorite ?: doc.isFavorite
+            )
+            if (updated == doc) return@launch
+            repository.updateDocument(updated)
+            _uiState.update { s -> if (s.activeDocument?.id == docId) s.copy(activeDocument = updated) else s }
+        }
     }
 
     fun renameDocument(docId: Long, newTitle: String) {
@@ -634,26 +675,37 @@ class EditSessionViewModel(
     fun runOcrInBackground(pageId: Long) {
         viewModelScope.launch(Dispatchers.Default) {
             try {
-                _uiState.update { it.copy(isOcrLoading = true) }
+                // Clear the previous page's result: the OCR screen never shows another page's text.
+                _uiState.update { it.copy(isOcrLoading = true, ocrResult = null) }
                 val page = repository.getPageById(pageId) ?: return@launch
-                val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 1500) ?: return@launch
+                val language = _uiState.value.ocrLanguage
+                if (language != OcrLanguage.ENGLISH && !TessDataManager.ensureArabic(context)) {
+                    _events.send(UiEvent.ShowToast("Arabic text model unavailable — connect to the internet once to download it"))
+                }
+                val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 2000) ?: return@launch
                 val result = try {
-                    DocumentAiEngine.performOfflineOcr(bmp, _uiState.value.ocrLanguage)
+                    DocumentAiEngine.analyze(context, bmp, language)
                 } finally {
                     bmp.recycle()
                 }
                 _uiState.update { it.copy(ocrResult = result) }
                 // A failed OCR returns an error message as "text": never store it as page content.
                 if (result.confidence <= 0f && result.fullText.startsWith("OCR Failed")) return@launch
-                repository.getPageById(pageId)?.let { repository.updatePage(it.copy(ocrText = result.fullText)) }
+                val current = repository.getPageById(pageId) ?: return@launch
+                repository.updatePage(current.copy(ocrText = result.fullText))
+                if (current.processedImagePath == page.processedImagePath && result.engine != "mlkit-fallback") {
+                    OcrLayoutStore.save(page.processedImagePath, result.lines)
+                }
                 val doc = repository.getDocumentById(page.documentId)
                 if (doc != null) {
-                    val updatedDoc = doc.copy(suggestedTitle = result.suggestedTitle, category = result.detectedCategory.name)
-                    if ((doc.title.startsWith("Doc_") || doc.title.isBlank()) && result.suggestedTitle.isNotBlank()) {
-                        repository.updateDocument(updatedDoc.copy(title = result.suggestedTitle))
-                    } else {
-                        repository.updateDocument(updatedDoc)
-                    }
+                    val allText = repository.getPagesList(doc.id).map { it.ocrText }
+                        .filter { it.isNotBlank() && !it.startsWith("OCR Failed") }.joinToString("\n")
+                    val updatedDoc = doc.copy(
+                        suggestedTitle = result.suggestedTitle,
+                        category = if (result.detectedCategory != DocumentCategory.OTHER) result.detectedCategory.name else doc.category,
+                        ocrText = allText
+                    )
+                    repository.updateDocument(updatedDoc)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -758,7 +810,11 @@ class EditSessionViewModel(
                         baseBmp.recycle()
                     }
                     repository.updatePage(page.copy(processedImagePath = newPath))
-                    if (page.processedImagePath != page.rawImagePath) runCatching { File(page.processedImagePath).delete() }
+                    OcrLayoutStore.copy(page.processedImagePath, newPath)
+                    if (page.processedImagePath != page.rawImagePath) {
+                        runCatching { File(page.processedImagePath).delete() }
+                        OcrLayoutStore.delete(page.processedImagePath)
+                    }
                     qualityCache.remove(page.id)
                     if (page.pageIndex == 0) refreshThumbnail(page.documentId, newPath)
                 }

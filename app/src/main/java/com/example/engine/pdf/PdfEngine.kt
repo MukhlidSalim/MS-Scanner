@@ -18,6 +18,8 @@ import androidx.core.content.FileProvider
 import com.example.data.model.CompressionPreset
 import com.example.data.model.PageSizePreset
 import com.example.engine.cv.ImageProcessor
+import com.example.engine.ocr.OcrLayoutStore
+import com.example.engine.ocr.OcrLine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -31,7 +33,9 @@ data class PdfExportConfig(
     val compression: CompressionPreset = CompressionPreset.HIGH,
     val includeSearchableText: Boolean = true,
     val includePageNumbers: Boolean = true,
-    val watermarkText: String? = null
+    val watermarkText: String? = null,
+    /** When set, the PDF is encrypted (AES-128): the password is needed to open it. */
+    val password: String? = null
 )
 
 /**
@@ -165,18 +169,12 @@ object PdfEngine {
                     }
                     canvas.drawBitmap(bitmap, null, drawRect, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
 
-                    if (config.includeSearchableText && ocrText.isNotBlank()) {
-                        val ocrPaint = Paint().apply {
-                            color = android.graphics.Color.TRANSPARENT
-                            alpha = 0
-                            textSize = 8f
-                        }
-                        val words = ocrText.split(Regex("\\s+")).take(400)
-                        var textY = margin + 14f
-                        for (chunk in words.chunked(10)) {
-                            if (textY >= pageHeight - margin) break
-                            canvas.drawText(chunk.joinToString(" "), margin.toFloat(), textY, ocrPaint)
-                            textY += 12f
+                    if (config.includeSearchableText) {
+                        val layout = OcrLayoutStore.load(path)
+                        if (!layout.isNullOrEmpty()) {
+                            drawPositionedTextLayer(canvas, layout, drawRect)
+                        } else if (ocrText.isNotBlank()) {
+                            drawFallbackTextLayer(canvas, ocrText, drawRect)
                         }
                     }
 
@@ -219,7 +217,78 @@ object PdfEngine {
         } finally {
             pdfDocument.close()
         }
+        val pwd = config.password?.takeIf { it.isNotBlank() }
+        if (pwd != null) {
+            try {
+                encryptInPlace(context, outputFile, pwd)
+            } catch (e: Throwable) {
+                // Never hand out an unprotected file when protection was requested.
+                outputFile.delete()
+                throw IllegalStateException("Could not password-protect the PDF", e)
+            }
+        }
         outputFile
+    }
+
+    /**
+     * AES-128 password protection with PdfBox-Android. The same password opens the document and
+     * grants all permissions (print / copy); a random owner password would lock the user out of editing.
+     */
+    private fun encryptInPlace(context: Context, file: File, password: String) {
+        com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context.applicationContext)
+        val tmp = File(file.parentFile, file.name + ".enc")
+        try {
+            com.tom_roush.pdfbox.pdmodel.PDDocument.load(file).use { doc ->
+                val policy = com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy(
+                    password, password, com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission()
+                ).apply { encryptionKeyLength = 128 }
+                doc.protect(policy)
+                doc.save(tmp)
+            }
+            if (!file.delete() || !tmp.renameTo(file)) throw java.io.IOException("Could not replace the PDF")
+        } finally {
+            tmp.delete()
+        }
+    }
+
+    /**
+     * Invisible text drawn exactly over each recognized line, so selecting / searching in any PDF reader
+     * highlights the right place. Alpha 1/255 (not 0): fully transparent drawing is skipped by the PDF
+     * backend, which is why the previous "searchable layer" was never actually written.
+     */
+    private fun drawPositionedTextLayer(canvas: Canvas, lines: List<OcrLine>, image: Rect) {
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.argb(1, 0, 0, 0) }
+        val iw = image.width().toFloat()
+        val ih = image.height().toFloat()
+        for (line in lines) {
+            val left = image.left + line.left * iw
+            val right = image.left + line.right * iw
+            val top = image.top + line.top * ih
+            val bottom = image.top + line.bottom * ih
+            val height = bottom - top
+            val width = right - left
+            if (height < 1.5f || width < 1.5f) continue
+            paint.textScaleX = 1f
+            paint.textSize = height * 0.82f
+            val measured = paint.measureText(line.text)
+            if (measured <= 0f) continue
+            paint.textScaleX = (width / measured).coerceIn(0.2f, 4f)
+            canvas.drawText(line.text, left, bottom - height * 0.18f, paint)
+        }
+    }
+
+    /** Pages analysed before layouts existed: text is still searchable, just not positioned. */
+    private fun drawFallbackTextLayer(canvas: Canvas, ocrText: String, image: Rect) {
+        val paint = Paint().apply {
+            color = android.graphics.Color.argb(1, 0, 0, 0)
+            textSize = 8f
+        }
+        var y = image.top + 10f
+        for (line in ocrText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.take(200)) {
+            if (y > image.bottom) break
+            canvas.drawText(line, image.left + 2f, y, paint)
+            y += 10f
+        }
     }
 
     /** Deletes stale exported / shared files so the exports folder never grows forever. */

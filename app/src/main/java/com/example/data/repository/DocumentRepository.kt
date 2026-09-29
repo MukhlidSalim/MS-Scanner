@@ -5,11 +5,15 @@ import androidx.room.withTransaction
 import com.example.data.db.DocScanDatabase
 import com.example.data.db.DocumentDao
 import com.example.data.model.DocumentEntity
+import com.example.data.model.FavoriteFolderEntity
 import com.example.data.model.PageEntity
 import com.example.data.model.SignatureEntity
 import com.example.engine.cv.QuadStore
+import com.example.engine.ocr.OcrLayoutStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.text.SimpleDateFormat
@@ -43,6 +47,11 @@ class DocumentRepository(
     private val documentDao: DocumentDao
 ) {
     private val database by lazy { DocScanDatabase.getInstance(context.applicationContext) }
+    /**
+     * User-created folders. Stored in the existing `favorite_folders` table (same shape: id, folderName,
+     * createdAt) so an EMPTY folder exists and appears before any document is saved in it — no migration.
+     */
+    private val folderDao by lazy { database.favoriteFolderDao() }
 
     suspend fun getAllDocumentsSync(): List<DocumentEntity> = withContext(Dispatchers.IO) {
         documentDao.getAllDocumentsSync()
@@ -209,12 +218,58 @@ class DocumentRepository(
         }
     }
 
-    suspend fun renameFolder(oldName: String, newName: String) = withContext(Dispatchers.IO) {
-        documentDao.renameFolder(oldName, newName)
+    /** Folders from documents + user-created (possibly empty) folders; "Default" and "ALL" excluded. */
+    fun observeFolders(): Flow<List<String>> =
+        combine(documentDao.getAllFolders(), folderDao.getAllFavoriteFolders()) { docFolders, created ->
+            (docFolders + created.map { it.folderName })
+                .map { it.trim() }
+                .filter { it.isNotBlank() && !isReservedFolder(it) }
+                .distinctBy { it.lowercase() }
+                .sortedBy { it.lowercase() }
+        }
+
+    fun isReservedFolder(name: String): Boolean =
+        name.equals("ALL", ignoreCase = true) || name.equals("Default", ignoreCase = true)
+
+    /** Returns false when the name is empty, reserved or already used (case-insensitive). */
+    suspend fun createFolder(name: String): Boolean = withContext(Dispatchers.IO) {
+        val clean = name.trim()
+        if (clean.isBlank() || clean.length > 60 || isReservedFolder(clean)) return@withContext false
+        val existing = documentDao.getAllFolders().first() + folderDao.getAllFavoriteFolders().first().map { it.folderName }
+        if (existing.any { it.equals(clean, ignoreCase = true) }) return@withContext false
+        folderDao.insertFolder(FavoriteFolderEntity(folderName = clean))
+        true
     }
 
+    suspend fun renameFolder(oldName: String, newName: String) = withContext(Dispatchers.IO) {
+        val clean = newName.trim()
+        if (clean.isBlank() || isReservedFolder(clean) || clean == oldName) return@withContext
+        val rows = folderDao.getAllFavoriteFolders().first().filter { it.folderName == oldName }
+        database.withTransaction {
+            documentDao.renameFolder(oldName, clean)
+            rows.forEach { folderDao.deleteFolder(it) }
+            folderDao.insertFolder(FavoriteFolderEntity(folderName = clean))
+        }
+    }
+
+    /** Documents of the folder go back to "Default" (never deleted); the folder itself is removed. */
     suspend fun deleteFolder(folderName: String) = withContext(Dispatchers.IO) {
-        documentDao.deleteFolder(folderName)
+        val rows = folderDao.getAllFavoriteFolders().first().filter { it.folderName == folderName }
+        database.withTransaction {
+            documentDao.deleteFolder(folderName)
+            rows.forEach { folderDao.deleteFolder(it) }
+        }
+    }
+
+    suspend fun moveDocumentsToFolder(docIds: List<Long>, folder: String) = withContext(Dispatchers.IO) {
+        val target = folder.trim().ifBlank { "Default" }
+        database.withTransaction {
+            docIds.forEach { id ->
+                documentDao.getDocumentById(id)?.let {
+                    documentDao.updateDocument(it.copy(folderName = target, updatedAt = System.currentTimeMillis()))
+                }
+            }
+        }
     }
 
     suspend fun updatePages(pages: List<PageEntity>) = withContext(Dispatchers.IO) {
@@ -291,6 +346,7 @@ class DocumentRepository(
     private fun deletePageFiles(p: PageEntity) {
         runCatching { File(p.rawImagePath).delete() }
         runCatching { QuadStore.delete(p.rawImagePath) }
+        OcrLayoutStore.delete(p.processedImagePath)
         if (p.processedImagePath != p.rawImagePath) runCatching { File(p.processedImagePath).delete() }
     }
 

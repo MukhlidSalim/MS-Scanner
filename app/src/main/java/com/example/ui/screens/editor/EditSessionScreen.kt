@@ -111,7 +111,9 @@ fun EditSessionScreen(
     pageStatuses: Map<String, PageStatus> = emptyMap(),
     onRetryDetection: (Int) -> Unit = {},
     onAcceptPageAsIs: (Int) -> Unit = {},
-    onPageReviewed: (Int) -> Unit = {}
+    onPageReviewed: (Int) -> Unit = {},
+    /** Book mode: split page [index] into two pages; Boolean = right-hand page first (Arabic books). */
+    onSplitPendingPage: ((Int, Boolean) -> Unit)? = null
 ) {
     val editUiState by editViewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -168,6 +170,7 @@ fun EditSessionScreen(
     var showDiscardDialog by remember { mutableStateOf(false) }
     var pendingDeleteIndex by remember { mutableStateOf<Int?>(null) }
     var showReviewWarning by remember { mutableStateOf(false) }
+    var splitIndex by remember { mutableStateOf<Int?>(null) }
     val pagesNeedingReview = pages.count { it.status.needsAttention }
     var documentTitle by rememberSaveable {
         mutableStateOf(
@@ -304,6 +307,26 @@ fun EditSessionScreen(
             }
         )
     }
+    splitIndex?.let { idx ->
+        AlertDialog(
+            onDismissRequest = { splitIndex = null },
+            icon = { Icon(Icons.Default.MenuBook, null) },
+            title = { Text(t("Split into two pages", "تقسيم إلى صفحتين")) },
+            text = { Text(t("For an open book or a two-page spread. Which page comes first?", "لكتاب مفتوح أو صفحتين متقابلتين. أي صفحة تأتي أولاً؟")) },
+            confirmButton = {
+                TextButton(onClick = {
+                    splitIndex = null; hasChanges = true
+                    onSplitPendingPage?.invoke(idx, true)
+                }) { Text(t("Right page first (Arabic)", "اليمنى أولاً (عربي)")) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    splitIndex = null; hasChanges = true
+                    onSplitPendingPage?.invoke(idx, false)
+                }) { Text(t("Left page first", "اليسرى أولاً")) }
+            }
+        )
+    }
     pendingDeleteIndex?.let { idx ->
         AlertDialog(
             onDismissRequest = { pendingDeleteIndex = null },
@@ -426,6 +449,7 @@ fun EditSessionScreen(
                     onMarkup = if (isExisting && pages[safeIndex].entityId > 0L) ({ onNavigateToAnnotate(docId, pages[safeIndex].entityId) }) else null,
                     onPrevious = { if (safeIndex > 0) currentIndex = safeIndex - 1 },
                     onRetryDetection = if (isExisting) null else ({ onRetryDetection(safeIndex) }),
+                    onSplit = if (isExisting || onSplitPendingPage == null) null else ({ splitIndex = safeIndex }),
                     onAcceptAsIs = if (isExisting) null else ({ onAcceptPageAsIs(safeIndex) }),
                     // Single page -> direct Save. Multi -> Save & Next, last page -> Preview.
                     primaryLabel = when {
@@ -502,6 +526,7 @@ private fun ReviewStageContent(
     onPrevious: () -> Unit,
     onRetryDetection: (() -> Unit)? = null,
     onAcceptAsIs: (() -> Unit)? = null,
+    onSplit: (() -> Unit)? = null,
     primaryLabel: String,
     onPrimary: () -> Unit
 ) {
@@ -613,6 +638,7 @@ private fun ReviewStageContent(
             ToolButton(Icons.Default.FilterAlt, t("Filter", "فلتر"), !isBusy, selected = panel == ToolPanel.FILTER, onClick = { onPanel(ToolPanel.FILTER) })
             ToolButton(Icons.Default.Brightness6, t("Adjust", "سطوع"), !isBusy, selected = panel == ToolPanel.ADJUST, onClick = { onPanel(ToolPanel.ADJUST) })
             onRetake?.let { ToolButton(Icons.Default.CameraAlt, t("Retake", "إعادة"), !isBusy, onClick = it) }
+            onSplit?.let { ToolButton(Icons.Default.MenuBook, t("Split", "تقسيم"), !isBusy, onClick = it) }
             onDelete?.let { ToolButton(Icons.Default.Delete, t("Delete", "حذف"), !isBusy, onClick = it) }
             onMarkup?.let { ToolButton(Icons.Default.Draw, t("Markup", "تعليق"), !isBusy, onClick = it) }
         }

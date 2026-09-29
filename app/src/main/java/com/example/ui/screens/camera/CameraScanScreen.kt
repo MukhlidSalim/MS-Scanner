@@ -56,6 +56,7 @@ import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.AsyncImage
+import com.example.data.repository.AppPreferences
 import com.example.engine.cv.DocumentPipeline
 import com.example.engine.cv.LiveDetectionPhase
 import com.example.engine.cv.ProcessedPage
@@ -104,15 +105,23 @@ fun CameraScanScreen(
     onDocumentCaptured: (List<Pair<String, String>>) -> Unit,
     onIdCardCaptured: (String, String) -> Unit,
     onPassportCaptured: ((String, String) -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    /** True for a normal "Scan" entry: the camera opens in the mode the user chose last time. */
+    useSavedMode: Boolean = false
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
 
+    // Persisted camera settings (Auto/Manual, flash, torch, grid, camera, last mode).
+    val cameraPrefs = remember { AppPreferences(context) }
+    val savedMode = remember {
+        runCatching { ScanCameraMode.valueOf(cameraPrefs.cameraLastMode) }.getOrDefault(ScanCameraMode.DOCUMENT)
+    }
     // Replacing a single page never makes sense in batch mode.
-    val startMode = if (replacePageId > 0L && initialMode == ScanCameraMode.BATCH) ScanCameraMode.DOCUMENT else initialMode
+    val requestedMode = if (useSavedMode && replacePageId == 0L) savedMode else initialMode
+    val startMode = if (replacePageId > 0L && requestedMode == ScanCameraMode.BATCH) ScanCameraMode.DOCUMENT else requestedMode
     var scanMode by remember { mutableStateOf(startMode) }
     val isMultiPage = scanMode == ScanCameraMode.BATCH
 
@@ -168,18 +177,28 @@ fun CameraScanScreen(
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
     var cameraInfo by remember { mutableStateOf<CameraInfo?>(null) }
 
-    var cameraSelector by remember { mutableStateOf(CameraSelector.DEFAULT_BACK_CAMERA) }
-    var flashMode by remember { mutableStateOf(ImageCapture.FLASH_MODE_OFF) }
-    var isTorchActive by remember { mutableStateOf(false) }
+    var cameraSelector by remember {
+        mutableStateOf(if (cameraPrefs.cameraFrontFacing) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA)
+    }
+    var flashMode by remember { mutableStateOf(cameraPrefs.cameraFlashMode) }
+    var isTorchActive by remember { mutableStateOf(cameraPrefs.cameraTorch) }
 
     var zoomRatio by remember { mutableStateOf(1f) }
     var minZoomRatio by remember { mutableStateOf(1f) }
     var maxZoomRatio by remember { mutableStateOf(4f) }
 
-    var showGridLines by remember { mutableStateOf(false) }
+    var showGridLines by remember { mutableStateOf(cameraPrefs.cameraGrid) }
     var isPhoneFlat by remember { mutableStateOf(false) }
 
-    var isAutoCaptureEnabled by remember { mutableStateOf(true) }
+    var isAutoCaptureEnabled by remember { mutableStateOf(cameraPrefs.cameraAutoCapture) }
+    // Save every change immediately, so the next camera session starts with the same settings.
+    LaunchedEffect(isAutoCaptureEnabled) { cameraPrefs.cameraAutoCapture = isAutoCaptureEnabled }
+    LaunchedEffect(flashMode, isTorchActive) {
+        cameraPrefs.cameraFlashMode = flashMode
+        cameraPrefs.cameraTorch = isTorchActive
+    }
+    LaunchedEffect(showGridLines) { cameraPrefs.cameraGrid = showGridLines }
+    LaunchedEffect(cameraSelector) { cameraPrefs.cameraFrontFacing = cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA }
 
     // ---- Single owner of live detection / stability / auto-capture state ----
     val scanController = rememberDocumentScanController(context)
@@ -697,7 +716,14 @@ fun CameraScanScreen(
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     IconButton(
                         onClick = {
-                            when (flashMode) {
+                            // Cycle: OFF -> AUTO -> ON -> TORCH -> OFF (TORCH is stored as OFF + torch).
+                            when {
+                                isTorchActive -> {
+                                    flashMode = ImageCapture.FLASH_MODE_OFF
+                                    isTorchActive = false
+                                    cameraControl?.enableTorch(false)
+                                }
+                                else -> when (flashMode) {
                                 ImageCapture.FLASH_MODE_OFF -> {
                                     flashMode = ImageCapture.FLASH_MODE_AUTO
                                     isTorchActive = false
@@ -720,6 +746,7 @@ fun CameraScanScreen(
                                     flashMode = ImageCapture.FLASH_MODE_OFF
                                     isTorchActive = false
                                     cameraControl?.enableTorch(false)
+                                }
                                 }
                             }
                             imageCapture?.flashMode = flashMode
@@ -1031,7 +1058,10 @@ fun CameraScanScreen(
                                 color = if (isSelected) Emerald400 else Color.Transparent,
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(22.dp))
-                                    .clickable(enabled = enabled && !isCapturing) { scanMode = m }
+                                    .clickable(enabled = enabled && !isCapturing) {
+                                        scanMode = m
+                                        cameraPrefs.cameraLastMode = m.name // user's explicit choice is remembered
+                                    }
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),

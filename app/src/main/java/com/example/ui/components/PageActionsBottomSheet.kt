@@ -1,11 +1,8 @@
 package com.example.ui.components
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MergeType
@@ -15,21 +12,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
-import com.example.R
 import com.example.data.model.PageEntity
-import com.example.ui.theme.Emerald400
 import java.io.File
 
+/**
+ * Actions for ONE page (opened from "More" on the document screen).
+ * Grouped by purpose: Edit · Organize · Share & export · Delete. Labels describe exactly what each
+ * action does (the former "DOCX" entry produced a Word-compatible .doc file; "Merge" was a large
+ * "NEW" banner that pushed the everyday actions down).
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PageActionsBottomSheet(
@@ -53,6 +51,7 @@ fun PageActionsBottomSheet(
 ) {
     val context = LocalContext.current
     val isArabic = context.resources.configuration.locales[0].language == "ar"
+    fun t(en: String, ar: String) = if (isArabic) ar else en
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -64,9 +63,8 @@ fun PageActionsBottomSheet(
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
                 .padding(bottom = 28.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // Header with thumbnail & page title
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -74,10 +72,10 @@ fun PageActionsBottomSheet(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(54.dp, 72.dp)
-                        .clip(RoundedCornerShape(10.dp))
+                        .size(48.dp, 64.dp)
+                        .clip(RoundedCornerShape(8.dp))
                         .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(10.dp))
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
                 ) {
                     AsyncImage(
                         model = File(page.processedImagePath),
@@ -86,194 +84,60 @@ fun PageActionsBottomSheet(
                         modifier = Modifier.fillMaxSize()
                     )
                 }
-
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = if (isArabic) "الصفحة ${pageIndex + 1} من $totalPages" else "Page ${pageIndex + 1} of $totalPages",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = if (isArabic) "حدد الإجراء المطلوب تنفيذه على هذه الصفحة" else "Select action for this page",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
+                Text(
+                    text = t("Page ${pageIndex + 1} of $totalPages", "الصفحة ${pageIndex + 1} من $totalPages"),
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
                 IconButton(onClick = onDismiss) {
-                    Icon(Icons.Default.Close, contentDescription = "Close")
+                    Icon(Icons.Default.Close, contentDescription = t("Close", "إغلاق"))
                 }
             }
 
-            // PRIMARY HIGHLIGHTED ACTION: Merge with other images into one page
-            Surface(
-                shape = RoundedCornerShape(18.dp),
-                color = Emerald400.copy(alpha = 0.12f),
-                border = BorderStroke(1.5.dp, Brush.horizontalGradient(listOf(Emerald400, Color(0xFF00E676)))),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable {
-                        onDismiss()
-                        onMergeClick()
-                    }
+            ActionGroup(t("Edit", "تعديل")) {
+                PageActionItem(Icons.Default.Crop, t("Crop & adjust", "قص وضبط"), Modifier.weight(1f)) { onDismiss(); onEditCropClick() }
+                PageActionItem(Icons.Default.RotateRight, t("Rotate 90°", "تدوير 90°"), Modifier.weight(1f)) { onDismiss(); onRotateClick() }
+                PageActionItem(Icons.Default.Draw, t("Sign & annotate", "توقيع وتعليق"), Modifier.weight(1f)) { onDismiss(); onAnnotateClick() }
+                PageActionItem(Icons.Default.TextFields, t("Extract text", "استخراج النص"), Modifier.weight(1f)) { onDismiss(); onOcrClick() }
+            }
+            ActionGroup(t("Organize", "تنظيم")) {
+                PageActionItem(Icons.Default.PhotoLibrary, t("Replace image", "استبدال الصورة"), Modifier.weight(1f)) { onDismiss(); onReplaceClick() }
+                PageActionItem(Icons.Default.FileCopy, t("Duplicate", "تكرار"), Modifier.weight(1f)) { onDismiss(); onDuplicateClick() }
+                PageActionItem(Icons.AutoMirrored.Filled.MergeType, t("Merge pages", "دمج صفحات"), Modifier.weight(1f)) { onDismiss(); onMergeClick() }
+                PageActionItem(Icons.Default.Print, t("Print page", "طباعة الصفحة"), Modifier.weight(1f)) { onDismiss(); onPrintClick() }
+            }
+            ActionGroup(t("Share & export this page", "مشاركة وتصدير هذه الصفحة")) {
+                PageActionItem(Icons.Default.Share, t("Share image", "مشاركة الصورة"), Modifier.weight(1f)) { onDismiss(); onShareClick() }
+                PageActionItem(Icons.Default.Image, t("PNG image", "صورة PNG"), Modifier.weight(1f)) { onDismiss(); onExportPngClick() }
+                PageActionItem(Icons.Default.TextSnippet, t("Text (.txt)", "نص (.txt)"), Modifier.weight(1f)) { onDismiss(); onExportTxtClick() }
+                PageActionItem(Icons.Default.Description, t("Word (.doc)", "وورد (.doc)"), Modifier.weight(1f)) { onDismiss(); onExportDocxClick() }
+            }
+            OutlinedButton(
+                onClick = { onDismiss(); onDeleteClick() },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
             ) {
-                Row(
-                    modifier = Modifier.padding(14.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(Emerald400),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.MergeType,
-                            contentDescription = null,
-                            tint = Color.Black,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text(
-                                text = if (isArabic) "الدمج مع صور أخرى في صفحة واحدة" else "Merge into Single Page",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                            Surface(
-                                shape = RoundedCornerShape(6.dp),
-                                color = Emerald400
-                            ) {
-                                Text(
-                                    text = if (isArabic) "جديد" else "NEW",
-                                    fontSize = 10.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.Black,
-                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
-                                )
-                            }
-                        }
-                        Text(
-                            text = if (isArabic)
-                                "تنسيق شبكي متعدد (1×2, 2×2, 2×3) مع التحكم بحجم ومسافات الصور"
-                            else
-                                "Multi-grid layouts (1x2, 2x2, 2x3) with custom image scale & spacing",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Icon(
-                        imageVector = Icons.Default.ChevronRight,
-                        contentDescription = null,
-                        tint = Emerald400
-                    )
-                }
+                Icon(Icons.Default.DeleteOutline, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text(t("Delete this page", "حذف هذه الصفحة"))
             }
+        }
+    }
+}
 
-            // Grid / Row of Standard Default Actions
-            Card(
-                shape = RoundedCornerShape(18.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f))
-            ) {
-                Column(modifier = Modifier.padding(8.dp)) {
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        PageActionItem(
-                            icon = Icons.Default.Crop,
-                            label = if (isArabic) "تعديل وقص" else "Edit & Crop",
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onEditCropClick() }
-                        )
-                        PageActionItem(
-                            icon = Icons.Default.TextFields,
-                            label = if (isArabic) "استخراج النص" else "OCR Text",
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onOcrClick() }
-                        )
-                        PageActionItem(
-                            icon = Icons.Default.Draw,
-                            label = if (isArabic) "رسم وتوقيع" else "Annotate",
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onAnnotateClick() }
-                        )
-                    }
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        PageActionItem(
-                            icon = Icons.Default.RotateRight,
-                            label = if (isArabic) "تدوير 90°" else "Rotate",
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onRotateClick() }
-                        )
-                        PageActionItem(
-                            icon = Icons.Default.FileCopy,
-                            label = if (isArabic) "تكرار الصفحة" else "Duplicate",
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onDuplicateClick() }
-                        )
-                        PageActionItem(
-                            icon = Icons.Default.PhotoLibrary,
-                            label = if (isArabic) "استبدال الصورة" else "Replace",
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onReplaceClick() }
-                        )
-                    }
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        PageActionItem(
-                            icon = Icons.Default.Print,
-                            label = if (isArabic) "طباعة" else "Print",
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onPrintClick() }
-                        )
-                        PageActionItem(
-                            icon = Icons.Default.Share,
-                            label = if (isArabic) "مشاركة" else "Share",
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onShareClick() }
-                        )
-                        PageActionItem(
-                            icon = Icons.Default.Description,
-                            label = stringResource(R.string.txt_export_docx),
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onExportDocxClick() }
-                        )
-                    }
-
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-
-                    Row(modifier = Modifier.fillMaxWidth()) {
-                        PageActionItem(
-                            icon = Icons.Default.TextSnippet,
-                            label = stringResource(R.string.txt_export_txt),
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onExportTxtClick() }
-                        )
-                        PageActionItem(
-                            icon = Icons.Default.Image,
-                            label = stringResource(R.string.txt_export_png),
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onExportPngClick() }
-                        )
-                        PageActionItem(
-                            icon = Icons.Default.DeleteOutline,
-                            label = if (isArabic) "حذف" else "Delete",
-                            tint = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.weight(1f),
-                            onClick = { onDismiss(); onDeleteClick() }
-                        )
-                    }
-                }
-            }
+@Composable
+private fun ActionGroup(title: String, content: @Composable RowScope.() -> Unit) {
+    Column {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp)
+        )
+        Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f)) {
+            Row(Modifier.fillMaxWidth().padding(4.dp), content = content)
         }
     }
 }
@@ -290,15 +154,21 @@ private fun PageActionItem(
         onClick = onClick,
         shape = RoundedCornerShape(12.dp),
         color = Color.Transparent,
-        modifier = modifier.padding(4.dp)
+        modifier = modifier.padding(2.dp)
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(vertical = 10.dp)
+            modifier = Modifier.padding(vertical = 10.dp, horizontal = 2.dp)
         ) {
-            Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(22.dp))
+            Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
             Spacer(modifier = Modifier.height(6.dp))
-            Text(text = label, style = MaterialTheme.typography.labelSmall, color = tint, maxLines = 1)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = tint,
+                maxLines = 2,
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+            )
         }
     }
 }

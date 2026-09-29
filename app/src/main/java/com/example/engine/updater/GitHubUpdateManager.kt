@@ -1,7 +1,9 @@
 package com.example.engine.updater
-
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
@@ -17,10 +19,26 @@ import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
-class GitHubUpdateManager(private val context: Context) {
+/** The downloaded APK is signed with a different key than the installed app (Android would refuse it). */
+class UpdateSignatureMismatchException : SecurityException("Update is signed with a different key than the installed app")
 
+/**
+ * THE update system of the app (GitHub Releases, update.json fallback).
+ * The former UpdateManager (placeholder URL, no verification) and AppUpdater (string version compare,
+ * exported receiver, stale APK re-install) were removed.
+ *
+ * Download verification before the installer is launched:
+ *  - HTTPS only;
+ *  - package name equals this app;
+ *  - versionCode strictly greater than the installed one;
+ *  - signing certificate matches the installed app when the platform can read it (otherwise Android's
+ *    installer still enforces it).
+ */
+class GitHubUpdateManager(context: Context) {
+    private val context: Context = context.applicationContext
     private val httpClient = OkHttpClient.Builder()
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -38,114 +56,84 @@ class GitHubUpdateManager(private val context: Context) {
                 isUpdateAvailable = false
             )
         }
-
-        // 1. Try GitHub Releases API
+        // 1. GitHub Releases API
         var releaseInfo: AppUpdateInfo? = null
         try {
-            val releaseUrl = "https://api.github.com/repos/$cleanSlug/releases/latest"
             val request = Request.Builder()
-                .url(releaseUrl)
-                .header("Accept", "application/vnd.github.v3+json")
+                .url("https://api.github.com/repos/$cleanSlug/releases/latest")
+                .header("Accept", "application/vnd.github+json")
                 .header("User-Agent", "MS-Scanner-App/${BuildConfig.VERSION_NAME}")
                 .build()
-
             httpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     val bodyString = response.body?.string().orEmpty()
-                if (bodyString.isNotBlank()) {
-                    val json = JSONObject(bodyString)
-                    val tagName = json.optString("tag_name", "").trim()
-                    val title = json.optString("name", tagName)
-                    val body = json.optString("body", "")
-                    val htmlUrl = json.optString("html_url", "https://github.com/$cleanSlug/releases")
-                    val publishedAt = json.optString("published_at", "")
-
-                    var downloadUrl = ""
-                    var apkSize = 0L
-
-                    val assets = json.optJSONArray("assets") ?: JSONArray()
-                    for (i in 0 until assets.length()) {
-                        val asset = assets.optJSONObject(i) ?: continue
-                        val name = asset.optString("name", "")
-                        if (name.endsWith(".apk", ignoreCase = true)) {
-                            downloadUrl = asset.optString("browser_download_url", "")
-                            apkSize = asset.optLong("size", 0L)
-                            break
+                    if (bodyString.isNotBlank()) {
+                        val json = JSONObject(bodyString)
+                        val tagName = json.optString("tag_name", "").trim()
+                        var downloadUrl = ""
+                        var apkSize = 0L
+                        val assets = json.optJSONArray("assets") ?: JSONArray()
+                        for (i in 0 until assets.length()) {
+                            val asset = assets.optJSONObject(i) ?: continue
+                            if (asset.optString("name", "").endsWith(".apk", ignoreCase = true)) {
+                                downloadUrl = asset.optString("browser_download_url", "")
+                                apkSize = asset.optLong("size", 0L)
+                                break
+                            }
                         }
+                        val cleanVersion = tagName.removePrefix("v").removePrefix("V")
+                        releaseInfo = AppUpdateInfo(
+                            latestVersion = cleanVersion.ifBlank { tagName },
+                            latestVersionCode = 0,
+                            releaseTitle = json.optString("name", tagName),
+                            releaseNotes = json.optString("body", ""),
+                            downloadUrl = downloadUrl,
+                            htmlUrl = json.optString("html_url", "https://github.com/$cleanSlug/releases"),
+                            apkSize = apkSize,
+                            publishedAt = json.optString("published_at", ""),
+                            isUpdateAvailable = downloadUrl.isNotBlank() && isVersionNewer(cleanVersion, BuildConfig.VERSION_NAME)
+                        )
                     }
-
-                    // Fallback to tag direct download if asset list has no explicit .apk asset
-                    if (downloadUrl.isBlank() && tagName.isNotBlank()) {
-                        downloadUrl = "https://github.com/$cleanSlug/releases/download/$tagName/app-release.apk"
-                    }
-
-                    val cleanVersion = tagName.removePrefix("v").removePrefix("V")
-                    val isNewer = isVersionNewer(cleanVersion, BuildConfig.VERSION_NAME)
-
-                    releaseInfo = AppUpdateInfo(
-                        latestVersion = cleanVersion.ifBlank { tagName },
-                        latestVersionCode = 0,
-                        releaseTitle = title,
-                        releaseNotes = body,
-                        downloadUrl = downloadUrl,
-                        htmlUrl = htmlUrl,
-                        apkSize = apkSize,
-                        publishedAt = publishedAt,
-                        isUpdateAvailable = isNewer
-                    )
                 }
             }
-        }
         } catch (e: Exception) {
             e.printStackTrace()
         }
-
         val info = releaseInfo
-        if (info != null && info.downloadUrl.isNotBlank()) {
-            return@withContext info
-        }
+        if (info != null && info.downloadUrl.isNotBlank()) return@withContext info
 
-        // 2. Fallback to raw update.json on main branch (Rate-limit resistant)
+        // 2. Fallback: raw update.json on main branch (rate-limit resistant)
         try {
-            val rawJsonUrl = "https://raw.githubusercontent.com/$cleanSlug/main/update.json"
             val request = Request.Builder()
-                .url(rawJsonUrl)
+                .url("https://raw.githubusercontent.com/$cleanSlug/main/update.json")
                 .header("User-Agent", "MS-Scanner-App/${BuildConfig.VERSION_NAME}")
                 .build()
-
             httpClient.newCall(request).execute().use { response ->
                 if (response.isSuccessful) {
                     val bodyString = response.body?.string().orEmpty()
-                if (bodyString.isNotBlank()) {
-                    val json = JSONObject(bodyString)
-                    val versionName = json.optString("versionName", "").trim()
-                    val versionCode = json.optInt("versionCode", 0)
-                    val title = json.optString("title", "Update v$versionName")
-                    val notes = json.optString("notes", "")
-                    val apkUrl = json.optString("apkUrl", "")
-                    val size = json.optLong("size", 0L)
-
-                    val isNewer = isVersionNewer(versionName, BuildConfig.VERSION_NAME) ||
-                            (versionCode > BuildConfig.VERSION_CODE && versionCode > 0)
-
-                    return@withContext AppUpdateInfo(
-                        latestVersion = versionName,
-                        latestVersionCode = versionCode,
-                        releaseTitle = title,
-                        releaseNotes = notes,
-                        downloadUrl = apkUrl,
-                        htmlUrl = "https://github.com/$cleanSlug",
-                        apkSize = size,
-                        isUpdateAvailable = isNewer
-                    )
+                    if (bodyString.isNotBlank()) {
+                        val json = JSONObject(bodyString)
+                        val versionName = json.optString("versionName", "").trim()
+                        val versionCode = json.optInt("versionCode", 0)
+                        val apkUrl = json.optString("apkUrl", "")
+                        val isNewer = apkUrl.isNotBlank() && (isVersionNewer(versionName, BuildConfig.VERSION_NAME) ||
+                            (versionCode > BuildConfig.VERSION_CODE && versionCode > 0))
+                        return@withContext AppUpdateInfo(
+                            latestVersion = versionName,
+                            latestVersionCode = versionCode,
+                            releaseTitle = json.optString("title", "Update v$versionName"),
+                            releaseNotes = json.optString("notes", ""),
+                            downloadUrl = apkUrl,
+                            htmlUrl = "https://github.com/$cleanSlug",
+                            apkSize = json.optLong("size", 0L),
+                            isUpdateAvailable = isNewer
+                        )
+                    }
                 }
             }
-        }
         } catch (e: Exception) {
             e.printStackTrace()
         }
-
-        // Fallback default
         releaseInfo ?: AppUpdateInfo(
             latestVersion = BuildConfig.VERSION_NAME,
             latestVersionCode = BuildConfig.VERSION_CODE,
@@ -154,70 +142,114 @@ class GitHubUpdateManager(private val context: Context) {
     }
 
     /**
-     * Downloads the APK file with real-time byte progress reporting.
-     * Verifies package integrity before returning.
+     * Downloads the APK with progress reporting and verifies it before returning.
      */
     suspend fun downloadApk(
         downloadUrl: String,
         targetVersion: String,
         onProgress: (bytesDownloaded: Long, totalBytes: Long, progress: Float) -> Unit
     ): File = withContext(Dispatchers.IO) {
-        val updatesDir = File(context.cacheDir, "updates").apply {
-            if (!exists()) mkdirs()
+        if (!downloadUrl.startsWith("https://", ignoreCase = true)) {
+            throw SecurityException("Refusing non-HTTPS update URL")
         }
+        val updatesDir = File(context.cacheDir, "updates").apply { if (!exists()) mkdirs() }
+        // Older update files are never re-installed by mistake.
         val cleanVer = targetVersion.replace("[^a-zA-Z0-9._-]".toRegex(), "_")
+        updatesDir.listFiles()?.forEach { if (it.name != "update_$cleanVer.apk") it.delete() }
         val apkFile = File(updatesDir, "update_$cleanVer.apk")
-
         if (apkFile.exists()) {
-            val archiveInfo = context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
-            if (archiveInfo != null && archiveInfo.packageName == context.packageName && PackageInfoCompat.getLongVersionCode(archiveInfo) > BuildConfig.VERSION_CODE) {
-                // Already downloaded and verified for this app and a newer version.
+            if (runCatching { verifyApk(apkFile) }.isSuccess) {
                 onProgress(apkFile.length(), apkFile.length(), 1f)
                 return@withContext apkFile
-            } else {
-                apkFile.delete() // Corrupt, delete and redownload
             }
+            apkFile.delete()
         }
-
+        val partFile = File(updatesDir, "update_$cleanVer.apk.part")
         val request = Request.Builder()
             .url(downloadUrl)
-            .header("User-Agent", "Mozilla/5.0 (Android; Mobile; MS-Scanner)")
+            .header("User-Agent", "MS-Scanner-App/${BuildConfig.VERSION_NAME}")
             .build()
-
-        httpClient.newCall(request).execute().use { response ->
-            if (!response.isSuccessful) {
-                throw IOException("Download failed with HTTP code ${response.code}")
-            }
-
-            val body = response.body ?: throw IOException("Empty response body")
-            val totalBytes = body.contentLength()
-
-            var downloadedBytes = 0L
-            val buffer = ByteArray(8 * 1024)
-
-            body.byteStream().use { input ->
-                FileOutputStream(apkFile).use { output ->
-                    var read: Int
-                    while (input.read(buffer).also { read = it } != -1) {
-                        output.write(buffer, 0, read)
-                        downloadedBytes += read
-                        val progress = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
-                        onProgress(downloadedBytes, totalBytes, progress)
+        try {
+            httpClient.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) throw IOException("Download failed with HTTP code ${response.code}")
+                val body = response.body ?: throw IOException("Empty response body")
+                val totalBytes = body.contentLength()
+                var downloadedBytes = 0L
+                val buffer = ByteArray(16 * 1024)
+                body.byteStream().use { input ->
+                    FileOutputStream(partFile).use { output ->
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            downloadedBytes += read
+                            val progress = if (totalBytes > 0) (downloadedBytes.toFloat() / totalBytes).coerceIn(0f, 1f) else 0f
+                            onProgress(downloadedBytes, totalBytes, progress)
+                        }
+                        output.flush()
                     }
-                    output.flush()
                 }
             }
+            if (!partFile.renameTo(apkFile)) throw IOException("Could not finalize the downloaded file")
+        } finally {
+            partFile.delete()
         }
-
-        // Verify package integrity using Android PackageManager
-        val archiveInfo = context.packageManager.getPackageArchiveInfo(apkFile.absolutePath, 0)
-        if (archiveInfo == null || archiveInfo.packageName != context.packageName || PackageInfoCompat.getLongVersionCode(archiveInfo) <= BuildConfig.VERSION_CODE) {
+        try {
+            verifyApk(apkFile)
+        } catch (e: Exception) {
             apkFile.delete()
-            throw IllegalStateException("Downloaded APK is invalid, belongs to another package, or is not newer than the installed version")
+            throw e
         }
-
         apkFile
     }
+
+    /** Throws when the APK is not a valid, newer build of THIS app signed with the same key. */
+    private fun verifyApk(apkFile: File) {
+        val pm = context.packageManager
+        val archiveInfo = pm.getPackageArchiveInfo(apkFile.absolutePath, 0)
+            ?: throw IllegalStateException("Downloaded file is not a valid APK")
+        if (archiveInfo.packageName != context.packageName) {
+            throw SecurityException("Downloaded APK belongs to another app (${archiveInfo.packageName})")
+        }
+        if (PackageInfoCompat.getLongVersionCode(archiveInfo) <= BuildConfig.VERSION_CODE) {
+            throw IllegalStateException("Downloaded APK is not newer than the installed version")
+        }
+        val archiveCerts = archiveDigests(apkFile)
+        val installedCerts = installedDigests()
+        if (archiveCerts != null && installedCerts != null && archiveCerts.none { it in installedCerts }) {
+            throw UpdateSignatureMismatchException()
+        }
+    }
+
+    private fun signingFlags(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) PackageManager.GET_SIGNING_CERTIFICATES
+        else @Suppress("DEPRECATION") PackageManager.GET_SIGNATURES
+
+    private fun digests(info: PackageInfo?): Set<String>? {
+        if (info == null) return null
+        val signatures: Array<Signature>? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val si = info.signingInfo ?: return null
+            if (si.hasMultipleSigners()) si.apkContentsSigners else si.signingCertificateHistory
+        } else {
+            @Suppress("DEPRECATION") info.signatures
+        }
+        if (signatures == null || signatures.isEmpty()) return null
+        val md = MessageDigest.getInstance("SHA-256")
+        return signatures.map { sig -> md.digest(sig.toByteArray()).joinToString("") { "%02x".format(it) } }.toSet()
+    }
+
+    private fun installedDigests(): Set<String>? = runCatching {
+        digests(context.packageManager.getPackageInfo(context.packageName, signingFlags()))
+    }.getOrNull()
+
+    private fun archiveDigests(apk: File): Set<String>? = runCatching {
+        val info = context.packageManager.getPackageArchiveInfo(apk.absolutePath, signingFlags())
+        info?.applicationInfo?.let {
+            it.sourceDir = apk.absolutePath
+            it.publicSourceDir = apk.absolutePath
+        }
+        digests(info)
+    }.getOrNull()
 
     /**
      * Checks if the app currently has permission to install unknown apps.
@@ -250,18 +282,12 @@ class GitHubUpdateManager(private val context: Context) {
      * Launches the Android PackageInstaller to install the verified APK.
      */
     fun launchInstallApk(apkFile: File) {
-        val uri = FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.provider",
-            apkFile
-        )
-
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", apkFile)
         val installIntent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, "application/vnd.android.package-archive")
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
-
         context.startActivity(installIntent)
     }
 
@@ -273,10 +299,8 @@ class GitHubUpdateManager(private val context: Context) {
             if (remoteVersion.isBlank() || currentVersion.isBlank()) return false
             val cleanRemote = remoteVersion.trim().removePrefix("v").removePrefix("V").split("-")[0]
             val cleanCurrent = currentVersion.trim().removePrefix("v").removePrefix("V").split("-")[0]
-
             val remoteParts = cleanRemote.split(".").mapNotNull { it.toIntOrNull() }
             val currentParts = cleanCurrent.split(".").mapNotNull { it.toIntOrNull() }
-
             val maxLen = maxOf(remoteParts.size, currentParts.size)
             for (i in 0 until maxLen) {
                 val r = remoteParts.getOrElse(i) { 0 }

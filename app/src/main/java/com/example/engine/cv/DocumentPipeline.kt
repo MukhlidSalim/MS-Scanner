@@ -303,6 +303,68 @@ object DocumentPipeline {
         return out
     }
 
+    /**
+     * Book mode: splits a two-page spread (already cropped / corrected) into two pages at the spine.
+     * The spine is searched in the middle 20% (darkest / most shadowed column = binding), then 1% gutter is
+     * trimmed on each side. Each half becomes its own raw image (quad = full, status MANUAL) so it can be
+     * re-edited independently. Returns (leftPath, rightPath) or null when the image cannot be read.
+     */
+    suspend fun splitSpread(context: Context, imagePath: String): Pair<String, String>? = withContext(Dispatchers.Default) {
+        val src = ImageProcessor.loadBitmapFromFile(imagePath, CAPTURE_MAX_SIDE) ?: return@withContext null
+        try {
+            if (src.width < 64) return@withContext null
+            val spine = findSpine(src)
+            val gutter = (src.width * 0.01f).roundToInt()
+            val leftW = (spine - gutter).coerceAtLeast(1)
+            val rightX = (spine + gutter).coerceAtMost(src.width - 1)
+            val left = Bitmap.createBitmap(src, 0, 0, leftW, src.height)
+            val right = Bitmap.createBitmap(src, rightX, 0, src.width - rightX, src.height)
+            try {
+                val lp = ImageProcessor.saveBitmapToFile(context, left, "book_raw_")
+                val rp = ImageProcessor.saveBitmapToFile(context, right, "book_raw_")
+                listOf(lp, rp).forEach {
+                    QuadStore.save(it, DocumentQuad.fullQuad())
+                    QuadStore.saveStatus(it, DetectionStatus.MANUAL)
+                }
+                lp to rp
+            } finally {
+                if (left !== src) left.recycle()
+                if (right !== src) right.recycle()
+            }
+        } finally {
+            src.recycle()
+        }
+    }
+
+    /** Column with the lowest mean brightness in the central 20% of a down-scaled copy. */
+    private fun findSpine(src: Bitmap): Int {
+        val scale = 400f / max(src.width, src.height)
+        val w = (src.width * scale).roundToInt().coerceAtLeast(10)
+        val h = (src.height * scale).roundToInt().coerceAtLeast(10)
+        val small = Bitmap.createScaledBitmap(src, w, h, true)
+        try {
+            val px = IntArray(w * h)
+            small.getPixels(px, 0, w, 0, 0, w, h)
+            val from = (w * 0.4f).toInt()
+            val to = (w * 0.6f).toInt().coerceAtLeast(from + 1)
+            var bestX = w / 2
+            var best = Float.MAX_VALUE
+            for (x in from until to) {
+                var sum = 0f
+                for (y in 0 until h) {
+                    val p = px[y * w + x]
+                    sum += 0.299f * ((p shr 16) and 0xFF) + 0.587f * ((p shr 8) and 0xFF) + 0.114f * (p and 0xFF)
+                }
+                // Slight preference for the exact centre when columns are equally dark (plain white pages).
+                val score = sum / h + kotlin.math.abs(x - w / 2f) * 0.15f
+                if (score < best) { best = score; bestX = x }
+            }
+            return (bestX / scale).roundToInt().coerceIn(1, src.width - 1)
+        } finally {
+            if (small !== src) small.recycle()
+        }
+    }
+
     // ------------------------------------------------------------------ detection chain
 
     /**

@@ -109,6 +109,9 @@ class CameraViewModel(
         captureTarget = target
     }
 
+    /** Pending target without consuming it (camera opened from the review screen?). */
+    fun peekCaptureTarget(): CaptureTarget? = captureTarget
+
     /** Returns and clears the pending target (one-shot). */
     fun consumeCaptureTarget(): CaptureTarget? {
         val t = captureTarget
@@ -477,6 +480,49 @@ class CameraViewModel(
                 } catch (e: Exception) {
                     e.printStackTrace()
                     _events.trySend(UiEvent.Error("Failed to auto-crop pending pages"))
+                } finally {
+                    _uiState.update { it.copy(isProcessingEdit = false) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Book mode: replaces one pending page by its two halves (left / right of the spine).
+     * [rightPageFirst] = Arabic books (the right-hand page is read first).
+     */
+    fun splitPendingPage(index: Int, rightPageFirst: Boolean) {
+        val page = _uiState.value.pagesPendingEdit.getOrNull(index) ?: return
+        viewModelScope.launch {
+            editMutex.withLock {
+                _uiState.update { it.copy(isProcessingEdit = true) }
+                try {
+                    val halves = DocumentPipeline.splitSpread(context, page.second)
+                    if (halves == null) {
+                        _events.trySend(UiEvent.Error("Could not split the page"))
+                        return@withLock
+                    }
+                    val (left, right) = halves
+                    val ordered = if (rightPageFirst) listOf(right, left) else listOf(left, right)
+                    var applied = false
+                    _uiState.update { s ->
+                        val i = s.pagesPendingEdit.indexOfFirst { it.first == page.first }
+                        if (i < 0) return@update s
+                        applied = true
+                        val list = s.pagesPendingEdit.toMutableList()
+                        list.removeAt(i)
+                        list.addAll(i, ordered.map { it to it })
+                        // Halves are already processed pixels: no second filter on re-render.
+                        val edits = s.pageEdits - page.first + ordered.associateWith { PendingPageEdit(filter = null) }
+                        val statuses = s.pageStatuses - page.first + ordered.associateWith { PageStatus.EDITED }
+                        s.copy(pagesPendingEdit = list, pendingPages = list, pageEdits = edits, pageStatuses = statuses)
+                    }
+                    if (applied) deletePageFiles(page) else ordered.forEach { deletePageFiles(it to it) }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    _events.trySend(UiEvent.Error("Could not split the page"))
                 } finally {
                     _uiState.update { it.copy(isProcessingEdit = false) }
                 }

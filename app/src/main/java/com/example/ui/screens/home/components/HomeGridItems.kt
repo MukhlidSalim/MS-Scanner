@@ -3,15 +3,16 @@ package com.example.ui.screens.home.components
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -20,6 +21,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,7 +57,7 @@ fun HighlightedText(
         var lastIndex = 0
         val lowerText = text.lowercase()
         val lowerQuery = query.lowercase()
-        
+
         var index = lowerText.indexOf(lowerQuery)
         while (index != -1) {
             append(text.substring(lastIndex, index))
@@ -67,10 +69,14 @@ fun HighlightedText(
         }
         append(text.substring(lastIndex))
     }
-    
+
     Text(text = annotatedString, style = style, modifier = modifier, maxLines = 1, overflow = TextOverflow.Ellipsis)
 }
 
+/**
+ * Document card. Every menu entry is wired to its own action (previously "Share" performed "Export",
+ * and Export / Rename / Delete were not connected at all from the Home screen).
+ */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun DocumentGridItem(
@@ -84,8 +90,13 @@ fun DocumentGridItem(
     onLongClick: () -> Unit,
     onDeleteClick: () -> Unit = {},
     onRenameClick: (() -> Unit)? = null,
-    onExportClick: (() -> Unit)? = null
+    onExportClick: (() -> Unit)? = null,
+    onShareClick: (() -> Unit)? = null,
+    onMoveClick: (() -> Unit)? = null,
+    onFavoriteClick: (() -> Unit)? = null
 ) {
+    val isArabic = LocalContext.current.resources.configuration.locales[0].language == "ar"
+    fun t(en: String, ar: String) = if (isArabic) ar else en
     Card(
         modifier = modifier
             .fillMaxWidth()
@@ -107,7 +118,6 @@ fun DocumentGridItem(
     ) {
         Box(modifier = Modifier.fillMaxSize()) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // Thumbnail Paper Canvas
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -129,34 +139,42 @@ fun DocumentGridItem(
                             tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f)
                         )
                     }
-
-                    // Page count — bottom center
+                    if (doc.isFavorite && !selectionMode) {
+                        Icon(
+                            Icons.Default.Star,
+                            contentDescription = t("Favorite", "مفضلة"),
+                            tint = GoldBase,
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(6.dp)
+                                .background(Color.Black.copy(alpha = 0.45f), CircleShape)
+                                .padding(3.dp)
+                                .size(14.dp)
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .fillMaxWidth()
                             .background(
-                                brush = Brush.verticalGradient(
-                                    listOf(Color.Transparent, Color.Black.copy(alpha = 0.6f))
-                                ),
+                                brush = Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.6f))),
                                 shape = RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp)
                             )
                             .padding(vertical = 3.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
-                            text = "${doc.pageCount}p",
+                            text = if (isArabic) "${doc.pageCount} صفحة" else "${doc.pageCount} p",
                             color = Color.White,
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
                 }
 
-                // Metadata Section
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                        .padding(start = 8.dp, end = 2.dp, top = 4.dp, bottom = 4.dp),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -174,67 +192,76 @@ fun DocumentGridItem(
                             )
                         } else {
                             Text(
-                                text = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault()).format(Date(doc.updatedAt)),
+                                text = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(doc.updatedAt)),
                                 style = MaterialTheme.typography.bodySmall,
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
-                    // Document Options Menu
-                    var expanded by remember { mutableStateOf(false) }
-                    Box {
-                        IconButton(onClick = { expanded = true }, modifier = Modifier.size(24.dp)) {
-                            Icon(Icons.Default.MoreVert, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                        DropdownMenu(
-                            expanded = expanded,
-                            onDismissRequest = { expanded = false },
-                            shape = RoundedCornerShape(14.dp)
-                        ) {
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.action_export_pdf)) },
-                                leadingIcon = { Icon(Icons.Default.PictureAsPdf, null, tint = GoldBase) },
-                                onClick = {
-                                    expanded = false
-                                    onExportClick?.invoke()
+                    if (!selectionMode) {
+                        var expanded by remember { mutableStateOf(false) }
+                        Box {
+                            IconButton(onClick = { expanded = true }, modifier = Modifier.size(32.dp)) {
+                                Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.txt_options), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            DropdownMenu(
+                                expanded = expanded,
+                                onDismissRequest = { expanded = false },
+                                shape = RoundedCornerShape(14.dp)
+                            ) {
+                                onShareClick?.let { action ->
+                                    DropdownMenuItem(
+                                        text = { Text(t("Share as PDF", "مشاركة كـ PDF")) },
+                                        leadingIcon = { Icon(Icons.Default.Share, null, tint = GoldLight) },
+                                        onClick = { expanded = false; action() }
+                                    )
                                 }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.action_share)) },
-                                leadingIcon = { Icon(Icons.Default.Share, null, tint = GoldLight) },
-                                onClick = {
-                                    expanded = false
-                                    onExportClick?.invoke()
+                                onExportClick?.let { action ->
+                                    DropdownMenuItem(
+                                        text = { Text(t("Export PDF…", "تصدير PDF…")) },
+                                        leadingIcon = { Icon(Icons.Default.PictureAsPdf, null, tint = GoldBase) },
+                                        onClick = { expanded = false; action() }
+                                    )
                                 }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("Edit") },
-                                leadingIcon = { Icon(Icons.Default.AutoFixHigh, null, tint = Emerald400) },
-                                onClick = { 
-                                    expanded = false
-                                    onEditClick()
+                                DropdownMenuItem(
+                                    text = { Text(t("Edit pages", "تعديل الصفحات")) },
+                                    leadingIcon = { Icon(Icons.Default.AutoFixHigh, null, tint = Emerald400) },
+                                    onClick = { expanded = false; onEditClick() }
+                                )
+                                onRenameClick?.let { action ->
+                                    DropdownMenuItem(
+                                        text = { Text(stringResource(R.string.action_rename)) },
+                                        leadingIcon = { Icon(Icons.Default.Edit, null) },
+                                        onClick = { expanded = false; action() }
+                                    )
                                 }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.action_rename)) },
-                                leadingIcon = { Icon(Icons.Default.Edit, null) },
-                                onClick = {
-                                    expanded = false
-                                    onRenameClick?.invoke()
+                                onMoveClick?.let { action ->
+                                    DropdownMenuItem(
+                                        text = { Text(t("Move to folder", "نقل إلى مجلد")) },
+                                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.DriveFileMove, null) },
+                                        onClick = { expanded = false; action() }
+                                    )
                                 }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.action_delete)) },
-                                leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
-                                onClick = { expanded = false; onDeleteClick() }
-                            )
+                                onFavoriteClick?.let { action ->
+                                    DropdownMenuItem(
+                                        text = { Text(if (doc.isFavorite) t("Remove from favorites", "إزالة من المفضلة") else t("Add to favorites", "إضافة إلى المفضلة")) },
+                                        leadingIcon = { Icon(if (doc.isFavorite) Icons.Default.Star else Icons.Outlined.StarBorder, null, tint = GoldBase) },
+                                        onClick = { expanded = false; action() }
+                                    )
+                                }
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text(t("Move to Trash", "نقل إلى سلة المحذوفات"), color = MaterialTheme.colorScheme.error) },
+                                    leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) },
+                                    onClick = { expanded = false; onDeleteClick() }
+                                )
+                            }
                         }
                     }
                 }
             }
 
-            // Selection Checkbox Badge
             if (selectionMode) {
                 Box(
                     modifier = Modifier
@@ -247,9 +274,7 @@ fun DocumentGridItem(
                         .padding(8.dp)
                         .size(24.dp)
                         .clip(CircleShape)
-                        .background(
-                            if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.4f)
-                        ),
+                        .background(if (isSelected) MaterialTheme.colorScheme.primary else Color.Black.copy(alpha = 0.4f)),
                     contentAlignment = Alignment.Center
                 ) {
                     if (isSelected) {

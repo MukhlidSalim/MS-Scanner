@@ -1,6 +1,9 @@
 package com.example
+import android.app.Application
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -9,6 +12,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.ui.unit.dp
 import androidx.compose.material3.Icon
@@ -66,8 +70,23 @@ import com.example.data.repository.AppPreferences
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
+import com.example.engine.updater.AppUpdateInfo
+import com.example.engine.updater.GitHubUpdateManager
+import com.example.engine.updater.UpdateCheckWorker
+import com.example.engine.updater.UpdateInstaller
+import androidx.activity.result.contract.ActivityResultContracts
+
+import androidx.lifecycle.repeatOnLifecycle
+import com.example.engine.updater.UpdateCheckState
+import com.example.engine.updater.UpdateDownloadState
+import com.example.engine.updater.UpdateSignatureMismatchException
+import com.example.ui.components.AppUpdateDialog
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 class AppViewModelFactory(
     private val context: android.content.Context,
     private val repository: com.example.data.repository.DocumentRepository
@@ -88,21 +107,189 @@ class AppViewModelFactory(
         throw IllegalArgumentException("Unknown ViewModel class")
     }
 }
-class MainViewModel : ViewModel() {
+/**
+ * Activity-scoped state: app lock + the single update system (GitHubUpdateManager).
+ * AndroidViewModel so the default factory (ViewModelProvider(this)) can create it.
+ */
+class MainViewModel(application: Application) : AndroidViewModel(application) {
+    private val prefs = AppPreferences(application)
+    private val updater = GitHubUpdateManager(application)
+
+    // ------------------------------------------------------------------ lock
     private val _isAuthenticated = MutableStateFlow(false)
     val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
     private var _isPromptShowing = false
     val isPromptShowing: Boolean get() = _isPromptShowing
-    private val _updateInfo = mutableStateOf<com.example.update.UpdateManager.VersionInfo?>(null)
-    val updateInfo: androidx.compose.runtime.State<com.example.update.UpdateManager.VersionInfo?> = _updateInfo
-    fun setUpdateInfo(info: com.example.update.UpdateManager.VersionInfo?) {
-        _updateInfo.value = info
-    }
+    /** elapsedRealtime when the app went to background; 0 = never (cold start: always locked). */
+    private var backgroundedAt = 0L
+
     fun setAuthenticated(value: Boolean) {
         _isAuthenticated.value = value
     }
     fun setPromptShowing(value: Boolean) {
         _isPromptShowing = value
+    }
+    fun onAppBackgrounded() {
+        backgroundedAt = SystemClock.elapsedRealtime()
+    }
+    /**
+     * Re-locks when the app was away longer than the grace period (short trips to the share sheet,
+     * picker, system camera or print dialog do not ask for authentication again).
+     */
+    fun onAppForegrounded(lockEnabled: Boolean) {
+        if (!lockEnabled) {
+            _isAuthenticated.value = true
+            return
+        }
+        val away = if (backgroundedAt == 0L) Long.MAX_VALUE else SystemClock.elapsedRealtime() - backgroundedAt
+        if (away > LOCK_GRACE_MS) {
+            _isAuthenticated.value = false
+            _isPromptShowing = false
+        }
+    }
+
+    // ------------------------------------------------------------------ incoming files
+    /** PDF / image opened or shared from another app (the manifest declares the PDF VIEW / SEND filters). */
+    sealed class IncomingImport {
+        data class Pdf(val uri: Uri) : IncomingImport()
+        data class Images(val uris: List<Uri>) : IncomingImport()
+    }
+    private val _incomingImport = MutableStateFlow<IncomingImport?>(null)
+    val incomingImport: StateFlow<IncomingImport?> = _incomingImport.asStateFlow()
+    fun offerIncoming(item: IncomingImport?) { if (item != null) _incomingImport.value = item }
+    fun consumeIncoming(): IncomingImport? = _incomingImport.value.also { _incomingImport.value = null }
+
+    // ------------------------------------------------------------------ updates
+    private val _updateCheckState = MutableStateFlow<UpdateCheckState>(UpdateCheckState.Idle)
+    val updateCheckState: StateFlow<UpdateCheckState> = _updateCheckState.asStateFlow()
+    private val _updateDownloadState = MutableStateFlow<UpdateDownloadState>(UpdateDownloadState.Idle)
+    val updateDownloadState: StateFlow<UpdateDownloadState> = _updateDownloadState.asStateFlow()
+    private var downloadJob: Job? = null
+
+    /** Automatic check at most once a day; [manual] always checks and ignores "skip this version". */
+    fun checkForUpdates(manual: Boolean = false) {
+        val repo = BuildConfig.UPDATE_REPO
+        if (repo.isBlank() || _updateCheckState.value is UpdateCheckState.Checking) return
+        if (!manual && System.currentTimeMillis() - prefs.lastUpdateCheckAt < UPDATE_INTERVAL_MS) return
+        viewModelScope.launch {
+            _updateCheckState.value = UpdateCheckState.Checking
+            try {
+                val info = updater.checkUpdate(repo)
+                prefs.lastUpdateCheckAt = System.currentTimeMillis()
+                val skipped = !manual && info.latestVersion == prefs.ignoredUpdateVersion
+                _updateCheckState.value = if (info.isUpdateAvailable && !skipped) {
+                    UpdateCheckState.Available(info, manual)
+                } else {
+                    UpdateCheckState.UpToDate(BuildConfig.VERSION_NAME, manual)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _updateCheckState.value = UpdateCheckState.Error(
+                    "تعذر التحقق من التحديثات", "Could not check for updates", manual
+                )
+            }
+        }
+    }
+
+    fun startUpdateDownload(info: AppUpdateInfo) {
+        if (downloadJob?.isActive == true) return
+        downloadJob = viewModelScope.launch {
+            _updateDownloadState.value = UpdateDownloadState.Downloading(0L, info.apkSize, 0f)
+            var lastPercent = -1
+            try {
+                val apk = updater.downloadApk(info.downloadUrl, info.latestVersion) { done, total, progress ->
+                    val percent = (progress * 100).toInt()
+                    if (percent != lastPercent) {
+                        lastPercent = percent
+                        _updateDownloadState.value = UpdateDownloadState.Downloading(done, total, progress)
+                    }
+                }
+                _updateDownloadState.value = if (updater.canInstallPackages()) {
+                    UpdateDownloadState.ReadyToInstall(apk, info)
+                } else {
+                    UpdateDownloadState.PermissionRequired(apk, info)
+                }
+            } catch (e: CancellationException) {
+                _updateDownloadState.value = UpdateDownloadState.Idle
+                throw e
+            } catch (e: UpdateSignatureMismatchException) {
+                _updateDownloadState.value = UpdateDownloadState.Error(
+                    "التحديث موقّع بمفتاح مختلف عن النسخة المثبتة. ثبّت النسخة الجديدة يدوياً بعد إزالة الحالية.",
+                    "The update is signed with a different key than the installed app. Uninstall and install it manually."
+                )
+            } catch (e: Exception) {
+                e.printStackTrace()
+                _updateDownloadState.value = UpdateDownloadState.Error(
+                    "فشل تحميل التحديث أو التحقق منه", "Update download or verification failed"
+                )
+            }
+        }
+    }
+
+    /**
+     * Install button: grants "install unknown apps" first when needed, then installs IN PLACE through a
+     * PackageInstaller session (same package + same key = update over the existing app, data kept).
+     */
+    fun installUpdate(apk: java.io.File) {
+        val info = when (val st = _updateDownloadState.value) {
+            is UpdateDownloadState.ReadyToInstall -> st.updateInfo
+            is UpdateDownloadState.PermissionRequired -> st.updateInfo
+            else -> return
+        }
+        if (!updater.canInstallPackages()) {
+            _updateDownloadState.value = UpdateDownloadState.PermissionRequired(apk, info)
+            runCatching { getApplication<Application>().startActivity(updater.getInstallPermissionIntent()) }
+            return
+        }
+        viewModelScope.launch {
+            try {
+                UpdateInstaller.install(getApplication(), apk)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.printStackTrace()
+                // Fallback: classic installer screen.
+                try {
+                    updater.launchInstallApk(apk)
+                } catch (e2: Exception) {
+                    _updateDownloadState.value = UpdateDownloadState.Error("تعذر فتح المثبّت", "Could not open the installer")
+                }
+            }
+        }
+    }
+
+    fun onInstallFailed(signatureMismatch: Boolean, message: String) {
+        _updateDownloadState.value = if (signatureMismatch) {
+            UpdateDownloadState.Error(
+                "لا يمكن التحديث فوق النسخة الحالية لأنها موقّعة بمفتاح مختلف (نسخة تجريبية قديمة). أزل النسخة الحالية مرة واحدة ثم ثبّت الجديدة؛ التحديثات بعدها تتم تلقائياً.",
+                "The installed copy is signed with a different key (old test build). Uninstall it once and install the new version; later updates install in place."
+            )
+        } else {
+            UpdateDownloadState.Error("فشل التثبيت: $message", "Installation failed: $message")
+        }
+    }
+
+    /** Back from the "install unknown apps" settings screen. */
+    fun onResumeCheckInstallPermission() {
+        val st = _updateDownloadState.value
+        if (st is UpdateDownloadState.PermissionRequired && updater.canInstallPackages()) {
+            _updateDownloadState.value = UpdateDownloadState.ReadyToInstall(st.apkFile, st.updateInfo)
+        }
+    }
+
+    fun dismissUpdate(ignoreVersion: Boolean) {
+        (_updateCheckState.value as? UpdateCheckState.Available)?.let {
+            if (ignoreVersion) prefs.ignoredUpdateVersion = it.updateInfo.latestVersion
+        }
+        downloadJob?.cancel()
+        _updateCheckState.value = UpdateCheckState.Idle
+        _updateDownloadState.value = UpdateDownloadState.Idle
+    }
+
+    private companion object {
+        const val LOCK_GRACE_MS = 30_000L
+        const val UPDATE_INTERVAL_MS = 24L * 60 * 60 * 1000
     }
 }
 class MainActivity : AppCompatActivity() {
@@ -113,16 +300,37 @@ class MainActivity : AppCompatActivity() {
         enableEdgeToEdge()
         prefs = AppPreferences(applicationContext)
         mainViewModel = ViewModelProvider(this)[MainViewModel::class.java]
-        // Initial state: if lock is NOT enabled, we are already "authenticated"
-        if (prefs.lockType == LockType.NONE) {
+        // Initial state: if lock is NOT effectively enabled, we are already "authenticated"
+        if (!isLockEnabled()) {
             mainViewModel.setAuthenticated(true)
+        }
+        // Single update system (GitHub Releases): check on launch (at most once a day) + every 12 h in the
+        // background with a notification, + "Check for updates" in Settings.
+        mainViewModel.checkForUpdates(manual = intent?.getBooleanExtra(UpdateCheckWorker.EXTRA_OPEN_UPDATE, false) == true)
+        UpdateCheckWorker.schedule(applicationContext)
+        // Previously the app was registered as a PDF handler but ignored the opened / shared file.
+        if (savedInstanceState == null) mainViewModel.offerIncoming(parseIncoming(intent))
+        requestNotificationPermissionOnce()
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                UpdateInstaller.events.collect { event ->
+                    when (event) {
+                        is UpdateInstaller.InstallEvent.NeedsConfirmation -> {
+                            UpdateInstaller.consume()
+                            runCatching { startActivity(event.intent) }
+                        }
+                        is UpdateInstaller.InstallEvent.Failed -> {
+                            UpdateInstaller.consume()
+                            mainViewModel.onInstallFailed(event.signatureMismatch, event.message)
+                        }
+                        UpdateInstaller.InstallEvent.Success -> UpdateInstaller.consume()
+                        null -> Unit
+                    }
+                }
+            }
         }
         val database = DocScanDatabase.getInstance(applicationContext)
         val repository = DocumentRepository(applicationContext, database.documentDao())
-        lifecycleScope.launch {
-            val info = com.example.update.UpdateManager.checkForUpdates(this@MainActivity)
-            mainViewModel.setUpdateInfo(info)
-        }
         setContent {
             val factory = remember { AppViewModelFactory(applicationContext, repository) }
             val cameraViewModel: CameraViewModel = androidx.lifecycle.viewmodel.compose.viewModel(factory = factory)
@@ -135,32 +343,10 @@ class MainActivity : AppCompatActivity() {
                 else -> isSystemInDarkTheme()
             }
             val isAuthenticated by mainViewModel.isAuthenticated.collectAsState()
-            val updateInfo by mainViewModel.updateInfo
+            val updateCheckState by mainViewModel.updateCheckState.collectAsState()
+            val updateDownloadState by mainViewModel.updateDownloadState.collectAsState()
             DocScanTheme(darkTheme = isDarkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    if (updateInfo != null) {
-                        androidx.compose.material3.AlertDialog(
-                            onDismissRequest = { mainViewModel.setUpdateInfo(null) },
-                            title = { androidx.compose.material3.Text("Update Available") },
-                            text = { androidx.compose.material3.Text("A new version of the app is available. Would you like to update?") },
-                            confirmButton = {
-                                androidx.compose.material3.TextButton(
-                                    onClick = {
-                                        val url = updateInfo?.downloadUrl
-                                        lifecycleScope.launch {
-                                            if (url != null) com.example.update.UpdateManager.downloadAndInstall(this@MainActivity, url)
-                                            mainViewModel.setUpdateInfo(null)
-                                        }
-                                    }
-                                ) { androidx.compose.material3.Text("Update") }
-                            },
-                            dismissButton = {
-                                androidx.compose.material3.TextButton(onClick = { mainViewModel.setUpdateInfo(null) }) {
-                                    androidx.compose.material3.Text("Cancel")
-                                }
-                            }
-                        )
-                    }
                     if (isAuthenticated) {
                         DocScanApp(
                             cameraViewModel = cameraViewModel,
@@ -168,50 +354,170 @@ class MainActivity : AppCompatActivity() {
                             editViewModel = editViewModel,
                             mainViewModel = mainViewModel
                         )
-                    } else {
-                        if (prefs.lockType == LockType.PIN) {
-                            PinLockScreen(
-                                title = "DocScan Pro Locked",
-                                subtitle = "Enter 4-digit PIN to access documents",
-                                onPinEntered = { entered -> listViewModel.verifyPin(entered) },
-                                onSuccess = { mainViewModel.setAuthenticated(true) }
+                        // Update dialog only after unlock (never over the lock screen).
+                        if (updateCheckState is UpdateCheckState.Available) {
+                            AppUpdateDialog(
+                                checkState = updateCheckState,
+                                downloadState = updateDownloadState,
+                                onStartDownload = { info -> mainViewModel.startUpdateDownload(info) },
+                                onInstallApk = { apk -> mainViewModel.installUpdate(apk) },
+                                onDismiss = { ignore -> mainViewModel.dismissUpdate(ignore) }
                             )
-                        } else {
-                            // Biometric or fallback
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = androidx.compose.ui.Alignment.Center
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Lock,
-                                    contentDescription = "Locked",
-                                    modifier = Modifier.size(64.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
                         }
+                    } else {
+                        LockScreen(listViewModel)
                     }
                 }
             }
         }
     }
+
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* result read by the worker */ }
+
+    /** Android 13+: asked once so the background update check can notify; everything works without it. */
+    private fun requestNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || prefs.notificationPermissionAsked) return
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return
+        prefs.notificationPermissionAsked = true
+        runCatching { notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
+    }
+
+    private fun parseIncoming(intent: android.content.Intent?): MainViewModel.IncomingImport? {
+        if (intent == null) return null
+        val action = intent.action ?: return null
+        val uris: List<Uri> = when (action) {
+            android.content.Intent.ACTION_VIEW, android.content.Intent.ACTION_EDIT -> listOfNotNull(intent.data)
+            android.content.Intent.ACTION_SEND -> listOfNotNull(
+                if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
+                else @Suppress("DEPRECATION") intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM)
+            )
+            android.content.Intent.ACTION_SEND_MULTIPLE ->
+                (if (Build.VERSION.SDK_INT >= 33) intent.getParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
+                else @Suppress("DEPRECATION") intent.getParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM)).orEmpty()
+            else -> emptyList()
+        }
+        if (uris.isEmpty()) return null
+        val type = intent.type.orEmpty()
+        fun typeOf(u: Uri) = runCatching { contentResolver.getType(u) }.getOrNull() ?: type
+        val pdf = uris.firstOrNull { typeOf(it) == "application/pdf" || it.toString().endsWith(".pdf", true) }
+        val images = uris.filter { typeOf(it).startsWith("image/") }
+        return when {
+            images.isNotEmpty() -> MainViewModel.IncomingImport.Images(images)
+            pdf != null -> MainViewModel.IncomingImport.Pdf(pdf)
+            else -> null
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        mainViewModel.offerIncoming(parseIncoming(intent))
+        if (intent.getBooleanExtra(UpdateCheckWorker.EXTRA_OPEN_UPDATE, false)) mainViewModel.checkForUpdates(manual = true)
+    }
+
+    /** PIN lock without a PIN could never be unlocked; it is treated as "no lock" (nothing to protect with). */
+    private fun isLockEnabled(): Boolean = when (prefs.lockType) {
+        LockType.NONE -> false
+        LockType.PIN -> prefs.hasPin
+        else -> true
+    }
+
+    @Composable
+    private fun LockScreen(listViewModel: DocumentListViewModel) {
+        var usePin by androidx.compose.runtime.remember { mutableStateOf(prefs.lockType == LockType.PIN) }
+        var lockoutSeconds by androidx.compose.runtime.remember { mutableStateOf(listViewModel.pinLockoutSeconds()) }
+        androidx.compose.runtime.LaunchedEffect(lockoutSeconds) {
+            if (lockoutSeconds > 0) {
+                kotlinx.coroutines.delay(1000)
+                lockoutSeconds = listViewModel.pinLockoutSeconds()
+            }
+        }
+        val isArabic = resources.configuration.locales[0].language == "ar"
+        if (usePin && prefs.hasPin) {
+            PinLockScreen(
+                title = if (isArabic) "التطبيق مقفل" else "DocScan Pro Locked",
+                subtitle = if (lockoutSeconds > 0) {
+                    if (isArabic) "محاولات كثيرة خاطئة. حاول بعد $lockoutSeconds ثانية" else "Too many attempts. Try again in $lockoutSeconds s"
+                } else {
+                    if (isArabic) "أدخل رمز PIN المكوّن من 4 أرقام" else "Enter 4-digit PIN to access documents"
+                },
+                onPinEntered = { entered ->
+                    val ok = listViewModel.verifyPin(entered)
+                    lockoutSeconds = listViewModel.pinLockoutSeconds()
+                    ok
+                },
+                onSuccess = { mainViewModel.setAuthenticated(true) }
+            )
+            return
+        }
+        // Biometric / device credential lock: the app NEVER unlocks itself when authentication is unavailable.
+        val canAuth = canAuthenticate()
+        androidx.compose.foundation.layout.Column(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally,
+            verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Lock,
+                contentDescription = if (isArabic) "مقفل" else "Locked",
+                modifier = Modifier.size(64.dp),
+                tint = MaterialTheme.colorScheme.primary
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.size(16.dp))
+            if (canAuth) {
+                androidx.compose.material3.Button(onClick = { showBiometricPrompt() }) {
+                    androidx.compose.material3.Text(if (isArabic) "فتح القفل" else "Unlock")
+                }
+            } else {
+                androidx.compose.material3.Text(
+                    if (isArabic) "لا يمكن التحقق من هويتك: فعّل قفل الشاشة أو البصمة في إعدادات الجهاز."
+                    else "Authentication is unavailable: set up a screen lock or biometrics in device settings.",
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                )
+                androidx.compose.material3.TextButton(onClick = {
+                    runCatching { startActivity(android.content.Intent(android.provider.Settings.ACTION_SECURITY_SETTINGS)) }
+                }) { androidx.compose.material3.Text(if (isArabic) "فتح الإعدادات" else "Open settings") }
+            }
+            if (prefs.hasPin) {
+                androidx.compose.material3.TextButton(onClick = { usePin = true }) {
+                    androidx.compose.material3.Text(if (isArabic) "استخدام رمز PIN" else "Use PIN")
+                }
+            }
+        }
+    }
+
+    /** API 28-29 do not support BIOMETRIC_STRONG | DEVICE_CREDENTIAL (the old combination made the lock open itself). */
+    private fun authenticators(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        } else {
+            BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        }
+
+    private fun canAuthenticate(): Boolean =
+        BiometricManager.from(this).canAuthenticate(authenticators()) == BiometricManager.BIOMETRIC_SUCCESS
+
+    override fun onStart() {
+        super.onStart()
+        mainViewModel.onAppForegrounded(isLockEnabled())
+        // Hide document content in the Recents screen while a lock is enabled (API 33+).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) setRecentsScreenshotEnabled(!isLockEnabled())
+    }
+
     override fun onResume() {
         super.onResume()
+        mainViewModel.onResumeCheckInstallPermission()
         if (prefs.lockType == LockType.BIOMETRIC && !mainViewModel.isAuthenticated.value) {
             showBiometricPrompt()
         }
     }
     private fun showBiometricPrompt() {
         if (mainViewModel.isPromptShowing) return
-        val biometricManager = BiometricManager.from(this)
-        val authenticators = BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
-        when (biometricManager.canAuthenticate(authenticators)) {
-            BiometricManager.BIOMETRIC_SUCCESS -> { /* Proceed */ }
-            else -> {
-                mainViewModel.setAuthenticated(true)
-                return
-            }
-        }
+        // Never unlock because authentication is unavailable: the lock screen explains what to do instead.
+        if (!canAuthenticate()) return
         mainViewModel.setPromptShowing(true)
         val executor = ContextCompat.getMainExecutor(this)
         val biometricPrompt = BiometricPrompt(this, executor,
@@ -232,18 +538,19 @@ class MainActivity : AppCompatActivity() {
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
             .setTitle("DocScan Pro Lock")
             .setSubtitle("Authenticate to access your documents")
-            .setAllowedAuthenticators(authenticators)
+            .setAllowedAuthenticators(authenticators())
             .build()
-        biometricPrompt.authenticate(promptInfo)
+        try {
+            biometricPrompt.authenticate(promptInfo)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            mainViewModel.setPromptShowing(false)
+        }
     }
     override fun onStop() {
         super.onStop()
-        // A configuration change (rotation, language) is not "leaving the app": locking there wiped the
-        // whole UI state (open review / unsaved pages) on every rotation.
-        if (prefs.lockType != LockType.NONE && !isChangingConfigurations) {
-            mainViewModel.setAuthenticated(false)
-            mainViewModel.setPromptShowing(false)
-        }
+        // Rotation / language change is not "leaving the app".
+        if (!isChangingConfigurations) mainViewModel.onAppBackgrounded()
     }
 }
 @Composable
@@ -258,6 +565,26 @@ fun DocScanApp(
     val editUiState by editViewModel.uiState.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    val incoming by mainViewModel.incomingImport.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(incoming) {
+        when (val item = mainViewModel.consumeIncoming()) {
+            is MainViewModel.IncomingImport.Pdf -> {
+                // Copied first: the grant of an opened/shared URI does not outlive the calling task.
+                val local = com.example.engine.pdf.PdfEngine.copyUriToLocalPdf(context, item.uri)
+                if (local != null) {
+                    cameraViewModel.setImportedPdfPendingEdit(Uri.fromFile(local))
+                    navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L)) { launchSingleTop = true }
+                } else {
+                    android.widget.Toast.makeText(context, "Could not open the PDF", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            }
+            is MainViewModel.IncomingImport.Images -> {
+                cameraViewModel.setImportedUrisPendingEdit(item.uris)
+                navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L)) { launchSingleTop = true }
+            }
+            null -> Unit
+        }
+    }
     NavHost(
         navController = navController,
         startDestination = Screen.Home.route
@@ -307,10 +634,16 @@ fun DocScanApp(
             }
             val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
             val replacePageId = backStackEntry.arguments?.getLong("replacePageId") ?: 0L
+            // Normal "Scan" entry opens in the mode the user chose last time; explicit modes
+            // (retake / add page / replace / ID / passport shortcuts) are kept as requested.
+            val useSavedMode = remember(backStackEntry.id) {
+                modeStr.equals("DOCUMENT", ignoreCase = true) && replacePageId == 0L && cameraViewModel.peekCaptureTarget() == null
+            }
             CameraScanScreen(
                 initialMode = cameraMode,
                 docId = docId,
                 replacePageId = replacePageId,
+                useSavedMode = useSavedMode,
                 onNavigateBack = {
                     cameraViewModel.consumeCaptureTarget()
                     navController.popBackStack()
@@ -447,9 +780,12 @@ fun DocScanApp(
         }
         // Settings Screen
         composable(Screen.Settings.route) {
+            val updateCheckState by mainViewModel.updateCheckState.collectAsState()
             SettingsScreen(
                 viewModel = listViewModel,
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { navController.popBackStack() },
+                updateCheckState = updateCheckState,
+                onCheckForUpdates = { mainViewModel.checkForUpdates(manual = true) }
             )
         }
         // Edit Session Screen (review -> save)
@@ -519,7 +855,8 @@ fun DocScanApp(
                 pageStatuses = cameraUiState.pageStatuses,
                 onRetryDetection = { idx -> cameraViewModel.retryDetection(idx) },
                 onAcceptPageAsIs = { idx -> cameraViewModel.acceptPageAsIs(idx) },
-                onPageReviewed = { idx -> cameraViewModel.markPageReviewed(idx) }
+                onPageReviewed = { idx -> cameraViewModel.markPageReviewed(idx) },
+                onSplitPendingPage = { idx, rightFirst -> cameraViewModel.splitPendingPage(idx, rightFirst) }
             )
         }
     }
