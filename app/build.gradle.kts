@@ -147,6 +147,9 @@ dependencies {
   implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
   // Password-protected (encrypted) PDF export.
   implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+  // Document border detection engine (Canny/contours/cornerSubPix via native JNI). AAR from Maven
+  // Central since 4.9.0 — no NDK, no manual SDK import, no jniLibs wiring required.
+  implementation("org.opencv:opencv:4.11.0")
   testImplementation(libs.androidx.compose.ui.test.junit4)
   testImplementation(libs.androidx.core)
   testImplementation(libs.androidx.junit)
