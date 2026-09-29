@@ -147,12 +147,17 @@ class EditSessionViewModel(
     fun replacePage(pageId: Long, newRawPath: String, newProcessedPath: String) {
         viewModelScope.launch {
             val page = repository.getPageById(pageId) ?: return@launch
+            // The stored filter must describe the new image exactly, otherwise a later rotate / re-render
+            // applies a filter a second time:
+            //  - Google document scanner pages and PDF pages (status SKIPPED) are already processed -> ORIGINAL
+            //  - camera / gallery pages were rendered by the pipeline with its default filter
+            val alreadyProcessed = QuadStore.loadStatus(newRawPath) == com.example.engine.cv.DetectionStatus.SKIPPED
             val updatedPage = page.copy(
                 rawImagePath = newRawPath,
                 processedImagePath = newProcessedPath,
                 cropQuadJson = (QuadStore.load(newRawPath) ?: DocumentQuad.fullQuad()).toJson(),
                 rotationDegrees = 0,
-                filterType = DocumentPipeline.DEFAULT_FILTER.name,
+                filterType = if (alreadyProcessed) FilterType.ORIGINAL.name else DocumentPipeline.DEFAULT_FILTER.name,
                 ocrText = ""
             )
             repository.updatePage(updatedPage)
@@ -160,7 +165,10 @@ class EditSessionViewModel(
                 if (page.rawImagePath.isNotBlank() && page.rawImagePath != newRawPath) {
                     QuadStore.delete(page.rawImagePath); File(page.rawImagePath).delete()
                 }
-                if (page.processedImagePath.isNotBlank() && page.processedImagePath != newProcessedPath) File(page.processedImagePath).delete()
+                if (page.processedImagePath.isNotBlank() && page.processedImagePath != newProcessedPath) {
+                    File(page.processedImagePath).delete()
+                    OcrLayoutStore.delete(page.processedImagePath)
+                }
             }
             if (page.pageIndex == 0) refreshThumbnail(page.documentId, newProcessedPath)
             qualityCache.remove(pageId)

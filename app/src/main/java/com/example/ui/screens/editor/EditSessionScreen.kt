@@ -91,7 +91,7 @@ fun EditSessionScreen(
     // List responsibility data
     selectedFolder: String = "Default",
     // Navigation
-    sourceType: String, // "CAMERA", "IMPORT", "EXISTING"
+    sourceType: String, // "CAMERA", "SCANNER" (Google document scanner), "IMPORT", "EXISTING"
     docId: Long,
     onNavigateBack: () -> Unit,
     onNavigateToFinish: (Long) -> Unit,
@@ -155,7 +155,10 @@ fun EditSessionScreen(
     val isSaving = if (isExisting) editUiState.isSaving else cameraIsSaving
     val isMulti = pages.size > 1
 
-    var stage by rememberSaveable { mutableStateOf(if (isExisting) ReviewStage.PREVIEW else ReviewStage.REVIEW) }
+    // Pages from the Google scanner were already reviewed page by page inside the scanner: a multi-page
+    // scan opens directly on the Document Preview (add / delete / reorder / edit -> Save), never twice.
+    val startInPreview = rememberSaveable { isExisting || (sourceType == "SCANNER" && pagesPendingEdit.size > 1) }
+    var stage by rememberSaveable { mutableStateOf(if (startInPreview) ReviewStage.PREVIEW else ReviewStage.REVIEW) }
     var currentIndex by rememberSaveable { mutableStateOf(0) }
     LaunchedEffect(pages.size) {
         if (pages.isNotEmpty() && currentIndex > pages.lastIndex) currentIndex = pages.lastIndex
@@ -256,7 +259,7 @@ fun EditSessionScreen(
     BackHandler(enabled = !showCropEditor) {
         when {
             panel != ToolPanel.NONE -> panel = ToolPanel.NONE
-            stage == ReviewStage.REVIEW && isExisting -> stage = ReviewStage.PREVIEW
+            stage == ReviewStage.REVIEW && (isExisting || startInPreview) -> stage = ReviewStage.PREVIEW
             else -> requestExit()
         }
     }
@@ -379,7 +382,7 @@ fun EditSessionScreen(
             TopAppBar(
                 navigationIcon = {
                     IconButton(onClick = {
-                        if (stage == ReviewStage.REVIEW && isExisting) stage = ReviewStage.PREVIEW else requestExit()
+                        if (stage == ReviewStage.REVIEW && (isExisting || startInPreview)) stage = ReviewStage.PREVIEW else requestExit()
                     }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = t("Back", "رجوع")) }
                 },
                 title = {

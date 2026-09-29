@@ -1,7 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
-<paths xmlns:android="http://schemas.android.com/apk/res/android">
-    <files-path name="scanned_docs" path="." />
-    <cache-path name="doc_cache" path="." />
-    <external-files-path name="external_docs" path="." />
-    <external-path name="external_storage" path="." />
+<!--
+  Every directory shared through ${applicationId}.provider. The provider is not exported: a file is
+  only readable by another app when a single URI is explicitly granted (share / open / install).
+    exports/            PDFs, PNG/TXT/DOC exports, share_images/, crash reports   (PdfEngine, CrashReporter)
+    scans/              page images                                (ImageProcessor.saveBitmapToFile)
+    cache (root)        camera_scans/ (system camera), updates/ (verified update APK), shared PDFs
+    Documents (ext.)    legacy "save to storage" location         (PdfEngine.savePdfToStorage)
+-->
+<paths>
+    <files-path name="exports" path="exports/" />
+    <files-path name="scans" path="scans/" />
+    <cache-path name="cache" path="." />
+    <external-files-path name="documents" path="Documents/" />
 </paths>

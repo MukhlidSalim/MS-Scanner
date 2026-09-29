@@ -175,6 +175,15 @@ class AppPreferences(context: Context) {
         get() = prefs.getString("cam_last_mode", "DOCUMENT") ?: "DOCUMENT"
         set(value) = prefs.edit().putString("cam_last_mode", value).apply()
 
+    /**
+     * Capture engine for normal scans: Google ML Kit Document Scanner (default, most accurate) or the
+     * built-in camera. ID card / passport always use the built-in camera (dedicated guides).
+     */
+    var scanEngine: String
+        get() = prefs.getString("scan_engine", SCAN_ENGINE_GOOGLE)
+            ?.takeIf { it == SCAN_ENGINE_GOOGLE || it == SCAN_ENGINE_BUILT_IN } ?: SCAN_ENGINE_GOOGLE
+        set(value) = prefs.edit().putString("scan_engine", value).apply()
+
     /** Last version announced by a notification (one notification per version). */
     var lastNotifiedUpdateVersion: String
         get() = prefs.getString("last_notified_update_version", "") ?: ""
@@ -185,16 +194,18 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean("notification_permission_asked", false)
         set(value) = prefs.edit().putBoolean("notification_permission_asked", value).apply()
 
-    private companion object {
-        const val KEY_LOCK_TYPE = "lock_type"
-        const val KEY_LEGACY_PIN = "user_pin"
-        const val KEY_PIN_HASH = "user_pin_hash"
-        const val KEY_PIN_SALT = "user_pin_salt"
-        const val KEY_PIN_FAILS = "user_pin_fails"
-        const val KEY_PIN_LOCKOUT_UNTIL = "user_pin_lockout_until"
-        const val PBKDF2_ITERATIONS = 20_000
-        const val FREE_ATTEMPTS = 5
-        const val BASE_LOCKOUT_MS = 30_000L
-        const val MAX_LOCKOUT_MS = 15 * 60_000L
+    companion object {
+        const val SCAN_ENGINE_GOOGLE = "GOOGLE"
+        const val SCAN_ENGINE_BUILT_IN = "BUILT_IN"
+        private const val KEY_LOCK_TYPE = "lock_type"
+        private const val KEY_LEGACY_PIN = "user_pin"
+        private const val KEY_PIN_HASH = "user_pin_hash"
+        private const val KEY_PIN_SALT = "user_pin_salt"
+        private const val KEY_PIN_FAILS = "user_pin_fails"
+        private const val KEY_PIN_LOCKOUT_UNTIL = "user_pin_lockout_until"
+        private const val PBKDF2_ITERATIONS = 20_000
+        private const val FREE_ATTEMPTS = 5
+        private const val BASE_LOCKOUT_MS = 30_000L
+        private const val MAX_LOCKOUT_MS = 15 * 60_000L
     }
 }

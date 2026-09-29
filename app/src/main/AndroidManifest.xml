@@ -1,15 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
-
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
-
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- In-app updater (GitHub distribution, in-place updates). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-
+    <!-- Android 13+: "update available" notification from the background update check (optional). -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
+        android:name=".ScannerApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -17,8 +18,10 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="false"
         android:localeConfig="@xml/locales_config"
-        android:theme="@style/Theme.MyApplication">
+        android:theme="@style/Theme.MyApplication"
+        tools:targetApi="33">
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -29,7 +32,6 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-
             <!-- PDF Viewer & Editor Intent Filter -->
             <intent-filter android:label="@string/app_name">
                 <action android:name="android.intent.action.VIEW" />
@@ -40,7 +42,6 @@
                 <data android:scheme="content" />
                 <data android:scheme="file" />
             </intent-filter>
-
             <!-- Receive shared PDF from other apps -->
             <intent-filter android:label="@string/app_name">
                 <action android:name="android.intent.action.SEND" />
@@ -48,7 +49,10 @@
                 <data android:mimeType="application/pdf" />
             </intent-filter>
         </activity>
-
+        <!-- PackageInstaller session results (in-place self update). Not exported. -->
+        <receiver
+            android:name=".engine.updater.UpdateInstallReceiver"
+            android:exported="false" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.provider"
@@ -59,5 +63,4 @@
                 android:resource="@xml/file_paths" />
         </provider>
     </application>
-
 </manifest>

@@ -1,13 +1,15 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 11 and lower (API <= 30): one rule set for cloud backup and device transfer.
+  Documents and their database are excluded together (never a database without its images),
+  and the PIN hash / lock state is not backed up. Use the in-app Backup / Restore to move documents.
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <exclude domain="database" path="docscan_master.db" />
+    <exclude domain="database" path="docscan_master.db-shm" />
+    <exclude domain="database" path="docscan_master.db-wal" />
+    <exclude domain="database" path="docscan_master.db-journal" />
+    <exclude domain="file" path="scans" />
+    <exclude domain="file" path="exports" />
+    <exclude domain="sharedpref" path="app_prefs.xml" />
 </full-backup-content>

@@ -75,6 +75,15 @@ data class CameraUiState(
     val anyPageProcessing: Boolean get() = pagesPendingEdit.any { statusOf(it.first) == PageStatus.PROCESSING }
 }
 
+/**
+ * Pages that were already processed outside the detector (Google document scanner, PDF pages) must
+ * keep their pixels: no default AUTO filter on later rotate / re-render.
+ */
+internal fun isPreprocessedPage(rawPath: String): Boolean = QuadStore.loadStatus(rawPath) == DetectionStatus.SKIPPED
+
+internal fun preprocessedEdits(pages: List<Pair<String, String>>, existing: Map<String, PendingPageEdit>): Map<String, PendingPageEdit> =
+    pages.filter { it.first !in existing && isPreprocessedPage(it.first) }.associate { it.first to PendingPageEdit(filter = null) }
+
 /** Initial status of a freshly processed page, from the pipeline's persisted detection result. */
 internal fun initialStatusFor(rawPath: String): PageStatus = when (QuadStore.loadStatus(rawPath)) {
     DetectionStatus.NOT_FOUND -> PageStatus.NEEDS_REVIEW
@@ -100,6 +109,12 @@ class CameraViewModel(
     private var importJob: Job? = null
     private val editMutex = Mutex()
 
+    // Result of the Google document scanner, processed in viewModelScope (survives rotation / recreation).
+    private val _scannerPages = MutableStateFlow<List<Pair<String, String>>?>(null)
+    val scannerPages: StateFlow<List<Pair<String, String>>?> = _scannerPages.asStateFlow()
+    private val _isProcessingScan = MutableStateFlow(false)
+    val isProcessingScan: StateFlow<Boolean> = _isProcessingScan.asStateFlow()
+
     @Volatile
     private var captureTarget: CaptureTarget? = null
 
@@ -124,7 +139,8 @@ class CameraViewModel(
     private fun setPages(pages: List<Pair<String, String>>) {
         _uiState.update { s ->
             val keys = pages.map { it.first }.toSet()
-            val edits = s.pageEdits.filterKeys { it in keys }
+            val kept = s.pageEdits.filterKeys { it in keys }
+            val edits = kept + preprocessedEdits(pages, kept)
             val statuses = pages.associate { (raw, _) -> raw to (s.pageStatuses[raw] ?: initialStatusFor(raw)) }
             s.copy(pagesPendingEdit = pages, pendingPages = pages, pageEdits = edits, pageStatuses = statuses)
         }
@@ -209,7 +225,7 @@ class CameraViewModel(
                 pagesPendingEdit = pages,
                 pendingPages = pages,
                 importedUrisPending = emptyList(),
-                pageEdits = emptyMap(),
+                pageEdits = preprocessedEdits(pages, emptyMap()),
                 pageStatuses = pages.associate { (raw, _) -> raw to initialStatusFor(raw) },
                 isLoading = false,
                 isBackgroundProcessing = false,
@@ -527,6 +543,60 @@ class CameraViewModel(
                     _uiState.update { it.copy(isProcessingEdit = false) }
                 }
             }
+        }
+    }
+
+    // ------------------------------------------------------------------ Google document scanner
+
+    /**
+     * Pages returned by the Google scanner are already detected, cropped, perspective-corrected and
+     * cleaned: they enter the SAME pipeline without a second detection or filter (status SKIPPED), and
+     * the scanner's temporary files are removed once copied.
+     */
+    fun processScannerResult(uris: List<Uri>) {
+        if (uris.isEmpty() || _isProcessingScan.value) return
+        _isProcessingScan.value = true
+        viewModelScope.launch {
+            val pages = ArrayList<Pair<String, String>>()
+            var failed = 0
+            try {
+                for ((index, uri) in uris.withIndex()) {
+                    val page = try {
+                        DocumentPipeline.processUri(
+                            context, uri, autoCrop = false, filter = null, prefix = "gscan_p${index + 1}"
+                        )
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        e.printStackTrace()
+                        null
+                    }
+                    if (page != null) pages += page.rawPath to page.processedPath else failed++
+                    deleteScannerTemp(uri)
+                }
+                if (failed > 0) _events.trySend(UiEvent.Error("Could not read $failed scanned page(s)"))
+                _scannerPages.value = pages
+            } finally {
+                _isProcessingScan.value = false
+            }
+        }
+    }
+
+    /** One-shot delivery of the processed scanner pages. */
+    fun consumeScannerPages(): List<Pair<String, String>>? = _scannerPages.value.also { _scannerPages.value = null }
+
+    /** Result nobody collected (screen left while processing): its files are removed. */
+    fun discardStaleScannerPages() {
+        consumeScannerPages()?.forEach { deletePageFiles(it) }
+    }
+
+    private fun deleteScannerTemp(uri: Uri) {
+        if (uri.scheme != "file") return
+        val path = uri.path ?: return
+        runCatching {
+            val f = File(path).canonicalFile
+            // Only files inside our own cache (where the scanner writes its results) are ever deleted.
+            if (f.path.startsWith(context.cacheDir.canonicalPath + File.separator)) f.delete()
         }
     }
 

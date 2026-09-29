@@ -78,6 +78,7 @@ import com.example.engine.updater.AppUpdateInfo
 import com.example.engine.updater.GitHubUpdateManager
 import com.example.engine.updater.UpdateCheckWorker
 import com.example.engine.updater.UpdateInstaller
+import com.example.engine.scanner.findActivity
 import androidx.activity.result.contract.ActivityResultContracts
 
 import androidx.lifecycle.repeatOnLifecycle
@@ -634,10 +635,136 @@ fun DocScanApp(
             }
             val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
             val replacePageId = backStackEntry.arguments?.getLong("replacePageId") ?: 0L
+
+            /**
+             * Single delivery point for captured pages, whatever the capture engine (Google scanner or
+             * built-in camera): retake / add page / replace saved page / new session. No duplicated flow.
+             */
+            val deliverPages: (List<Pair<String, String>>, String) -> Unit = { pages, source ->
+                val target = cameraViewModel.consumeCaptureTarget()
+                when {
+                    // Camera opened from the review screen (Retake / Add page): return to it.
+                    target is CaptureTarget.Replace -> {
+                        pages.firstOrNull()?.let { cameraViewModel.replacePendingPage(target.index, it) }
+                        if (pages.size > 1) cameraViewModel.appendPendingPages(pages.drop(1))
+                        navController.popBackStack()
+                    }
+                    target is CaptureTarget.Append -> {
+                        cameraViewModel.appendPendingPages(pages)
+                        navController.popBackStack()
+                    }
+                    replacePageId > 0L -> {
+                        pages.firstOrNull()?.let { editViewModel.replacePage(replacePageId, it.first, it.second) }
+                        navController.popBackStack()
+                    }
+                    else -> {
+                        cameraViewModel.setPagesPendingEdit(pages)
+                        navController.navigate(Screen.EditSession.createRoute(source, docId)) {
+                            // Camera is removed from the back stack: Back from review never re-opens it.
+                            popUpTo(Screen.CameraScan.route) { inclusive = true }
+                        }
+                    }
+                }
+            }
+
+            // ---- Capture engine: Google ML Kit Document Scanner first, built-in camera as fallback ----
+            val appPrefs = remember { AppPreferences(context) }
+            val googleEligible = remember(backStackEntry.id) {
+                (cameraMode == ScanCameraMode.DOCUMENT || cameraMode == ScanCameraMode.BATCH) &&
+                    appPrefs.scanEngine == AppPreferences.SCAN_ENGINE_GOOGLE &&
+                    com.example.engine.scanner.GoogleDocumentScanner.isSupported(context)
+            }
+            // NOT_STARTED -> WAITING (Google screen open) -> PROCESSING -> delivered;  CAMERA = built-in camera.
+            var scannerStage by androidx.compose.runtime.saveable.rememberSaveable(backStackEntry.id) {
+                mutableStateOf(if (googleEligible) "NOT_STARTED" else "CAMERA")
+            }
+            val singlePageScan = replacePageId > 0L || cameraViewModel.peekCaptureTarget() is CaptureTarget.Replace
+            val isArabicUi = context.resources.configuration.locales[0].language == "ar"
+            val scannerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
+                ActivityResultContracts.StartIntentSenderForResult()
+            ) { result ->
+                val uris = com.example.engine.scanner.GoogleDocumentScanner.pageUris(result.resultCode, result.data)
+                if (uris.isEmpty()) {
+                    // Cancelled in the Google screen: back to where the user came from, nothing changed.
+                    cameraViewModel.consumeCaptureTarget()
+                    navController.popBackStack()
+                } else {
+                    scannerStage = "PROCESSING"
+                    cameraViewModel.processScannerResult(uris)
+                }
+            }
+            androidx.compose.runtime.LaunchedEffect(scannerStage) {
+                if (scannerStage != "NOT_STARTED") return@LaunchedEffect
+                cameraViewModel.discardStaleScannerPages()
+                val activity = context.findActivity()
+                if (activity == null) {
+                    scannerStage = "CAMERA"
+                    return@LaunchedEffect
+                }
+                scannerStage = "WAITING"
+                com.example.engine.scanner.GoogleDocumentScanner.start(
+                    activity = activity,
+                    singlePage = singlePageScan,
+                    onIntent = { sender ->
+                        try {
+                            scannerLauncher.launch(androidx.activity.result.IntentSenderRequest.Builder(sender).build())
+                        } catch (e: Exception) {
+                            scannerStage = "CAMERA"
+                        }
+                    },
+                    onError = { e ->
+                        e.printStackTrace()
+                        android.widget.Toast.makeText(
+                            context,
+                            if (isArabicUi) "ماسح Google غير متاح الآن — تم فتح الكاميرا المدمجة" else "Google scanner unavailable — using the built-in camera",
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                        scannerStage = "CAMERA"
+                    }
+                )
+            }
+            val scannedPages by cameraViewModel.scannerPages.collectAsState()
+            androidx.compose.runtime.LaunchedEffect(scannedPages) {
+                if (scannerStage != "PROCESSING" || scannedPages == null) return@LaunchedEffect
+                val pages = cameraViewModel.consumeScannerPages() ?: return@LaunchedEffect
+                if (pages.isEmpty()) {
+                    android.widget.Toast.makeText(
+                        context,
+                        if (isArabicUi) "تعذر قراءة الصفحات الممسوحة" else "Could not read the scanned pages",
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    cameraViewModel.consumeCaptureTarget()
+                    navController.popBackStack()
+                } else {
+                    deliverPages(pages, "SCANNER")
+                }
+            }
+
+            if (scannerStage != "CAMERA") {
+                // Behind the Google screen / while its pages are copied into the app (a few hundred ms per page).
+                androidx.activity.compose.BackHandler(enabled = scannerStage == "PROCESSING") { }
+                Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = androidx.compose.ui.Alignment.Center
+                ) {
+                    androidx.compose.foundation.layout.Column(
+                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+                    ) {
+                        androidx.compose.material3.CircularProgressIndicator()
+                        if (scannerStage == "PROCESSING") {
+                            androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
+                            androidx.compose.material3.Text(if (isArabicUi) "جاري تجهيز الصفحات…" else "Preparing pages…")
+                        }
+                    }
+                }
+                return@composable
+            }
+
             // Normal "Scan" entry opens in the mode the user chose last time; explicit modes
             // (retake / add page / replace / ID / passport shortcuts) are kept as requested.
             val useSavedMode = remember(backStackEntry.id) {
-                modeStr.equals("DOCUMENT", ignoreCase = true) && replacePageId == 0L && cameraViewModel.peekCaptureTarget() == null
+                modeStr.equals("DOCUMENT", ignoreCase = true) && replacePageId == 0L && cameraViewModel.peekCaptureTarget() == null &&
+                    !googleEligible
             }
             CameraScanScreen(
                 initialMode = cameraMode,
@@ -648,32 +775,7 @@ fun DocScanApp(
                     cameraViewModel.consumeCaptureTarget()
                     navController.popBackStack()
                 },
-                onDocumentCaptured = { pages ->
-                    val target = cameraViewModel.consumeCaptureTarget()
-                    when {
-                        // Camera opened from the review screen (Retake / Add page): return to it.
-                        target is CaptureTarget.Replace -> {
-                            pages.firstOrNull()?.let { cameraViewModel.replacePendingPage(target.index, it) }
-                            if (pages.size > 1) cameraViewModel.appendPendingPages(pages.drop(1))
-                            navController.popBackStack()
-                        }
-                        target is CaptureTarget.Append -> {
-                            cameraViewModel.appendPendingPages(pages)
-                            navController.popBackStack()
-                        }
-                        replacePageId > 0L -> {
-                            pages.firstOrNull()?.let { editViewModel.replacePage(replacePageId, it.first, it.second) }
-                            navController.popBackStack()
-                        }
-                        else -> {
-                            cameraViewModel.setPagesPendingEdit(pages)
-                            navController.navigate(Screen.EditSession.createRoute("CAMERA", docId)) {
-                                // Camera is removed from the back stack: Back from review never re-opens it.
-                                popUpTo(Screen.CameraScan.route) { inclusive = true }
-                            }
-                        }
-                    }
-                },
+                onDocumentCaptured = { pages -> deliverPages(pages, "CAMERA") },
                 onIdCardCaptured = { _, _ ->
                     // ID card / passport pages are delivered through onDocumentCaptured.
                 },

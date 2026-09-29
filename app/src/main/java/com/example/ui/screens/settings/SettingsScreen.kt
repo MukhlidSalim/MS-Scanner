@@ -288,6 +288,67 @@ fun SettingsScreen(
                     }
                 }
             }
+            // Scanning engine (persisted). Google = ML Kit Document Scanner, built-in = in-app camera.
+            val appPrefs = remember { com.example.data.repository.AppPreferences(context) }
+            var scanEngine by remember { mutableStateOf(appPrefs.scanEngine) }
+            val googleSupported = remember { com.example.engine.scanner.GoogleDocumentScanner.isSupported(context) }
+            Text(
+                text = if (isArabic) "المسح الضوئي" else "Scanning",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(if (isArabic) "محرك المسح" else "Scan engine", fontWeight = FontWeight.SemiBold)
+                    listOf(
+                        com.example.data.repository.AppPreferences.SCAN_ENGINE_GOOGLE to Pair(
+                            if (isArabic) "ماسح Google (موصى به)" else "Google scanner (recommended)",
+                            if (isArabic) "اكتشاف أدق للحواف، إزالة الظلال والبقع، ومسح متعدد الصفحات" else "Most accurate edges, shadow & stain removal, multi-page"
+                        ),
+                        com.example.data.repository.AppPreferences.SCAN_ENGINE_BUILT_IN to Pair(
+                            if (isArabic) "الكاميرا المدمجة" else "Built-in camera",
+                            if (isArabic) "تعمل بدون خدمات Google، مع إعدادات الفلاش والالتقاط اليدوي" else "Works without Google services, with flash and manual capture settings"
+                        )
+                    ).forEach { (engine, texts) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable {
+                                    scanEngine = engine
+                                    appPrefs.scanEngine = engine
+                                }
+                                .padding(vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(selected = scanEngine == engine, onClick = null)
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(texts.first, fontWeight = FontWeight.Medium)
+                                Text(texts.second, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    if (scanEngine == com.example.data.repository.AppPreferences.SCAN_ENGINE_GOOGLE && !googleSupported) {
+                        Text(
+                            if (isArabic) "ماسح Google غير متاح على هذا الجهاز، وستُستخدم الكاميرا المدمجة تلقائياً."
+                            else "The Google scanner is not available on this device; the built-in camera is used automatically.",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                    Text(
+                        if (isArabic) "بطاقة الهوية وجواز السفر يستخدمان الكاميرا المدمجة دائماً (إطارات إرشادية ووجهان)."
+                        else "ID card and passport always use the built-in camera (framing guides, front & back).",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             // OCR Settings
             Text(
                 text = if (isArabic) "إعدادات استخراج النص (OCR)" else "OCR Settings",

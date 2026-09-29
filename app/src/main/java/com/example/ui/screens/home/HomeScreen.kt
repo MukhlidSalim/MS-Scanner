@@ -391,14 +391,20 @@ fun HomeScreen(
         floatingActionButton = {
             if (!selectionMode) {
                 Column(horizontalAlignment = Alignment.End) {
-                    // One "Import" entry with explicit choices (previously two unlabeled icons).
+                    // Secondary entry: import + special scans, each explicitly labeled.
                     Box(modifier = Modifier.padding(bottom = 12.dp)) {
                         SmallFloatingActionButton(
                             onClick = { showImportMenu = true },
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        ) { Icon(Icons.Default.FileUpload, contentDescription = if (isArabic) "استيراد" else "Import") }
+                        ) { Icon(Icons.Default.Add, contentDescription = if (isArabic) "استيراد أو مسح خاص" else "Import or special scan") }
                         DropdownMenu(expanded = showImportMenu, onDismissRequest = { showImportMenu = false }) {
+                            Text(
+                                if (isArabic) "استيراد" else "Import",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                            )
                             DropdownMenuItem(
                                 text = { Text(if (isArabic) "صور من المعرض" else "Photos from gallery") },
                                 leadingIcon = { Icon(Icons.Default.PhotoLibrary, null) },
@@ -411,6 +417,24 @@ fun HomeScreen(
                                     showImportMenu = false
                                     filesPickerLauncher.launch(arrayOf("image/*", "application/pdf"))
                                 }
+                            )
+                            HorizontalDivider()
+                            Text(
+                                if (isArabic) "مسح خاص" else "Special scan",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                            )
+                            // ID card / passport keep the built-in camera (front/back steps + framing guides).
+                            DropdownMenuItem(
+                                text = { Text(if (isArabic) "بطاقة هوية (وجهان)" else "ID card (front & back)") },
+                                leadingIcon = { Icon(Icons.Default.Badge, null) },
+                                onClick = { showImportMenu = false; onNavigateToScan("ID_CARD") }
+                            )
+                            DropdownMenuItem(
+                                text = { Text(if (isArabic) "جواز سفر" else "Passport") },
+                                leadingIcon = { Icon(Icons.Default.MenuBook, null) },
+                                onClick = { showImportMenu = false; onNavigateToScan("PASSPORT") }
                             )
                         }
                     }
