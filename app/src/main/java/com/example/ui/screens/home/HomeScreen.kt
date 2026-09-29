@@ -1,5 +1,4 @@
 package com.example.ui.screens.home
-
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -46,7 +45,7 @@ import coil.compose.AsyncImage
 import java.io.File
 import com.example.R
 import com.example.data.model.DocumentEntity
-import com.example.engine.cv.ImageProcessor
+import com.example.engine.cv.DocumentPipeline
 import com.example.ui.components.CategoryChipsRow
 import com.example.ui.components.FolderChipsRow
 import com.example.ui.components.PdfViewerOverlay
@@ -62,13 +61,11 @@ import com.example.ui.viewmodel.ExportPdfAction
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.DocumentListViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
@@ -86,7 +83,6 @@ fun HomeScreen(
     val coroutineScope = rememberCoroutineScope()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
     val prefs = remember { AppPreferences(context) }
-
     var selectionMode by remember { mutableStateOf(false) }
     var selectedDocIds by remember { mutableStateOf(setOf<Long>()) }
     var showTrashDialog by remember { mutableStateOf(false) }
@@ -98,15 +94,13 @@ fun HomeScreen(
     var showExportPdfDialog by remember { mutableStateOf(false) }
     var pendingExportConfig by remember { mutableStateOf<com.example.engine.pdf.PdfExportConfig?>(null) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
-    
     var showNewFolderDialog by remember { mutableStateOf(false) }
     var newFolderNameInput by remember { mutableStateOf("") }
     var renameFolderTarget by remember { mutableStateOf<String?>(null) }
     var newFolderRename by remember { mutableStateOf("") }
     var showSortSheet by remember { mutableStateOf(false) }
-
     var tempCameraFile by remember { mutableStateOf<File?>(null) }
-
+    var isProcessingCapture by remember { mutableStateOf(false) }
     // System File Picker for importing / opening PDF files
     val pdfPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -123,12 +117,11 @@ fun HomeScreen(
                 if (localPdf != null) {
                     onOpenPdfFile(localPdf)
                 } else {
-                    Toast.makeText(context, "Could not open PDF file", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, if (isArabic) "تعذر فتح ملف PDF" else "Could not open PDF file", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
-
     // SAF Create Document launcher for PDF export
     val createPdfDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/pdf")
@@ -154,7 +147,6 @@ fun HomeScreen(
             )
         }
     }
-
     val photoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
     ) { uris: List<Uri> ->
@@ -163,57 +155,42 @@ fun HomeScreen(
             onNavigateToEditSession("IMPORT", 0L)
         }
     }
-
     val launchGalleryImport = {
         photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
-
+    // System camera result: same unified pipeline as the in-app camera and the gallery
+    // (EXIF, bounded decode, detection chain, perspective, default filter). The previous code
+    // detected a quad, ignored it, applied MAGIC to the full photo and decoded it at full size.
     val takePictureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
-        if (success && tempCameraFile != null && tempCameraFile!!.exists()) {
-            coroutineScope.launch {
-                try {
-                    val result = withContext(Dispatchers.IO) {
-                        val path = tempCameraFile!!.absolutePath
-                        val exif = android.media.ExifInterface(path)
-                        val orientation = exif.getAttributeInt(
-                            android.media.ExifInterface.TAG_ORIENTATION,
-                            android.media.ExifInterface.ORIENTATION_NORMAL
-                        )
-                        val rotationDegrees = when (orientation) {
-                            android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90
-                            android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180
-                            android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270
-                            else -> 0
-                        }
-                        var bmp = android.graphics.BitmapFactory.decodeFile(path) ?: return@withContext null
-                        try {
-                            if (rotationDegrees != 0) {
-                                val rotated = ImageProcessor.rotateBitmap(bmp, rotationDegrees)
-                                if (rotated !== bmp) { bmp.recycle(); bmp = rotated }
-                            }
-                            val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "scan_raw_")
-                            val quad = ImageProcessor.detectDocumentQuad(bmp)
-                            val procBmp = ImageProcessor.applyFilter(bmp, com.example.data.model.FilterType.MAGIC)
-                            val procPath = ImageProcessor.saveBitmapToFile(context, procBmp, "scan_proc_")
-                            procBmp.recycle()
-                            Pair(rawPath, procPath)
-                        } finally {
-                            bmp.recycle()
-                        }
-                    }
-                    if (result != null) {
-                        onPagesCaptured(listOf(result))
-                        onNavigateToEditSession("CAMERA", 0L)
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
+        val file = tempCameraFile
+        tempCameraFile = null
+        if (!success || file == null || !file.exists()) {
+            file?.delete()
+            return@rememberLauncherForActivityResult
+        }
+        coroutineScope.launch {
+            isProcessingCapture = true
+            try {
+                val page = DocumentPipeline.processFile(context, file.absolutePath, prefix = "scan")
+                if (page != null) {
+                    onPagesCaptured(listOf(Pair(page.rawPath, page.processedPath)))
+                    onNavigateToEditSession("CAMERA", 0L)
+                } else {
+                    Toast.makeText(context, if (isArabic) "تعذر معالجة الصورة" else "Could not process the photo", Toast.LENGTH_SHORT).show()
                 }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.printStackTrace()
+                Toast.makeText(context, if (isArabic) "تعذر معالجة الصورة" else "Could not process the photo", Toast.LENGTH_SHORT).show()
+            } finally {
+                file.delete()
+                isProcessingCapture = false
             }
         }
     }
-
     val launchCameraCapture = {
         try {
             val file = File(context.cacheDir, "camera_${System.currentTimeMillis()}.jpg")
@@ -225,7 +202,6 @@ fun HomeScreen(
             launchGalleryImport()
         }
     }
-
     BackHandler(enabled = selectionMode || uiState.selectedFolder != "ALL" || showSearch || uiState.showFavoritesOnly) {
         if (selectionMode) {
             selectionMode = false
@@ -239,9 +215,7 @@ fun HomeScreen(
             listViewModel.filterByFolder("ALL")
         }
     }
-
     val snackbarHostState = remember { SnackbarHostState() }
-
     LaunchedEffect(Unit) {
         listViewModel.events.collect { event ->
             when (event) {
@@ -260,7 +234,6 @@ fun HomeScreen(
             }
         }
     }
-
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
@@ -273,12 +246,11 @@ fun HomeScreen(
                         }
                     },
                     actions = {
-                        IconButton(onClick = { 
+                        IconButton(onClick = {
                             renameDocIds = selectedDocIds.toList()
                             renameBaseName = ""
                             showRenameDialog = true
                         }) { Icon(Icons.Default.Edit, null) }
-                        
                         IconButton(onClick = { showTrashDialog = true }) {
                             Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error)
                         }
@@ -309,14 +281,12 @@ fun HomeScreen(
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier.padding(bottom = 8.dp)
                     ) { Icon(Icons.Default.PhotoLibrary, null) }
-                    
                     SmallFloatingActionButton(
                         onClick = { pdfPickerLauncher.launch(arrayOf("application/pdf")) },
                         containerColor = MaterialTheme.colorScheme.secondaryContainer,
                         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
                         modifier = Modifier.padding(bottom = 16.dp)
                     ) { Icon(Icons.Default.PictureAsPdf, null) }
-
                     // Main Scan FAB
                     FloatingActionButton(
                         onClick = { onNavigateToScan("DOCUMENT") },
@@ -334,7 +304,8 @@ fun HomeScreen(
             }
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Column(modifier = Modifier.fillMaxSize()) {
             if (showSearch) {
                 OutlinedTextField(
                     value = uiState.searchQuery,
@@ -347,9 +318,7 @@ fun HomeScreen(
                     shape = RoundedCornerShape(12.dp)
                 )
             }
-
             val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
-            
             // Folder and Category Strips
             if (!selectionMode && uiState.searchQuery.isEmpty()) {
                 FolderChipsRow(
@@ -363,7 +332,6 @@ fun HomeScreen(
                     onCategorySelected = { listViewModel.filterByCategory(it) }
                 )
             }
-
             val docs = uiState.documents
             if (docs.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -379,7 +347,7 @@ fun HomeScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
                 ) {
-                    items(docs) { doc ->
+                    items(docs, key = { it.id }) { doc ->
                         DocumentGridItem(
                             doc = doc,
                             searchQuery = uiState.searchQuery,
@@ -403,8 +371,16 @@ fun HomeScreen(
                 }
             }
         }
+        if (isProcessingCapture) {
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)),
+                contentAlignment = Alignment.Center
+            ) {
+                CircularProgressIndicator(color = Emerald400)
+            }
+        }
+        }
     }
-
     // Dialogs
     if (showNewFolderDialog) {
         NewFolderDialog(
@@ -413,7 +389,6 @@ fun HomeScreen(
             onConfirm = { /* listViewModel.createFolder(it) */ showNewFolderDialog = false }
         )
     }
-
     if (showTrashDialog) {
         AlertDialog(
             onDismissRequest = { showTrashDialog = false },
@@ -432,7 +407,6 @@ fun HomeScreen(
             }
         )
     }
-
     if (showRenameDialog) {
         RenameDocumentsDialog(
             show = showRenameDialog,
@@ -445,7 +419,6 @@ fun HomeScreen(
             }
         )
     }
-    
     if (showExportPdfDialog) {
         ExportPdfDialog(
             show = showExportPdfDialog,

@@ -48,42 +48,42 @@ object ImageProcessor {
     suspend fun mergeToPdf(context: Context, imagePaths: List<String>): File = withContext(Dispatchers.IO) {
         val pdfDocument = android.graphics.pdf.PdfDocument()
         val outputFile = File(context.cacheDir, "shared_document_${System.currentTimeMillis()}.pdf")
-        
+
         try {
             for ((index, path) in imagePaths.withIndex()) {
                 val bitmap = loadBitmapFromFile(path) ?: continue
-                
+
                 // A4 size in points (1/72 inch): 595 x 842
                 val pageWidth = 595
                 val pageHeight = 842
-                
+
                 val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(pageWidth, pageHeight, index + 1).create()
                 val page = pdfDocument.startPage(pageInfo)
-                
+
                 val canvas = page.canvas
                 val paint = android.graphics.Paint().apply {
                     isAntiAlias = true
                     isFilterBitmap = true
                 }
-                
+
                 val scale = minOf(
                     pageWidth.toFloat() / bitmap.width,
                     pageHeight.toFloat() / bitmap.height
                 )
-                
+
                 val scaledWidth = bitmap.width * scale
                 val scaledHeight = bitmap.height * scale
-                
+
                 val left = (pageWidth - scaledWidth) / 2f
                 val top = (pageHeight - scaledHeight) / 2f
-                
+
                 val destRect = android.graphics.RectF(left, top, left + scaledWidth, top + scaledHeight)
                 canvas.drawBitmap(bitmap, null, destRect, paint)
-                
+
                 pdfDocument.finishPage(page)
-                bitmap.recycle() // CRITICAL: Free memory for each page immediately
+                bitmap.recycle() // Free memory for each page immediately
             }
-            
+
             java.io.FileOutputStream(outputFile).use { out ->
                 pdfDocument.writeTo(out)
             }
@@ -97,11 +97,25 @@ object ImageProcessor {
         outputFile
     }
 
+    // =====================================================================================
+    // DOCUMENT DETECTION
+    //
+    // ROOT CAUSE of "the camera does not recognise documents and keeps the whole photo":
+    // the previous in-file detector computed the candidate area as
+    //     polygonArea(normalizedQuad) / (width * height)
+    // i.e. an already-normalized area (0..1) divided a second time by the pixel count. Every
+    // edge-based candidate therefore had an area of ~0.000001 and was rejected (< 0.12), so only
+    // the brightness-region fallback could ever succeed. Capture then fell back to the full frame.
+    //
+    // All detection is now delegated to DocumentDetector (the single authoritative detector used
+    // by the live analyzer, DocumentPipeline, BatchProcessingQueue and the crop editor).
+    // Public signatures are unchanged so every existing caller keeps compiling.
+    // =====================================================================================
 
     /**
      * Result of document detection. The quad coordinates are normalized to the
-     * oriented image (0..1), and confidence is a 0..1 score derived from edge
-     * support and document geometry.
+     * oriented image (0..1), and confidence is a 0..1 score.
+     * Kept for API compatibility with existing callers.
      */
     data class DocumentDetection(
         val quad: DocumentQuad,
@@ -110,655 +124,34 @@ object ImageProcessor {
         val imageHeight: Int
     )
 
+    private fun com.example.engine.cv.DocumentDetection.toLegacy(): DocumentDetection =
+        DocumentDetection(quad = quad, confidence = confidence, imageWidth = imageWidth, imageHeight = imageHeight)
+
     /**
-     * Detects a document from a full-resolution bitmap using an adaptive
-     * edge/contour pipeline. No fixed guide rectangle is used as detection.
-     * A null result means there is not enough evidence to crop safely.
+     * Detects a document on an upright bitmap. Null when there is not enough evidence to crop safely.
+     * CPU bound: runs on Dispatchers.Default.
      */
     suspend fun detectDocument(
         bitmap: Bitmap,
         expectedAspectRatio: Float? = null
-    ): DocumentDetection? = withContext(Dispatchers.IO) {
-        detectDocumentInternal(bitmap, expectedAspectRatio)
+    ): DocumentDetection? = withContext(Dispatchers.Default) {
+        runCatching { DocumentDetector.detect(bitmap, expectedAspectRatio) }.getOrNull()?.toLegacy()
     }
 
-    /**
-     * CameraX fast path. Reads only the Y plane from ImageProxy, downsamples it
-     * in place, detects the document border, and returns coordinates rotated to
-     * the ImageAnalysis target orientation. This keeps RGB conversion off the
-     * analysis hot path and lets STRATEGY_KEEP_ONLY_LATEST remain responsive.
-     */
+    /** CameraX fast path (Y plane only). Must be called on the analyzer thread. */
     fun detectDocumentFromImageProxy(
         imageProxy: ImageProxy,
         expectedAspectRatio: Float? = null
-    ): DocumentDetection? {
-        val yPlane = imageProxy.planes.firstOrNull() ?: return null
-        val crop = imageProxy.cropRect
-        val sourceWidth = crop.width().coerceAtLeast(1)
-        val sourceHeight = crop.height().coerceAtLeast(1)
-        val maxDim = 360
-        val scale = min(1f, maxDim.toFloat() / max(sourceWidth, sourceHeight).toFloat())
-        val sampleW = (sourceWidth * scale).roundToInt().coerceIn(180, maxDim)
-        val sampleH = (sourceHeight * scale).roundToInt().coerceIn(180, maxDim)
-
-        val grayscale = ByteArray(sampleW * sampleH)
-        val buffer = yPlane.buffer
-        val rowStride = yPlane.rowStride.coerceAtLeast(sourceWidth)
-        val pixelStride = yPlane.pixelStride.coerceAtLeast(1)
-        val capacity = buffer.capacity()
-
-        for (sy in 0 until sampleH) {
-            val srcY = crop.top + ((sy + 0.5f) * sourceHeight / sampleH).toInt().coerceIn(0, sourceHeight - 1)
-            val rowBase = srcY * rowStride
-            for (sx in 0 until sampleW) {
-                val srcX = crop.left + ((sx + 0.5f) * sourceWidth / sampleW).toInt().coerceIn(0, sourceWidth - 1)
-                val pos = rowBase + srcX * pixelStride
-                grayscale[sy * sampleW + sx] = if (pos in 0 until capacity) buffer.get(pos) else 127.toByte()
-            }
-        }
-
-        val raw = detectFromGrayscale(grayscale, sampleW, sampleH, expectedAspectRatio) ?: return null
-        val rotation = ((imageProxy.imageInfo.rotationDegrees % 360) + 360) % 360
-        val rotatedQuad = rotateNormalizedQuad(raw.quad, rotation)
-        val (orientedWidth, orientedHeight) = if (rotation == 90 || rotation == 270) {
-            sourceHeight to sourceWidth
-        } else {
-            sourceWidth to sourceHeight
-        }
-        return raw.copy(
-            quad = rotatedQuad,
-            imageWidth = orientedWidth,
-            imageHeight = orientedHeight
-        )
-    }
+    ): DocumentDetection? =
+        runCatching { DocumentDetector.detectFromImageProxy(imageProxy, expectedAspectRatio) }.getOrNull()?.toLegacy()
 
     /**
-     * Compatibility API for existing processing workers. A failed detection
-     * returns the full image instead of an arbitrary inset rectangle, which is
-     * the only safe fallback for downstream perspective-warp callers.
+     * Compatibility API. A failed detection returns the full image (never an arbitrary inset
+     * rectangle), which is the only safe fallback for downstream perspective-warp callers.
      */
-    suspend fun detectDocumentQuad(bitmap: Bitmap): DocumentQuad = withContext(Dispatchers.IO) {
-        detectDocumentInternal(bitmap, null)?.quad ?: DocumentQuad.fullQuad()
-    }
-
-    private fun detectDocumentInternal(
-        bitmap: Bitmap,
-        expectedAspectRatio: Float?
-    ): DocumentDetection? {
-        if (bitmap.width < 32 || bitmap.height < 32) return null
-
-        val maxDim = 420
-        val scale = min(1f, maxDim.toFloat() / max(bitmap.width, bitmap.height).toFloat())
-        val sampleW = (bitmap.width * scale).roundToInt().coerceAtLeast(32)
-        val sampleH = (bitmap.height * scale).roundToInt().coerceAtLeast(32)
-        val sample = Bitmap.createScaledBitmap(bitmap, sampleW, sampleH, true)
-        try {
-            val pixels = IntArray(sampleW * sampleH)
-            sample.getPixels(pixels, 0, sampleW, 0, 0, sampleW, sampleH)
-            val grayscale = ByteArray(pixels.size)
-            for (i in pixels.indices) {
-                val p = pixels[i]
-                val r = (p ushr 16) and 0xFF
-                val g = (p ushr 8) and 0xFF
-                val b = p and 0xFF
-                grayscale[i] = (0.299f * r + 0.587f * g + 0.114f * b).roundToInt().coerceIn(0, 255).toByte()
-            }
-            return detectFromGrayscale(grayscale, sampleW, sampleH, expectedAspectRatio)
-                ?.copy(imageWidth = bitmap.width, imageHeight = bitmap.height)
-        } finally {
-            sample.recycle()
-        }
-    }
-
-    /**
-     * Adaptive edge + connected-component document detector.
-     *
-     * The important distinction from the previous implementation is that the
-     * four corners are extracted only from a connected border-like component,
-     * rather than from arbitrary strongest pixels such as text strokes.
-     */
-    private fun detectFromGrayscale(
-        grayscale: ByteArray,
-        width: Int,
-        height: Int,
-        expectedAspectRatio: Float?
-    ): DocumentDetection? {
-        if (width < 32 || height < 32) return null
-
-        val gradient = FloatArray(width * height)
-        val samples = FloatArray((width - 2) * (height - 2))
-        var sampleCount = 0
-        for (y in 1 until height - 1) {
-            val row = y * width
-            val prev = (y - 1) * width
-            val next = (y + 1) * width
-            for (x in 1 until width - 1) {
-                val idx = row + x
-                val gx = value(grayscale[prev + x + 1]) + 2f * value(grayscale[row + x + 1]) + value(grayscale[next + x + 1]) -
-                    value(grayscale[prev + x - 1]) - 2f * value(grayscale[row + x - 1]) - value(grayscale[next + x - 1])
-                val gy = value(grayscale[next + x - 1]) + 2f * value(grayscale[next + x]) + value(grayscale[next + x + 1]) -
-                    value(grayscale[prev + x - 1]) - 2f * value(grayscale[prev + x]) - value(grayscale[prev + x + 1])
-                val magnitude = sqrt(gx * gx + gy * gy)
-                gradient[idx] = magnitude
-                samples[sampleCount++] = magnitude
-            }
-        }
-
-        if (sampleCount == 0) return null
-        samples.sort(0, sampleCount)
-        val p78 = samples[(sampleCount * 0.78f).toInt().coerceIn(0, sampleCount - 1)]
-        val p88 = samples[(sampleCount * 0.88f).toInt().coerceIn(0, sampleCount - 1)]
-
-        // First try a document-region model. This is much more reliable than
-        // looking only at edge pixels when text strokes break the border into
-        // multiple disconnected components. It is intentionally conservative
-        // and falls back to the edge model for dark/low-contrast documents.
-        val regionCandidate = detectRegionCandidate(grayscale, width, height, expectedAspectRatio)
-
-        val thresholds = floatArrayOf(
-            max(28f, p78),
-            max(36f, p88),
-            max(44f, (p88 * 1.12f))
-        )
-
-        var best = regionCandidate
-        for (threshold in thresholds) {
-            val candidate = detectCandidate(grayscale, gradient, width, height, threshold, expectedAspectRatio)
-            if (candidate != null && candidate.confidence > (best?.confidence ?: -1f)) {
-                best = candidate
-            }
-        }
-        return best?.takeIf { it.confidence >= 0.58f }
-    }
-
-    /**
-     * Attempts to segment the physical document from the surrounding surface.
-     * This catches common scanner scenes where text or internal graphics create
-     * gaps in the outer edge. The result is still validated geometrically and
-     * never becomes an automatic crop unless confidence is sufficient.
-     */
-    private fun detectRegionCandidate(
-        grayscale: ByteArray,
-        width: Int,
-        height: Int,
-        expectedAspectRatio: Float?
-    ): DocumentDetection? {
-        val borderSize = max(2, (min(width, height) * 0.05f).roundToInt())
-        val borderValues = IntArray(
-            (width * borderSize * 2 + max(0, height - borderSize * 2) * borderSize * 2)
-                .coerceAtLeast(1)
-        )
-        var borderCount = 0
-
-        fun addBorder(v: Byte) {
-            if (borderCount < borderValues.size) {
-                borderValues[borderCount++] = value(v).roundToInt()
-            }
-        }
-        for (y in 0 until borderSize) {
-            val top = y * width
-            val bottom = (height - 1 - y) * width
-            for (x in 0 until width) {
-                addBorder(grayscale[top + x])
-                addBorder(grayscale[bottom + x])
-            }
-        }
-        for (y in borderSize until height - borderSize) {
-            val row = y * width
-            for (x in 0 until borderSize) {
-                addBorder(grayscale[row + x])
-                addBorder(grayscale[row + width - 1 - x])
-            }
-        }
-        if (borderCount == 0) return null
-        borderValues.sort(0, borderCount)
-        val borderMedian = borderValues[borderCount / 2].toFloat()
-
-        val centerLeft = (width * 0.25f).toInt()
-        val centerRight = (width * 0.75f).toInt().coerceAtLeast(centerLeft + 1)
-        val centerTop = (height * 0.25f).toInt()
-        val centerBottom = (height * 0.75f).toInt().coerceAtLeast(centerTop + 1)
-        val centerValues = IntArray((centerRight - centerLeft) * (centerBottom - centerTop))
-        var centerCount = 0
-        for (y in centerTop until centerBottom) {
-            val row = y * width
-            for (x in centerLeft until centerRight) {
-                centerValues[centerCount++] = value(grayscale[row + x]).roundToInt()
-            }
-        }
-        if (centerCount == 0) return null
-        centerValues.sort(0, centerCount)
-        val centerMedian = centerValues[centerCount / 2].toFloat()
-        val delta = centerMedian - borderMedian
-        if (abs(delta) < 16f) return null
-
-        val thresholdDelta = max(18f, abs(delta) * 0.35f)
-        val threshold = (borderMedian + if (delta > 0f) thresholdDelta else -thresholdDelta).coerceIn(8f, 247f)
-        val selectHigher = delta > 0f
-        val mask = BooleanArray(width * height)
-        for (i in grayscale.indices) {
-            val lum = value(grayscale[i])
-            mask[i] = if (selectHigher) lum >= threshold else lum <= threshold
-        }
-
-        // Close holes/gaps created by text and graphics so the physical page
-        // remains one connected component before corner extraction.
-        var closed = mask
-        repeat(2) { closed = dilate(closed, width, height) }
-        repeat(2) { closed = erode(closed, width, height) }
-
-        val visited = BooleanArray(width * height)
-        val queue = IntArray(width * height)
-        var best: DocumentDetection? = null
-        val minPixels = max(60, (width * height * 0.08f).toInt())
-        val edgeMargin = max(3, (min(width, height) * 0.035f).roundToInt())
-
-        for (start in closed.indices) {
-            if (!closed[start] || visited[start]) continue
-            var head = 0
-            var tail = 0
-            queue[tail++] = start
-            visited[start] = true
-            var count = 0
-            var minX = width
-            var minY = height
-            var maxX = -1
-            var maxY = -1
-            var minSum = Float.MAX_VALUE
-            var maxSum = -Float.MAX_VALUE
-            var minDiff = Float.MAX_VALUE
-            var maxDiff = -Float.MAX_VALUE
-            var tl = PointF(0f, 0f)
-            var tr = PointF(1f, 0f)
-            var br = PointF(1f, 1f)
-            var bl = PointF(0f, 1f)
-
-            while (head < tail) {
-                val idx = queue[head++]
-                val x = idx % width
-                val y = idx / width
-                count++
-                minX = min(minX, x)
-                maxX = max(maxX, x)
-                minY = min(minY, y)
-                maxY = max(maxY, y)
-                val nx = x / (width - 1).coerceAtLeast(1).toFloat()
-                val ny = y / (height - 1).coerceAtLeast(1).toFloat()
-                val sum = x + y
-                val diff = x - y
-                if (sum.toFloat() < minSum) { minSum = sum.toFloat(); tl = PointF(nx, ny) }
-                if (sum.toFloat() > maxSum) { maxSum = sum.toFloat(); br = PointF(nx, ny) }
-                if (diff.toFloat() > maxDiff) { maxDiff = diff.toFloat(); tr = PointF(nx, ny) }
-                if (diff.toFloat() < minDiff) { minDiff = diff.toFloat(); bl = PointF(nx, ny) }
-
-                val y0 = max(0, y - 1)
-                val y1 = min(height - 1, y + 1)
-                val x0 = max(0, x - 1)
-                val x1 = min(width - 1, x + 1)
-                for (ny in y0..y1) {
-                    val row = ny * width
-                    for (nx in x0..x1) {
-                        val n = row + nx
-                        if (closed[n] && !visited[n]) {
-                            visited[n] = true
-                            if (tail < queue.size) queue[tail++] = n
-                        }
-                    }
-                }
-            }
-
-            if (count < minPixels) continue
-            val bboxW = (maxX - minX + 1).toFloat()
-            val bboxH = (maxY - minY + 1).toFloat()
-            val bboxArea = bboxW * bboxH
-            val componentArea = count.toFloat() / (width * height).toFloat()
-            val bboxRatio = bboxArea / (width * height).toFloat()
-            if (bboxRatio < 0.10f || bboxRatio > 0.985f) continue
-            if (minX <= edgeMargin && maxX >= width - 1 - edgeMargin &&
-                minY <= edgeMargin && maxY >= height - 1 - edgeMargin
-            ) continue
-            val quad = DocumentQuad(tl, tr, br, bl).sortCorners()
-            if (!isQuadValid(quad)) continue
-            val quadArea = polygonArea(quad)
-            if (quadArea < 0.12f || quadArea > 0.985f) continue
-
-            val aspect = quadAspectRatio(quad)
-            if (expectedAspectRatio != null) {
-                val ratioError = abs(ln(aspect / expectedAspectRatio.coerceAtLeast(0.1f)))
-                if (ratioError > 0.72f) continue
-            } else if (aspect !in 0.30f..3.20f) {
-                continue
-            }
-
-            val density = (componentArea / bboxRatio).coerceIn(0f, 1f)
-            if (density < 0.45f) continue
-            val aspectScore = if (expectedAspectRatio == null) {
-                1f
-            } else {
-                exp(-abs(ln(aspect / expectedAspectRatio.coerceAtLeast(0.1f))) * 1.15f)
-            }
-            val areaScore = ((quadArea - 0.10f) / 0.65f).coerceIn(0f, 1f)
-            val confidence = (
-                areaScore * 0.45f +
-                    density * 0.25f +
-                    rightAngleScore(quad) * 0.20f +
-                    aspectScore * 0.10f
-                ).coerceIn(0f, 1f)
-
-            val candidate = DocumentDetection(
-                quad = quad,
-                confidence = confidence,
-                imageWidth = width,
-                imageHeight = height
-            )
-            if (best == null || candidate.confidence > best.confidence) {
-                best = candidate
-            }
-        }
-        return best
-    }
-
-    private fun erode(input: BooleanArray, width: Int, height: Int): BooleanArray {
-        val output = BooleanArray(input.size)
-        for (y in 1 until height - 1) {
-            val row = y * width
-            for (x in 1 until width - 1) {
-                var keep = true
-                loop@ for (dy in -1..1) {
-                    val nRow = (y + dy) * width
-                    for (dx in -1..1) {
-                        if (!input[nRow + x + dx]) {
-                            keep = false
-                            break@loop
-                        }
-                    }
-                }
-                output[row + x] = keep
-            }
-        }
-        return output
-    }
-
-    private fun detectCandidate(
-        grayscale: ByteArray,
-        gradient: FloatArray,
-        width: Int,
-        height: Int,
-        threshold: Float,
-        expectedAspectRatio: Float?
-    ): DocumentDetection? {
-        val edge = BooleanArray(width * height)
-        var edgeCount = 0
-        for (y in 1 until height - 1) {
-            for (x in 1 until width - 1) {
-                val idx = y * width + x
-                if (gradient[idx] >= threshold) {
-                    edge[idx] = true
-                    edgeCount++
-                }
-            }
-        }
-        if (edgeCount < width * height * 0.002f) return null
-
-        // One-pixel dilation connects small gaps in a real document border while
-        // keeping the CPU and memory cost predictable on the analysis thread.
-        val dilated = dilate(edge, width, height)
-        val visited = BooleanArray(width * height)
-        val queue = IntArray(width * height)
-        var bestDetection: DocumentDetection? = null
-        val border = max(3, (min(width, height) * 0.035f).roundToInt())
-        val minComponentPixels = max(40, width * height / 220)
-
-        for (start in dilated.indices) {
-            if (!dilated[start] || visited[start]) continue
-            var head = 0
-            var tail = 0
-            queue[tail++] = start
-            visited[start] = true
-            var count = 0
-            var minX = width
-            var minY = height
-            var maxX = -1
-            var maxY = -1
-            var edgeStrength = 0f
-            var minSum = Float.MAX_VALUE
-            var maxSum = -Float.MAX_VALUE
-            var minDiff = Float.MAX_VALUE
-            var maxDiff = -Float.MAX_VALUE
-            var tl = PointF(0f, 0f)
-            var tr = PointF(1f, 0f)
-            var br = PointF(1f, 1f)
-            var bl = PointF(0f, 1f)
-
-            while (head < tail) {
-                val idx = queue[head++]
-                val x = idx % width
-                val y = idx / width
-                count++
-                minX = min(minX, x)
-                maxX = max(maxX, x)
-                minY = min(minY, y)
-                maxY = max(maxY, y)
-                edgeStrength += gradient[idx]
-                val nx = x / (width - 1).coerceAtLeast(1).toFloat()
-                val ny = y / (height - 1).coerceAtLeast(1).toFloat()
-                val sum = x + y
-                val diff = x - y
-                if (sum.toFloat() < minSum) { minSum = sum.toFloat(); tl = PointF(nx, ny) }
-                if (sum.toFloat() > maxSum) { maxSum = sum.toFloat(); br = PointF(nx, ny) }
-                if (diff.toFloat() > maxDiff) { maxDiff = diff.toFloat(); tr = PointF(nx, ny) }
-                if (diff.toFloat() < minDiff) { minDiff = diff.toFloat(); bl = PointF(nx, ny) }
-
-                val y0 = max(0, y - 1)
-                val y1 = min(height - 1, y + 1)
-                val x0 = max(0, x - 1)
-                val x1 = min(width - 1, x + 1)
-                for (ny in y0..y1) {
-                    val row = ny * width
-                    for (nx in x0..x1) {
-                        val n = row + nx
-                        if (dilated[n] && !visited[n]) {
-                            visited[n] = true
-                            if (tail < queue.size) queue[tail++] = n
-                        }
-                    }
-                }
-            }
-
-            if (count < minComponentPixels) continue
-            val bboxW = (maxX - minX + 1).toFloat()
-            val bboxH = (maxY - minY + 1).toFloat()
-            val bboxArea = bboxW * bboxH
-            val bboxRatio = bboxArea / (width * height).toFloat()
-            if (bboxRatio < 0.08f || bboxRatio > 0.995f) continue
-            if (minX <= border && maxX >= width - border && minY <= border && maxY >= height - border) continue
-
-            val quad = DocumentQuad(tl, tr, br, bl).sortCorners()
-            if (!isQuadValid(quad)) continue
-
-            val quadArea = polygonArea(quad) / (width * height).toFloat()
-            if (quadArea < 0.12f || quadArea > 0.985f) continue
-
-            val aspect = quadAspectRatio(quad)
-            if (expectedAspectRatio != null) {
-                val ratioError = abs(ln(aspect / expectedAspectRatio.coerceAtLeast(0.1f)))
-                if (ratioError > 0.72f) continue
-            } else if (aspect !in 0.30f..3.20f) {
-                continue
-            }
-
-            val support = sideEdgeSupport(quad, gradient, width, height, threshold)
-            if (support < 0.42f) continue
-            val rectangularity = (quadArea / bboxRatio).coerceIn(0f, 1.2f) / 1.0f
-            val rightAngleScore = rightAngleScore(quad)
-            val areaScore = ((quadArea - 0.12f) / 0.70f).coerceIn(0f, 1f)
-            val aspectScore = if (expectedAspectRatio == null) {
-                1f
-            } else {
-                exp(-abs(ln(aspect / expectedAspectRatio.coerceAtLeast(0.1f))) * 1.25f)
-            }
-            val meanEdge = (edgeStrength / count.coerceAtLeast(1))
-            val edgeScore = (meanEdge / max(threshold, 1f)).coerceIn(0f, 2f) / 2f
-            val confidence = (
-                areaScore * 0.22f +
-                    support * 0.34f +
-                    rightAngleScore * 0.18f +
-                    rectangularity.coerceIn(0f, 1f) * 0.12f +
-                    aspectScore * 0.08f +
-                    edgeScore * 0.06f
-                ).coerceIn(0f, 1f)
-
-            val candidate = DocumentDetection(
-                quad = quad,
-                confidence = confidence,
-                imageWidth = width,
-                imageHeight = height
-            )
-            if (bestDetection == null || candidate.confidence > bestDetection.confidence) {
-                bestDetection = candidate
-            }
-        }
-        return bestDetection
-    }
-
-    private fun dilate(input: BooleanArray, width: Int, height: Int): BooleanArray {
-        val output = BooleanArray(input.size)
-        for (y in 1 until height - 1) {
-            val row = y * width
-            for (x in 1 until width - 1) {
-                val idx = row + x
-                var found = false
-                for (dy in -1..1) {
-                    val nRow = (y + dy) * width
-                    for (dx in -1..1) {
-                        if (input[nRow + x + dx]) {
-                            found = true
-                            break
-                        }
-                    }
-                    if (found) break
-                }
-                output[idx] = found
-            }
-        }
-        return output
-    }
-
-    private fun extremeQuad(points: IntArray, pointCount: Int, width: Int, height: Int): DocumentQuad {
-        var minSum = Float.MAX_VALUE
-        var maxSum = -Float.MAX_VALUE
-        var minDiff = Float.MAX_VALUE
-        var maxDiff = -Float.MAX_VALUE
-        var tl = PointF(0.08f, 0.08f)
-        var tr = PointF(0.92f, 0.08f)
-        var br = PointF(0.92f, 0.92f)
-        var bl = PointF(0.08f, 0.92f)
-
-        for (i in 0 until pointCount) {
-            val idx = points[i]
-            val x = (idx % width).toFloat()
-            val y = (idx / width).toFloat()
-            val nx = (x / (width - 1).coerceAtLeast(1)).coerceIn(0f, 1f)
-            val ny = (y / (height - 1).coerceAtLeast(1)).coerceIn(0f, 1f)
-            val sum = x + y
-            val diff = x - y
-            if (sum.toFloat() < minSum) { minSum = sum.toFloat(); tl = PointF(nx, ny) }
-            if (sum.toFloat() > maxSum) { maxSum = sum.toFloat(); br = PointF(nx, ny) }
-            if (diff.toFloat() > maxDiff) { maxDiff = diff.toFloat(); tr = PointF(nx, ny) }
-            if (diff.toFloat() < minDiff) { minDiff = diff.toFloat(); bl = PointF(nx, ny) }
-        }
-        return DocumentQuad(tl, tr, br, bl).sortCorners()
-    }
-
-    private fun sideEdgeSupport(
-        quad: DocumentQuad,
-        gradient: FloatArray,
-        width: Int,
-        height: Int,
-        threshold: Float
-    ): Float {
-        val pts = listOf(quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft)
-        var supported = 0
-        var total = 0
-        val samplesPerSide = 28
-        for (side in 0 until 4) {
-            val a = pts[side]
-            val b = pts[(side + 1) % 4]
-            for (i in 0..samplesPerSide) {
-                val t = i / samplesPerSide.toFloat()
-                val fx = (a.x + (b.x - a.x) * t) * (width - 1)
-                val fy = (a.y + (b.y - a.y) * t) * (height - 1)
-                val x = fx.roundToInt()
-                val y = fy.roundToInt()
-                if (x !in 1 until width - 1 || y !in 1 until height - 1) continue
-                var localMax = 0f
-                for (dy in -1..1) {
-                    for (dx in -1..1) {
-                        localMax = max(localMax, gradient[(y + dy) * width + (x + dx)])
-                    }
-                }
-                if (localMax >= threshold) supported++
-                total++
-            }
-        }
-        return if (total == 0) 0f else supported / total.toFloat()
-    }
-
-    private fun polygonArea(quad: DocumentQuad): Float {
-        val pts = listOf(quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft)
-        var sum = 0f
-        for (i in pts.indices) {
-            val a = pts[i]
-            val b = pts[(i + 1) % pts.size]
-            sum += a.x * b.y - b.x * a.y
-        }
-        return abs(sum) / 2f
-    }
-
-    private fun quadAspectRatio(quad: DocumentQuad): Float {
-        val wTop = distance(quad.topLeft, quad.topRight)
-        val wBottom = distance(quad.bottomLeft, quad.bottomRight)
-        val hLeft = distance(quad.topLeft, quad.bottomLeft)
-        val hRight = distance(quad.topRight, quad.bottomRight)
-        return ((wTop + wBottom) * 0.5f) / ((hLeft + hRight) * 0.5f).coerceAtLeast(0.001f)
-    }
-
-    private fun rightAngleScore(quad: DocumentQuad): Float {
-        val pts = listOf(quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft)
-        var total = 0f
-        for (i in pts.indices) {
-            val prev = pts[(i + pts.size - 1) % pts.size]
-            val center = pts[i]
-            val next = pts[(i + 1) % pts.size]
-            val ax = prev.x - center.x
-            val ay = prev.y - center.y
-            val bx = next.x - center.x
-            val by = next.y - center.y
-            val denom = hypot(ax.toDouble(), ay.toDouble()) * hypot(bx.toDouble(), by.toDouble())
-            if (denom <= 1e-6) continue
-            val cosine = (((ax * bx + ay * by).toDouble()) / denom).toFloat().coerceIn(-1f, 1f)
-            total += (1f - abs(cosine)).coerceIn(0f, 1f)
-        }
-        return total / 4f
-    }
-
-    private fun distance(a: PointF, b: PointF): Float = hypot((a.x - b.x).toDouble(), (a.y - b.y).toDouble()).toFloat()
-
-    private fun value(v: Byte): Float = (v.toInt() and 0xFF).toFloat()
-
-    private fun rotateNormalizedQuad(quad: DocumentQuad, rotationDegrees: Int): DocumentQuad {
-        fun rotatePoint(p: PointF): PointF = when (rotationDegrees) {
-            90 -> PointF(1f - p.y, p.x)
-            180 -> PointF(1f - p.x, 1f - p.y)
-            270 -> PointF(p.y, 1f - p.x)
-            else -> PointF(p.x, p.y)
-        }
-        return DocumentQuad(
-            topLeft = rotatePoint(quad.topLeft),
-            topRight = rotatePoint(quad.topRight),
-            bottomRight = rotatePoint(quad.bottomRight),
-            bottomLeft = rotatePoint(quad.bottomLeft)
-        ).sortCorners()
+    suspend fun detectDocumentQuad(bitmap: Bitmap): DocumentQuad = withContext(Dispatchers.Default) {
+        val detected = runCatching { DocumentDetector.detect(bitmap, null) }.getOrNull()?.quad
+        if (detected != null && DocumentDetector.isPlausible(detected)) detected else DocumentQuad.fullQuad()
     }
 
     /**
@@ -787,60 +180,37 @@ object ImageProcessor {
     }
 
     /**
-     * Validates whether a quad represents a plausible document
+     * Validates whether a quad represents a plausible document.
+     * Uses the same rules as the detector so every workflow agrees on what "valid" means.
      */
-    fun isQuadValid(quad: DocumentQuad): Boolean {
+    fun isQuadValid(quad: DocumentQuad): Boolean = DocumentDetector.isPlausible(quad)
+
+    /** Mathematical convexity check for 4 points */
+    fun isConvex(quad: DocumentQuad): Boolean {
         val pts = listOf(quad.topLeft, quad.topRight, quad.bottomRight, quad.bottomLeft)
-        if (pts.any { it.x !in 0f..1f || it.y !in 0f..1f }) return false
-
-        val edges = pts.indices.map { i -> distance(pts[i], pts[(i + 1) % pts.size]) }
-        if (edges.any { it < 0.04f }) return false
-
-        val area = polygonArea(quad)
-        if (area < 0.12f || area > 0.985f) return false
-
-        val widthTop = edges[0]
-        val widthBottom = edges[2]
-        val heightLeft = edges[3]
-        val heightRight = edges[1]
-        val avgWidth = (widthTop + widthBottom) / 2f
-        val avgHeight = (heightLeft + heightRight) / 2f
-        val aspect = avgWidth / avgHeight.coerceAtLeast(0.01f)
-        if (aspect !in 0.3f..3.2f) return false
-
-        // Opposite sides should be reasonably similar; reject self-crossing or
-        // highly degenerate quads that could make Matrix.setPolyToPoly unstable.
-        val widthConsistency = min(widthTop, widthBottom) / max(widthTop, widthBottom)
-        val heightConsistency = min(heightLeft, heightRight) / max(heightLeft, heightRight)
-        if (widthConsistency < 0.35f || heightConsistency < 0.35f) return false
-
-        val crossSigns = FloatArray(4) { i ->
-            val a = pts[i]
-            val b = pts[(i + 1) % 4]
-            val c = pts[(i + 2) % 4]
-            (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x)
+        var lastSign = 0f
+        for (i in 0 until 4) {
+            val p1 = pts[i]
+            val p2 = pts[(i + 1) % 4]
+            val p3 = pts[(i + 2) % 4]
+            val cross = (p2.x - p1.x) * (p3.y - p2.y) - (p2.y - p1.y) * (p3.x - p2.x)
+            if (i == 0) {
+                lastSign = cross
+            } else if (cross * lastSign < 0) {
+                return false
+            }
         }
-        val hasPositive = crossSigns.any { it > 0f }
-        val hasNegative = crossSigns.any { it < 0f }
-        if (hasPositive && hasNegative) return false
-
         return true
     }
 
     /**
-     * Warps four corners of a quad into an upright rectangle with high precision.
-     * Main-safe: executes on Dispatchers.IO
+     * Warps four corners of a quad into an upright rectangle (full homography).
+     * Delegates to DocumentPipeline.warp so every workflow produces identical output.
+     * Never returns the source instance: callers of this legacy API recycle inputs/outputs independently.
      */
-    suspend fun applyPerspectiveWarp(srcBitmap: Bitmap, quad: DocumentQuad): Bitmap = withContext(Dispatchers.IO) {
-        val (dstW, dstH) = quad.targetDimensions(srcBitmap.width.toFloat(), srcBitmap.height.toFloat())
-        val output = Bitmap.createBitmap(dstW, dstH, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(output)
-
-        val matrix = quad.getTransformationMatrix(srcBitmap.width.toFloat(), srcBitmap.height.toFloat())
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        
-        canvas.drawBitmap(srcBitmap, matrix, paint)
-        output
+    suspend fun applyPerspectiveWarp(srcBitmap: Bitmap, quad: DocumentQuad): Bitmap = withContext(Dispatchers.Default) {
+        val out = DocumentPipeline.warp(srcBitmap, quad)
+        if (out === srcBitmap) srcBitmap.copy(srcBitmap.config ?: Bitmap.Config.ARGB_8888, true) else out
     }
 
     @Deprecated("Use applyPerspectiveWarp instead", ReplaceWith("applyPerspectiveWarp(srcBitmap, quad)"))
@@ -849,7 +219,7 @@ object ImageProcessor {
     /**
      * Main-safe rotation
      */
-    suspend fun rotateBitmap(source: Bitmap, degrees: Int): Bitmap = withContext(Dispatchers.IO) {
+    suspend fun rotateBitmap(source: Bitmap, degrees: Int): Bitmap = withContext(Dispatchers.Default) {
         if (degrees % 360 == 0) return@withContext source
         val matrix = Matrix().apply { postRotate(degrees.toFloat()) }
         Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
@@ -857,10 +227,9 @@ object ImageProcessor {
 
     /**
      * Professional Scan Filter Engine
-     * Supports Original, Auto, Color, Enhanced, Grayscale, Black & White, Text, Magic.
-     * Main-safe: executes on Dispatchers.IO
+     * Main-safe: executes on Dispatchers.Default
      */
-    suspend fun applyFilter(src: Bitmap, filter: FilterType): Bitmap = withContext(Dispatchers.IO) {
+    suspend fun applyFilter(src: Bitmap, filter: FilterType): Bitmap = withContext(Dispatchers.Default) {
         when (filter) {
             FilterType.ORIGINAL -> src.copy(src.config ?: Bitmap.Config.ARGB_8888, true)
             FilterType.AUTO -> applyAutoScan(src)
@@ -885,7 +254,6 @@ object ImageProcessor {
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(output)
 
-        // Moderate contrast boost + brightness compensation to whiten paper without blowing out ink
         val contrast = 1.35f
         val brightness = 14f
         val colorMatrix = ColorMatrix(
@@ -908,59 +276,56 @@ object ImageProcessor {
     }
 
     /**
-     * Magic Color filter: classic rich scanner color with sharp contrast
+     * Magic Color filter: adaptive background flattening (shadow removal) + contrast
      */
     private fun applyMagicColor(src: Bitmap): Bitmap {
         val width = src.width
         val height = src.height
-        
-        // Adaptive Background Flattening (True Document Scanner Shadow Removal)
+
         val sampleSize = 48
         val scaleW = sampleSize
         val scaleH = (sampleSize * (height.toFloat() / width)).toInt().coerceAtLeast(1)
         val tiny = Bitmap.createScaledBitmap(src, scaleW, scaleH, true)
         val bgMap = Bitmap.createScaledBitmap(tiny, width, height, true)
-        tiny.recycle()
-        
+        if (tiny !== bgMap) tiny.recycle()
+
         val srcPixels = IntArray(width * height)
         val bgPixels = IntArray(width * height)
         src.getPixels(srcPixels, 0, width, 0, 0, width, height)
         bgMap.getPixels(bgPixels, 0, width, 0, 0, width, height)
         bgMap.recycle()
-        
+
         val outPixels = IntArray(width * height)
-        
+
         for (i in srcPixels.indices) {
             val p = srcPixels[i]
             val sr = (p shr 16) and 0xFF
             val sg = (p shr 8) and 0xFF
             val sb = p and 0xFF
-            
+
             val bp = bgPixels[i]
             val br = (bp shr 16) and 0xFF
             val bg = (bp shr 8) and 0xFF
             val bb = bp and 0xFF
-            
-            // Normalize illumination by dividing by background map
+
             var or = (sr * 255) / br.coerceAtLeast(1)
             var og = (sg * 255) / bg.coerceAtLeast(1)
             var ob = (sb * 255) / bb.coerceAtLeast(1)
-            
-            // Boost saturation slightly and increase contrast
+
             val lum = 0.299f * or + 0.587f * og + 0.114f * ob
             val sat = 1.25f
             or = (lum + (or - lum) * sat).toInt()
             og = (lum + (og - lum) * sat).toInt()
             ob = (lum + (ob - lum) * sat).toInt()
-            
+
             val contrast = 1.35f
             or = (((or / 255f - 0.5f) * contrast + 0.5f) * 255).toInt()
             og = (((og / 255f - 0.5f) * contrast + 0.5f) * 255).toInt()
             ob = (((ob / 255f - 0.5f) * contrast + 0.5f) * 255).toInt()
-            
+
             outPixels[i] = (0xFF shl 24) or (or.coerceIn(0, 255) shl 16) or (og.coerceIn(0, 255) shl 8) or ob.coerceIn(0, 255)
         }
-        
+
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         output.setPixels(outPixels, 0, width, 0, 0, width, height)
         return output
@@ -1036,7 +401,7 @@ object ImageProcessor {
         val canvas = Canvas(output)
 
         val cm = ColorMatrix()
-        cm.setSaturation(0.05f) // Near monochrome for clean text
+        cm.setSaturation(0.05f)
 
         val contrast = 2.1f
         val brightness = -30f
@@ -1055,8 +420,9 @@ object ImageProcessor {
         }
         canvas.drawBitmap(src, 0f, 0f, paint)
 
-        // Apply unsharp mask for razor sharp text characters
-        return applySharpenMask(output)
+        val sharpened = applySharpenMask(output)
+        if (sharpened !== output) output.recycle()
+        return sharpened
     }
 
     /**
@@ -1166,29 +532,28 @@ object ImageProcessor {
      * Intelligent Smart Enhance: analyzes image quality and applies optimized
      * adjustments for brightness, contrast, and clarity.
      */
-    suspend fun applySmartEnhance(src: Bitmap): Bitmap = withContext(Dispatchers.IO) {
+    suspend fun applySmartEnhance(src: Bitmap): Bitmap = withContext(Dispatchers.Default) {
         val report = analyzeQuality(src)
-        
+
         var brightness = 0f
         var contrast = 1.0f
-        
+
         if (report.isDark) {
             brightness = 15f
         }
-        
+
         if (report.isLowContrast) {
             contrast = 1.3f
         }
-        
-        // Always apply sharpening for readability
+
         adjustEnhancements(src, brightness, contrast, sharpen = true)
     }
 
     /**
      * Adjusts brightness (-50..50), contrast (0.5..2.5), and optional sharpness
-     * Main-safe: executes on Dispatchers.IO
+     * Main-safe: executes on Dispatchers.Default
      */
-    suspend fun adjustEnhancements(src: Bitmap, brightness: Float, contrast: Float, sharpen: Boolean): Bitmap = withContext(Dispatchers.IO) {
+    suspend fun adjustEnhancements(src: Bitmap, brightness: Float, contrast: Float, sharpen: Boolean): Bitmap = withContext(Dispatchers.Default) {
         val width = src.width
         val height = src.height
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
@@ -1212,7 +577,7 @@ object ImageProcessor {
 
         if (sharpen) {
             val sharpened = applySharpenMask(output)
-            output.recycle()
+            if (sharpened !== output) output.recycle()
             sharpened
         } else {
             output
@@ -1220,28 +585,40 @@ object ImageProcessor {
     }
 
     /**
-     * Unsharp mask for high-frequency detail sharpening
+     * Real 3x3 unsharp-mask convolution (the previous implementation only redrew the image
+     * scaled by 0.2% at alpha 40, which blurred instead of sharpening).
      */
     private fun applySharpenMask(src: Bitmap): Bitmap {
-        try {
-            val width = src.width
-            val height = src.height
-            val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(output)
-
-            // Draw original
-            canvas.drawBitmap(src, 0f, 0f, null)
-
-            // Apply high-contrast micro-detail pass
-            val detailPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
-                alpha = 40
+        return try {
+            val w = src.width
+            val h = src.height
+            if (w < 3 || h < 3) return src.copy(src.config ?: Bitmap.Config.ARGB_8888, true)
+            val inPx = IntArray(w * h)
+            src.getPixels(inPx, 0, w, 0, 0, w, h)
+            val outPx = inPx.copyOf()
+            val amount = 0.6f
+            for (y in 1 until h - 1) {
+                val row = y * w
+                for (x in 1 until w - 1) {
+                    val i = row + x
+                    val c = inPx[i]
+                    var sr = 0; var sg = 0; var sb = 0
+                    for (n in intArrayOf(i - 1, i + 1, i - w, i + w)) {
+                        val p = inPx[n]
+                        sr += (p shr 16) and 0xFF; sg += (p shr 8) and 0xFF; sb += p and 0xFF
+                    }
+                    val cr = (c shr 16) and 0xFF; val cg = (c shr 8) and 0xFF; val cb = c and 0xFF
+                    val r = (cr + amount * (cr - sr / 4f)).roundToInt().coerceIn(0, 255)
+                    val g = (cg + amount * (cg - sg / 4f)).roundToInt().coerceIn(0, 255)
+                    val b = (cb + amount * (cb - sb / 4f)).roundToInt().coerceIn(0, 255)
+                    outPx[i] = (c and 0xFF000000.toInt()) or (r shl 16) or (g shl 8) or b
+                }
             }
-            val matrix = Matrix().apply { postScale(1.002f, 1.002f, width / 2f, height / 2f) }
-            canvas.drawBitmap(src, matrix, detailPaint)
-
-            return output
-        } catch (e: Exception) {
-            return src.copy(src.config ?: Bitmap.Config.ARGB_8888, true)
+            val output = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+            output.setPixels(outPx, 0, w, 0, 0, w, h)
+            output
+        } catch (e: Throwable) {
+            src.copy(src.config ?: Bitmap.Config.ARGB_8888, true)
         }
     }
 
@@ -1261,7 +638,7 @@ object ImageProcessor {
         isPassport: Boolean = false,
         spacingFactor: Float = 1.0f,
         hasBorder: Boolean = true
-    ): String = withContext(Dispatchers.IO) {
+    ): String = withContext(Dispatchers.Default) {
         try {
             val rawFrontBmp = loadBitmapFromFile(frontPath, 1800)
             val rawBackBmp = if (backPath.isNotBlank() && backPath != frontPath) {
@@ -1273,7 +650,6 @@ object ImageProcessor {
             val frontBmp = if (swapOrder && rawBackBmp != null) rawBackBmp else rawFrontBmp
             val backBmp = if (swapOrder && rawBackBmp != null) rawFrontBmp else rawBackBmp
 
-            // A4 page @ standard scan resolution: 1240 x 1754 (Ratio 1 : 1.414)
             val canvasW = 1240
             val canvasH = 1754
             val result = Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888)
@@ -1293,7 +669,6 @@ object ImageProcessor {
             val cornerRadius = if (isPassport) 12f else 18f
 
             if (backBmp == null) {
-                // Single card or passport
                 val clampedScale = if (arrangement == CardArrangement.FIT_PAGE) 0.94f else scale.coerceIn(0.40f, 1.10f) * 0.85f
                 val targetW = canvasW * clampedScale
                 val ratio = frontBmp.width.toFloat() / frontBmp.height.toFloat().coerceAtLeast(0.1f)
@@ -1312,13 +687,12 @@ object ImageProcessor {
                 }
             } else when (arrangement) {
                 CardArrangement.SIDE_BY_SIDE -> {
-                    // Horizontal side-by-side layout
                     val clampedScale = scale.coerceIn(0.40f, 1.10f)
-                    var targetW = canvasW * 0.44f * clampedScale
+                    val targetW = canvasW * 0.44f * clampedScale
                     val frontRatio = frontBmp.width.toFloat() / frontBmp.height.toFloat().coerceAtLeast(0.1f)
                     val backRatio = backBmp.width.toFloat() / backBmp.height.toFloat().coerceAtLeast(0.1f)
-                    var targetHFront = targetW / frontRatio
-                    var targetHBack = targetW / backRatio
+                    val targetHFront = targetW / frontRatio
+                    val targetHBack = targetW / backRatio
 
                     val gap = (canvasW * 0.035f * spacingFactor).coerceIn(10f, 90f)
                     val totalContentW = targetW * 2 + gap
@@ -1340,7 +714,6 @@ object ImageProcessor {
                     if (hasBorder) canvas.drawRoundRect(backRect, cornerRadius, cornerRadius, borderPaint)
                 }
                 else -> {
-                    // Vertical stacked layouts (TOP_BOTTOM, TOP_PAGE, CENTERED, FIT_PAGE)
                     val scaleMul = if (arrangement == CardArrangement.FIT_PAGE) 0.94f else (scale.coerceIn(0.40f, 1.10f) * 0.82f)
                     var targetW = canvasW * scaleMul
                     val frontRatio = frontBmp.width.toFloat() / frontBmp.height.toFloat().coerceAtLeast(0.1f)
@@ -1368,7 +741,6 @@ object ImageProcessor {
                         else -> ((canvasH - (targetHFront + targetHBack + gap)) / 2f).coerceAtLeast(canvasH * 0.04f)
                     }
 
-                    // Front Card
                     val frontLeft = (canvasW - targetW) / 2f
                     val frontTop = startY
                     val frontRect = RectF(frontLeft, frontTop, frontLeft + targetW, frontTop + targetHFront)
@@ -1377,7 +749,6 @@ object ImageProcessor {
                     canvas.drawBitmap(frontBmp, null, frontRect, paint)
                     if (hasBorder) canvas.drawRoundRect(frontRect, cornerRadius, cornerRadius, borderPaint)
 
-                    // Back Card
                     val backLeft = (canvasW - targetW) / 2f
                     val backTop = frontTop + targetHFront + gap
                     val backRect = RectF(backLeft, backTop, backLeft + targetW, backTop + targetHBack)
@@ -1415,12 +786,11 @@ object ImageProcessor {
         backgroundColor: Int = android.graphics.Color.WHITE,
         fitMode: MergeFitMode = MergeFitMode.FIT,
         outPrefix: String = "merged_grid_"
-    ): String = withContext(Dispatchers.IO) {
+    ): String = withContext(Dispatchers.Default) {
         if (imagePaths.isEmpty()) return@withContext ""
         if (imagePaths.size == 1) return@withContext imagePaths[0]
 
         try {
-            // A4 page @ standard high clarity: 1414 x 2000
             val canvasW = 1414
             val canvasH = 2000
             val result = Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888)
@@ -1475,7 +845,6 @@ object ImageProcessor {
                 val cellLeft = margin + col * (cellW + cellSpacing)
                 val cellTop = margin + row * (cellH + cellSpacing)
 
-                // Apply user custom image scale inside cell (0.5f to 1.0f)
                 val scaledW = cellW * imageScale.coerceIn(0.4f, 1.0f)
                 val scaledH = cellH * imageScale.coerceIn(0.4f, 1.0f)
                 val targetLeft = cellLeft + (cellW - scaledW) / 2f
@@ -1516,7 +885,6 @@ object ImageProcessor {
                         if (hasBorder) canvas.drawRect(drawRect, borderPaint)
                     }
                 } else {
-                    // Fill mode (center crop)
                     val drawRect = RectF(targetLeft, targetTop, targetLeft + scaledW, targetTop + scaledH)
                     val shadowRect = RectF(targetLeft + 4, targetTop + 4, targetLeft + scaledW + 4, targetTop + scaledH + 4)
 
@@ -1564,20 +932,24 @@ object ImageProcessor {
     }
 
     suspend fun saveBitmapToFile(
-        context: Context, 
-        bitmap: Bitmap, 
-        prefix: String = "scan_", 
+        context: Context,
+        bitmap: Bitmap,
+        prefix: String = "scan_",
         isTextContent: Boolean = true
     ): String = withContext(Dispatchers.IO) {
         val dir = File(context.filesDir, "scans").apply { if (!exists()) mkdirs() }
         val file = File(dir, "${prefix}${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}.jpg")
-        
-        // Auto-detect based on prefix if it's raw or photo
-        val actualIsText = isTextContent && !prefix.contains("raw", ignoreCase = true) && !prefix.contains("thumb", ignoreCase = true)
-        
-        // JPEG compression: 90 for text/documents, 75 for photos/raw images
-        val quality = if (actualIsText) 90 else 75
-        
+
+        // Raw sources keep higher quality: every re-crop / filter re-renders from them.
+        val isRaw = prefix.contains("raw", ignoreCase = true)
+        val isThumb = prefix.contains("thumb", ignoreCase = true)
+        val quality = when {
+            isThumb -> 75
+            isRaw -> 92
+            isTextContent -> 90
+            else -> 80
+        }
+
         FileOutputStream(file).use { out ->
             bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
         }
@@ -1589,11 +961,11 @@ object ImageProcessor {
             val sourceFile = File(sourcePath)
             if (!sourceFile.exists()) return@withContext null
 
-            // Load with sample size first to save memory
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(sourcePath, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
 
-            val targetSize = 250 // Slightly more than 200 for better quality on high-density screens
+            val targetSize = 250
             var sampleSize = 1
             while (max(bounds.outWidth, bounds.outHeight) / (sampleSize * 2) >= targetSize) {
                 sampleSize *= 2
@@ -1602,12 +974,11 @@ object ImageProcessor {
             val opts = BitmapFactory.Options().apply { inSampleSize = sampleSize }
             val sampled = BitmapFactory.decodeFile(sourcePath, opts) ?: return@withContext null
 
-            // Precise scaling with aspect ratio maintenance
             val width = sampled.width
             val height = sampled.height
             val scale = targetSize.toFloat() / max(width, height)
-            val finalW = (width * scale).toInt()
-            val finalH = (height * scale).toInt()
+            val finalW = (width * scale).toInt().coerceAtLeast(1)
+            val finalH = (height * scale).toInt().coerceAtLeast(1)
 
             val thumb = Bitmap.createScaledBitmap(sampled, finalW, finalH, true)
             if (thumb != sampled) sampled.recycle()
@@ -1637,11 +1008,13 @@ object ImageProcessor {
 
     suspend fun loadBitmapFromFile(path: String, maxDim: Int = 2400): Bitmap? = withContext(Dispatchers.IO) {
         try {
+            if (path.isBlank()) return@withContext null
             val file = File(path)
             if (!file.exists()) return@withContext null
 
             val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeFile(path, boundsOpts)
+            if (boundsOpts.outWidth <= 0 || boundsOpts.outHeight <= 0) return@withContext null
 
             var sampleSize = 1
             val maxOriginal = max(boundsOpts.outWidth, boundsOpts.outHeight)
@@ -1652,27 +1025,27 @@ object ImageProcessor {
             val opts = BitmapFactory.Options().apply {
                 inSampleSize = sampleSize
                 inPreferredConfig = Bitmap.Config.ARGB_8888
-                inMutable = true // Allow reuse if needed
+                inMutable = true
             }
-            val bitmap = BitmapFactory.decodeFile(path, opts)
-            bitmap
-        } catch (e: Exception) {
+            BitmapFactory.decodeFile(path, opts)
+        } catch (e: Throwable) {
+            // OutOfMemoryError included: a single oversized page must not crash the app.
             null
         }
     }
 
     /**
      * Analyzes quality of a bitmap.
-     * Main-safe: executes on Dispatchers.IO
+     * Main-safe: executes on Dispatchers.Default
      */
-    suspend fun analyzeQuality(bitmap: Bitmap): QualityReport = withContext(Dispatchers.IO) {
-        val sampleW = min(300, bitmap.width)
-        val sampleH = min(400, bitmap.height)
+    suspend fun analyzeQuality(bitmap: Bitmap): QualityReport = withContext(Dispatchers.Default) {
+        val sampleW = min(300, bitmap.width).coerceAtLeast(3)
+        val sampleH = min(400, bitmap.height).coerceAtLeast(3)
         val sample = Bitmap.createScaledBitmap(bitmap, sampleW, sampleH, false)
 
         val pixels = IntArray(sampleW * sampleH)
         sample.getPixels(pixels, 0, sampleW, 0, 0, sampleW, sampleH)
-        sample.recycle()
+        if (sample !== bitmap) sample.recycle()
 
         var totalLum = 0.0
         val lums = DoubleArray(pixels.size)

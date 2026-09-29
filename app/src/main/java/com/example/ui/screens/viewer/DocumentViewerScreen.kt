@@ -1,16 +1,11 @@
 package com.example.ui.screens.viewer
 
-import android.content.Context
-import android.content.Intent
-import android.graphics.BitmapFactory
 import android.net.Uri
-import java.io.File
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,12 +21,11 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.automirrored.filled.MergeType
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -40,6 +34,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -48,14 +43,14 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.CompressionPreset
 import com.example.data.model.FilterType
 import com.example.data.model.PageEntity
 import com.example.data.model.PageSizePreset
-import com.example.engine.cv.ImageProcessor
+import com.example.engine.cv.DocumentPipeline
+import com.example.engine.ocr.DocumentAnalysisWorker
 import com.example.engine.pdf.PdfEngine
 import com.example.engine.pdf.PdfExportConfig
 import com.example.ui.components.MergePagesDialog
@@ -63,18 +58,26 @@ import com.example.ui.components.PageActionsBottomSheet
 import com.example.ui.components.PdfViewerOverlay
 import com.example.ui.components.ScanActionButton
 import com.example.ui.screens.viewer.components.SelectionActionBar
-import com.example.ui.theme.*
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import com.example.ui.theme.Emerald400
-import com.example.ui.theme.EmeraldLight
+import com.example.ui.theme.GoldBase
 import com.example.ui.theme.StudioCanvasBg
 import com.example.ui.theme.WarningAmber
 import com.example.ui.viewmodel.EditSessionViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
+/**
+ * Saved document screen.
+ *
+ * Save & Share is ONE sheet ("Save & Share"), used for the whole document or for the selected pages:
+ *   Save as PDF (Downloads) · Save PDF as… (choose location) · Save as Images (Gallery)
+ *   Share PDF · Share as Images · Print / Save via print dialog · PDF settings (advanced)
+ * Every export runs off the main thread, shows one progress overlay and can't be started twice.
+ * The sheet opens automatically right after a new scan is saved.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DocumentViewerScreen(
@@ -92,57 +95,188 @@ fun DocumentViewerScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val uiState by viewModel.uiState.collectAsState()
-    val doc = uiState.activeDocument
-    val pages = uiState.activePages
+    val doc = uiState.activeDocument?.takeIf { it.id == docId }
+    val pages = if (uiState.activeDocument?.id == docId) uiState.activePages else emptyList()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
+    fun t(en: String, ar: String) = if (isArabic) ar else en
 
+    var showShareSheet by remember { mutableStateOf(false) }
+    // Background OCR / classification progress (WorkManager). Never blocks viewing, saving or sharing.
+    val analysisFlow = remember(docId) { DocumentAnalysisWorker.observeProgress(context, docId) }
+    val analysisProgress by analysisFlow.collectAsState(initial = null)
     LaunchedEffect(docId) {
         viewModel.loadDocument(docId)
+        if (viewModel.consumeShareSheetRequest(docId)) showShareSheet = true
     }
 
     val pagerState = rememberPagerState(pageCount = { pages.size })
     var selectionMode by remember { mutableStateOf(false) }
     var selectedPageIds by remember { mutableStateOf(setOf<Long>()) }
-
-    LaunchedEffect(pagerState.currentPage) {
-        if (pages.isNotEmpty() && pagerState.currentPage in pages.indices) {
-            viewModel.selectPageIndex(pagerState.currentPage)
-        }
+    LaunchedEffect(pagerState.currentPage, pages.size) {
+        if (pagerState.currentPage in pages.indices) viewModel.selectPageIndex(pagerState.currentPage)
+    }
+    // Drop selections that no longer exist (page deleted / merged).
+    LaunchedEffect(pages) {
+        val ids = pages.map { it.id }.toSet()
+        if (selectedPageIds.any { it !in ids }) selectedPageIds = selectedPageIds.intersect(ids)
     }
 
-    // Haptic feedback intentionally omitted to avoid permission/dependency complexity.
-
-    // Removed Grid View per user request. Pager is now the primary viewer.
     var isGridView by remember { mutableStateOf(false) }
     var showPdfExportDialog by remember { mutableStateOf(false) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
-    var isSharingMultiple by remember { mutableStateOf(false) }
+    var busyMessage by remember { mutableStateOf<String?>(null) }
     var showFilterSheet by remember { mutableStateOf(false) }
-    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
     var showDeleteSelectedConfirmDialog by remember { mutableStateOf(false) }
     var showReorderDialog by remember { mutableStateOf(false) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameInput by remember { mutableStateOf("") }
     var showOverflowMenu by remember { mutableStateOf(false) }
-
-    // Handle Back Press: selection mode -> home screen
-    BackHandler {
-        if (selectionMode) {
-            selectionMode = false
-            selectedPageIds = emptySet()
-        } else {
-            onNavigateBack()
-        }
-    }
-
-    // Page Actions Bottom Sheet and Merge Dialog states
     var pageForActions by remember { mutableStateOf<PageEntity?>(null) }
     var pageForActionsIndex by remember { mutableStateOf(0) }
     var showMergeDialog by remember { mutableStateOf(false) }
     var initialMergePageIds by remember { mutableStateOf<List<Long>>(emptyList()) }
     var targetPageForReplace by remember { mutableStateOf<PageEntity?>(null) }
+    var pendingPdfForSaveAs by remember { mutableStateOf<File?>(null) }
+    var pendingImagesForFolder by remember { mutableStateOf<List<String>>(emptyList()) }
 
-    // Photo picker for adding pages from gallery
+    val docTitle = doc?.title?.ifBlank { null } ?: "Document"
+    fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+
+    fun exitSelection() {
+        selectionMode = false
+        selectedPageIds = emptySet()
+    }
+
+    /** Pages targeted by Save / Share / Print: the selection when active, otherwise the whole document. */
+    fun targetPages(): List<PageEntity> =
+        if (selectionMode && selectedPageIds.isNotEmpty()) pages.filter { it.id in selectedPageIds } else pages
+
+    fun imagePathOf(p: PageEntity): String =
+        if (p.processedImagePath.isNotBlank() && File(p.processedImagePath).exists()) p.processedImagePath else p.rawImagePath
+
+    fun quickConfig() = PdfExportConfig(
+        title = docTitle,
+        pageSize = uiState.defaultPdfPageSize,
+        compression = uiState.defaultPdfCompression
+    )
+
+    /** Runs one export at a time with a progress overlay; errors become a message, never a crash. */
+    fun runBusy(message: String, block: suspend () -> Unit) {
+        if (busyMessage != null) return
+        coroutineScope.launch {
+            busyMessage = message
+            try {
+                block()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                e.printStackTrace()
+                toast(t("Operation failed: ", "فشلت العملية: ") + (e.localizedMessage ?: e.javaClass.simpleName))
+            } finally {
+                busyMessage = null
+            }
+        }
+    }
+
+    suspend fun buildPdf(targets: List<PageEntity>): File =
+        PdfEngine.generatePdf(context, targets.map { Pair(imagePathOf(it), it.ocrText) }, quickConfig())
+
+    // ---- System pickers (no storage permission needed) ----
+    val createPdfLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/pdf")
+    ) { uri ->
+        val file = pendingPdfForSaveAs
+        pendingPdfForSaveAs = null
+        if (uri != null && file != null) {
+            runBusy(t("Saving PDF…", "جاري حفظ PDF…")) {
+                val ok = withContext(Dispatchers.IO) { PdfEngine.copyPdfToUri(context, file, uri) }
+                toast(if (ok) t("PDF saved", "تم حفظ ملف PDF") else t("Could not save the PDF", "تعذر حفظ ملف PDF"))
+            }
+        }
+    }
+    val pickFolderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { treeUri ->
+        val paths = pendingImagesForFolder
+        pendingImagesForFolder = emptyList()
+        if (treeUri != null && paths.isNotEmpty()) {
+            runBusy(t("Saving images…", "جاري حفظ الصور…")) {
+                val saved = PdfEngine.saveImagesToTree(context, treeUri, paths, docTitle)
+                toast(t("$saved image(s) saved", "تم حفظ $saved صورة"))
+            }
+        }
+    }
+
+    // ---- Save & Share actions ----
+    fun savePdf(targets: List<PageEntity>) {
+        if (targets.isEmpty()) return
+        runBusy(t("Creating PDF…", "جاري إنشاء PDF…")) {
+            val pdf = buildPdf(targets)
+            val uri = PdfEngine.savePdfToDownloads(context, pdf, docTitle)
+            if (uri != null) {
+                toast(t("Saved to Downloads/MS Scanner", "تم الحفظ في التنزيلات/MS Scanner"))
+            } else {
+                pendingPdfForSaveAs = pdf
+                createPdfLauncher.launch("${PdfEngine.safeFileName(docTitle)}.pdf")
+            }
+        }
+    }
+
+    fun savePdfAs(targets: List<PageEntity>) {
+        if (targets.isEmpty()) return
+        runBusy(t("Creating PDF…", "جاري إنشاء PDF…")) {
+            pendingPdfForSaveAs = buildPdf(targets)
+            createPdfLauncher.launch("${PdfEngine.safeFileName(docTitle)}.pdf")
+        }
+    }
+
+    fun saveImages(targets: List<PageEntity>) {
+        if (targets.isEmpty()) return
+        val paths = targets.map { imagePathOf(it) }
+        runBusy(t("Saving images…", "جاري حفظ الصور…")) {
+            val saved = PdfEngine.saveImagesToGallery(context, paths, docTitle)
+            if (saved < 0) {
+                pendingImagesForFolder = paths
+                pickFolderLauncher.launch(null)
+            } else {
+                toast(t("$saved image(s) saved to Pictures/MS Scanner", "تم حفظ $saved صورة في الصور/MS Scanner"))
+            }
+        }
+    }
+
+    fun sharePdf(targets: List<PageEntity>) {
+        if (targets.isEmpty()) return
+        runBusy(t("Creating PDF…", "جاري إنشاء PDF…")) {
+            val pdf = buildPdf(targets)
+            if (!PdfEngine.sharePdf(context, pdf, t("Share PDF", "مشاركة PDF"))) toast(t("Nothing to share with", "لا يوجد تطبيق للمشاركة"))
+        }
+    }
+
+    fun shareImages(targets: List<PageEntity>) {
+        if (targets.isEmpty()) return
+        runBusy(t("Preparing images…", "جاري تجهيز الصور…")) {
+            val files = PdfEngine.prepareImagesForShare(context, targets.map { imagePathOf(it) }, docTitle)
+            if (!PdfEngine.shareFiles(context, files, "image/jpeg", t("Share images", "مشاركة الصور"))) {
+                toast(t("Nothing to share", "لا يوجد ما يمكن مشاركته"))
+            }
+        }
+    }
+
+    fun print(targets: List<PageEntity>) {
+        if (targets.isEmpty()) return
+        PdfEngine.printScannedDocuments(context, docTitle, targets.map { imagePathOf(it) })
+    }
+
+    fun deletePages(ids: List<Long>) {
+        if (ids.isEmpty()) return
+        exitSelection()
+        if (ids.size >= pages.size) {
+            // Deleting every page removes the document (to Trash) instead of leaving an empty document.
+            viewModel.moveDocumentToTrash(docId) { onNavigateBack() }
+        } else {
+            ids.forEach { viewModel.deletePageById(it) }
+        }
+    }
+
+    // ---- Pickers for adding / replacing pages (same pipeline as the camera) ----
     val addPhotoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
     ) { uris ->
@@ -151,41 +285,46 @@ fun DocumentViewerScreen(
             onNavigateToEditSession("IMPORT", docId)
         }
     }
-
-    // Photo picker for replacing the active page
     val replacePhotoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
-        if (uri != null) {
-            val pageToReplace = targetPageForReplace ?: pages.getOrNull(pagerState.currentPage) ?: return@rememberLauncherForActivityResult
-            coroutineScope.launch {
-                val stream = context.contentResolver.openInputStream(uri)
-                val bmp = BitmapFactory.decodeStream(stream)
-                stream?.close()
-                if (bmp != null) {
-                    val raw = ImageProcessor.saveBitmapToFile(context, bmp, "rep_raw_")
-                    val proc = ImageProcessor.applyFilter(bmp, FilterType.AUTO)
-                    val procPath = ImageProcessor.saveBitmapToFile(context, proc, "rep_proc_")
-                    if (bmp != proc) bmp.recycle()
-                    proc.recycle()
-                    viewModel.replacePage(pageToReplace.id, raw, procPath)
-                    targetPageForReplace = null
-                    Toast.makeText(context, if (isArabic) "تم استبدال الصفحة بنجاح" else "Page replaced", Toast.LENGTH_SHORT).show()
+        val pageToReplace = targetPageForReplace ?: pages.getOrNull(pagerState.currentPage)
+        targetPageForReplace = null
+        if (uri != null && pageToReplace != null) {
+            runBusy(t("Processing image…", "جاري معالجة الصورة…")) {
+                // EXIF, bounded decode, edge detection, perspective and filter — never on the main thread.
+                val page = DocumentPipeline.processUri(context, uri, prefix = "replace")
+                if (page != null) {
+                    viewModel.replacePage(pageToReplace.id, page.rawPath, page.processedPath)
+                    toast(
+                        if (page.detectionStatus == com.example.engine.cv.DetectionStatus.NOT_FOUND)
+                            t("Page replaced — edges not detected, use Edit to crop", "تم الاستبدال — لم تُكتشف الحواف، استخدم تعديل للقص")
+                        else t("Page replaced", "تم استبدال الصفحة")
+                    )
+                } else {
+                    toast(t("Could not read the image", "تعذر قراءة الصورة"))
                 }
             }
         }
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
-
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
             when (event) {
-                is com.example.ui.util.UiEvent.ShowToast -> Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                is com.example.ui.util.UiEvent.ShowToast -> toast(event.message)
                 is com.example.ui.util.UiEvent.ShowSnackbar -> snackbarHostState.showSnackbar(event.message)
                 is com.example.ui.util.UiEvent.Error -> Toast.makeText(context, event.message, Toast.LENGTH_LONG).show()
                 else -> {}
             }
+        }
+    }
+
+    BackHandler {
+        when {
+            selectionMode -> exitSelection()
+            isGridView -> isGridView = false
+            else -> onNavigateBack()
         }
     }
 
@@ -197,35 +336,23 @@ fun DocumentViewerScreen(
                 title = {
                     if (selectionMode) {
                         Text(
-                            text = if (isArabic) "${selectedPageIds.size} محدد" else "${selectedPageIds.size} Selected",
+                            text = t("${selectedPageIds.size} Selected", "${selectedPageIds.size} محدد"),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
                     } else {
-                        Column(
-                            modifier = Modifier.clickable {
-                                renameInput = doc?.title ?: ""
-                                showRenameDialog = true
-                            }
-                        ) {
+                        Column(modifier = Modifier.clickable {
+                            renameInput = doc?.title ?: ""
+                            showRenameDialog = true
+                        }) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    text = doc?.title ?: "Document",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1
-                                )
+                                Text(docTitle, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, maxLines = 1)
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Icon(
-                                    Icons.Default.Edit,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(14.dp),
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
-                                )
+                                Icon(Icons.Default.Edit, null, Modifier.size(14.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f))
                             }
                             if (pages.isNotEmpty()) {
                                 Text(
-                                    text = if (isArabic) "صفحة ${pagerState.currentPage + 1} من ${pages.size}" else "Page ${pagerState.currentPage + 1} of ${pages.size}",
+                                    text = t("Page ${pagerState.currentPage + 1} of ${pages.size}", "صفحة ${pagerState.currentPage + 1} من ${pages.size}"),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -235,7 +362,7 @@ fun DocumentViewerScreen(
                 },
                 navigationIcon = {
                     if (selectionMode) {
-                        IconButton(onClick = { selectionMode = false; selectedPageIds = emptySet() }) {
+                        IconButton(onClick = { exitSelection() }) {
                             Icon(Icons.Default.Close, contentDescription = stringResource(R.string.txt_cancel_selection))
                         }
                     } else {
@@ -246,93 +373,36 @@ fun DocumentViewerScreen(
                 },
                 actions = {
                     if (selectionMode) {
-                    
-    // Toggle Select All / Deselect All
                         IconButton(onClick = {
-                            selectedPageIds = if (selectedPageIds.size == pages.size) {
-                                emptySet()
-                            } else {
-                                pages.map { it.id }.toSet()
-                            }
+                            selectedPageIds = if (selectedPageIds.size == pages.size) emptySet() else pages.map { it.id }.toSet()
                             if (selectedPageIds.isEmpty()) selectionMode = false
                         }) {
                             Icon(
-                                imageVector = Icons.Default.DoneAll,
-                                contentDescription = if (isArabic) "تحديد الكل" else "Select All",
+                                Icons.Default.DoneAll,
+                                contentDescription = t("Select All", "تحديد الكل"),
                                 tint = if (selectedPageIds.size == pages.size) Emerald400 else MaterialTheme.colorScheme.onSurface
                             )
                         }
-
-                        // Merge Selected into Single Page
                         if (selectedPageIds.isNotEmpty()) {
-                            IconButton(onClick = {
-                                initialMergePageIds = selectedPageIds.toList()
-                                showMergeDialog = true
-                            }) {
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Filled.MergeType,
-                                    contentDescription = if (isArabic) "دمج الصور المحددة في صفحة واحدة" else "Merge Selected into Single Page",
-                                    tint = Emerald400
-                                )
+                            IconButton(onClick = { showShareSheet = true }) {
+                                Icon(Icons.Default.Share, contentDescription = t("Save & Share Selected", "حفظ ومشاركة المحدد"), tint = MaterialTheme.colorScheme.primary)
                             }
-                        }
-
-                        // Share Selected
-                        if (selectedPageIds.isNotEmpty()) {
-                            IconButton(onClick = {
-                                val selectedFiles = pages.filter { selectedPageIds.contains(it.id) }.map { File(it.processedImagePath) }
-                                if (selectedFiles.size == 1) {
-                                    shareFile(context, selectedFiles.first())
-                                } else if (selectedFiles.isNotEmpty()) {
-                                    shareMultipleFiles(context, selectedFiles, coroutineScope) { isSharingMultiple = it }
-                                }
-                            }) {
-                                Icon(
-                                    Icons.Default.Share,
-                                    contentDescription = if (isArabic) "مشاركة الصور المحددة" else "Share Selected",
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                        }
-
-                        // Delete Selected
-                        if (selectedPageIds.isNotEmpty()) {
-                            IconButton(onClick = {
-                                showDeleteSelectedConfirmDialog = true
-                            }) {
-                                Icon(
-                                    Icons.Default.Delete,
-                                    contentDescription = if (isArabic) "حذف الصور المحددة" else "Delete Selected",
-                                    tint = MaterialTheme.colorScheme.error
-                                )
+                            IconButton(onClick = { showDeleteSelectedConfirmDialog = true }) {
+                                Icon(Icons.Default.Delete, contentDescription = t("Delete Selected", "حذف المحدد"), tint = MaterialTheme.colorScheme.error)
                             }
                         }
                     } else {
-                        // PDF Export Button
+                        // Primary action: one entry point for every Save / Share / Export option.
                         IconButton(
-                            onClick = { showPdfExportDialog = true },
-                            modifier = Modifier.testTag("export_pdf_top_btn")
+                            onClick = { showShareSheet = true },
+                            enabled = pages.isNotEmpty(),
+                            modifier = Modifier.testTag("save_share_btn")
                         ) {
-                            Icon(
-                                Icons.Default.PictureAsPdf,
-                                contentDescription = stringResource(R.string.desc_export_pdf),
-                                tint = MaterialTheme.colorScheme.primary
-                            )
+                            Icon(Icons.Default.Share, contentDescription = t("Save & Share", "حفظ ومشاركة"), tint = MaterialTheme.colorScheme.primary)
                         }
-
-                        // Share Button
-                        IconButton(onClick = {
-                            val activePage = pages.getOrNull(pagerState.currentPage) ?: return@IconButton
-                            shareFile(context, File(activePage.processedImagePath))
-                        }) {
-                            Icon(Icons.Default.Share, contentDescription = stringResource(R.string.desc_share_page))
+                        IconButton(onClick = { onNavigateToEditSession("EXISTING", docId) }, enabled = pages.isNotEmpty()) {
+                            Icon(Icons.Default.AutoFixHigh, contentDescription = t("Edit all pages", "تعديل كل الصفحات"), tint = Emerald400)
                         }
-
-                        // Edit Session Button
-                        IconButton(onClick = { onNavigateToEditSession("EXISTING", docId) }) {
-                            Icon(Icons.Default.AutoFixHigh, contentDescription = "Edit All Pages", tint = Emerald400)
-                        }
-
                         Box {
                             IconButton(onClick = { showOverflowMenu = true }) {
                                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.txt_options))
@@ -343,141 +413,82 @@ fun DocumentViewerScreen(
                                 shape = RoundedCornerShape(16.dp),
                                 containerColor = MaterialTheme.colorScheme.surface
                             ) {
-                                // Merge Pages into Single Page
-                                if (pages.size > 1) {
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                Text(if (isArabic) "دمج الصور في صفحة واحدة" else "Merge into Single Page", fontWeight = FontWeight.Bold)
-                                            }
-                                        },
-                                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.MergeType, null, tint = Emerald400) },
-                                        onClick = {
-                                            showOverflowMenu = false
-                                            val active = pages.getOrNull(pagerState.currentPage)
-                                            initialMergePageIds = if (active != null) listOf(active.id) else emptyList()
-                                            showMergeDialog = true
-                                        }
-                                    )
-                                    HorizontalDivider()
-                                }
-
-                                // Multi-select mode
                                 DropdownMenuItem(
-                                    text = { Text(if (isArabic) "تحديد متعدد" else "Select Multiple") },
+                                    text = { Text(t("Select pages", "تحديد صفحات")) },
                                     leadingIcon = { Icon(Icons.Default.Checklist, null) },
                                     onClick = {
                                         showOverflowMenu = false
                                         selectionMode = true
-                                        val active = pages.getOrNull(pagerState.currentPage)
-                                        if (active != null) selectedPageIds = setOf(active.id)
+                                        isGridView = true
+                                        pages.getOrNull(pagerState.currentPage)?.let { selectedPageIds = setOf(it.id) }
                                     }
                                 )
-
-                                // Print / Save as PDF (Android Print Framework)
-                                DropdownMenuItem(
-                                    text = { Text(if (isArabic) "طباعة / حفظ كـ PDF (نظام أندرويد)" else "Print / Save as PDF (Android)") },
-                                    leadingIcon = { Icon(Icons.Default.Print, null, tint = MaterialTheme.colorScheme.primary) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        val docTitle = doc?.title ?: "Document"
-                                        PdfEngine.printScannedDocuments(context, docTitle, pages.map { it.processedImagePath })
-                                    }
-                                )
-
-                                // Reorder Pages
                                 if (pages.size > 1) {
                                     DropdownMenuItem(
-                                        text = { Text(if (isArabic) "إعادة ترتيب الصفحات" else "Reorder Pages") },
+                                        text = { Text(t("Reorder pages", "إعادة ترتيب الصفحات")) },
                                         leadingIcon = { Icon(Icons.Default.Reorder, null) },
+                                        onClick = { showOverflowMenu = false; showReorderDialog = true }
+                                    )
+                                    DropdownMenuItem(
+                                        text = { Text(t("Merge into single page", "دمج الصور في صفحة واحدة")) },
+                                        leadingIcon = { Icon(Icons.AutoMirrored.Filled.MergeType, null, tint = Emerald400) },
                                         onClick = {
                                             showOverflowMenu = false
-                                            showReorderDialog = true
+                                            initialMergePageIds = listOfNotNull(pages.getOrNull(pagerState.currentPage)?.id)
+                                            showMergeDialog = true
                                         }
                                     )
                                 }
-
-                                // Export As... (New requirement)
+                                HorizontalDivider()
                                 DropdownMenuItem(
-                                    text = { Text(if (isArabic) "تصدير كـ..." else "Export As...") },
-                                    leadingIcon = { Icon(Icons.Default.Output, null) },
+                                    text = { Text(t("Replace page (Camera)", "استبدال الصفحة (كاميرا)")) },
+                                    leadingIcon = { Icon(Icons.Default.CameraAlt, null) },
                                     onClick = {
                                         showOverflowMenu = false
-                                        showPdfExportDialog = true // Reuse the simplified export dialog
+                                        pages.getOrNull(pagerState.currentPage)?.let { onNavigateToScan(docId, it.id) }
                                     }
                                 )
-
-                            // Replace Current Page
-                            DropdownMenuItem(
-                                text = { Text("Replace Page (Camera)") },
-                                leadingIcon = { Icon(Icons.Default.CameraAlt, null) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    val activePage = pages.getOrNull(pagerState.currentPage)
-                                    if (activePage != null) {
-                                        onNavigateToScan(docId, activePage.id)
-                                    }
-                                }
-                            )
-
-                            DropdownMenuItem(
-                                text = { Text("Replace Page (Gallery)") },
-                                leadingIcon = { Icon(Icons.Default.PhotoLibrary, null) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    replacePhotoPickerLauncher.launch(
-                                        PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                                    )
-                                }
-                            )
-
-                            // Print
-                            DropdownMenuItem(
-                                text = { Text(stringResource(R.string.txt_print)) },
-                                leadingIcon = { Icon(Icons.Default.Print, null) },
-                                onClick = {
-                                    showOverflowMenu = false
-                                    viewModel.printActivePage(context)
-                                }
-                            )
-
-                            if (pages.size > 1) {
                                 DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.desc_share_all_jpegs)) },
-                                    leadingIcon = { Icon(Icons.Default.Collections, null) },
+                                    text = { Text(t("Replace page (Gallery)", "استبدال الصفحة (المعرض)")) },
+                                    leadingIcon = { Icon(Icons.Default.PhotoLibrary, null) },
                                     onClick = {
                                         showOverflowMenu = false
-                                        val allFiles = pages.map { File(it.processedImagePath) }
-                                        shareMultipleFiles(context, allFiles, coroutineScope) { isSharingMultiple = it }
+                                        targetPageForReplace = pages.getOrNull(pagerState.currentPage)
+                                        replacePhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                                     }
+                                )
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text(t("PDF settings & export…", "إعدادات وتصدير PDF…")) },
+                                    leadingIcon = { Icon(Icons.Default.PictureAsPdf, null, tint = MaterialTheme.colorScheme.primary) },
+                                    onClick = { showOverflowMenu = false; showPdfExportDialog = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(stringResource(R.string.txt_print)) },
+                                    leadingIcon = { Icon(Icons.Default.Print, null) },
+                                    onClick = { showOverflowMenu = false; print(pages) }
                                 )
                             }
                         }
                     }
-                }
-            },
-            colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
-        )
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+            )
         },
         floatingActionButton = {
-            if (!selectionMode) {
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // Import Button
+            if (!selectionMode && busyMessage == null) {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     ScanActionButton(
                         onClick = { addPhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         icon = Icons.Default.AddPhotoAlternate,
-                        contentDescription = "Import Pages",
-                        modifier = Modifier.padding(bottom = if (isGridView) 16.dp else 8.dp)
+                        contentDescription = t("Import pages", "استيراد صفحات"),
+                        modifier = Modifier.padding(bottom = 8.dp)
                     )
-                    // Camera Button
                     ScanActionButton(
                         onClick = { onNavigateToScan(docId, 0L) },
                         icon = Icons.Default.AddAPhoto,
                         contentDescription = stringResource(R.string.desc_add_page),
-                        modifier = Modifier.padding(bottom = if (isGridView) 16.dp else 8.dp)
+                        modifier = Modifier.padding(bottom = 8.dp)
                     )
                 }
             }
@@ -491,81 +502,51 @@ fun DocumentViewerScreen(
                         initialMergePageIds = selectedPageIds.toList()
                         showMergeDialog = true
                     },
-                    onShare = {
-                        val selectedFiles = pages.filter { selectedPageIds.contains(it.id) }.map { File(it.processedImagePath) }
-                        if (selectedFiles.size == 1) {
-                            shareFile(context, selectedFiles.first())
-                        } else if (selectedFiles.isNotEmpty()) {
-                            shareMultipleFiles(context, selectedFiles, coroutineScope) { isSharingMultiple = it }
-                        }
-                    },
+                    onShare = { showShareSheet = true },
                     onExportPdf = { showPdfExportDialog = true },
-                    onPrint = {
-                        val docTitle = doc?.title ?: "Document"
-                        val paths = selectedPageIds.mapNotNull { id -> pages.find { it.id == id }?.processedImagePath }
-                        PdfEngine.printScannedDocuments(context, docTitle, paths)
-                    },
+                    onPrint = { print(targetPages()) },
                     onDuplicate = {
                         selectedPageIds.forEach { viewModel.duplicatePage(it) }
-                        selectionMode = false
-                        selectedPageIds = emptySet()
+                        exitSelection()
                     },
                     onDelete = { showDeleteSelectedConfirmDialog = true }
                 )
-            } else if (!isGridView) {
-                // Fixed 5-item bottom bar, Obsidian Ink style
+            } else if (!isGridView && pages.size > 1) {
                 Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .navigationBarsPadding(),
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    tonalElevation = 0.dp,
+                    modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
+                    color = MaterialTheme.colorScheme.surfaceContainer
                 ) {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        // Horizontal Miniature Filmstrip (if multi-page)
-                        if (pages.size > 1) {
-                            LazyRow(
+                    LazyRow(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        itemsIndexed(pages, key = { _, p -> p.id }) { index, p ->
+                            val isCurrentPage = index == pagerState.currentPage
+                            Box(
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    .size(46.dp, 62.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                                    .border(
+                                        width = if (isCurrentPage) 2.dp else 0.5.dp,
+                                        color = if (isCurrentPage) GoldBase else MaterialTheme.colorScheme.outline,
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { coroutineScope.launch { pagerState.animateScrollToPage(index) } }
                             ) {
-                                itemsIndexed(pages) { index, p ->
-                                    val isCurrentPage = index == pagerState.currentPage
-                                    Box(
-                                        modifier = Modifier
-                                            .size(46.dp, 62.dp)
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                                            .border(
-                                                width = if (isCurrentPage) 2.dp else 0.5.dp,
-                                                color = if (isCurrentPage) GoldBase else MaterialTheme.colorScheme.outline,
-                                                shape = RoundedCornerShape(8.dp)
-                                            )
-                                            .clickable {
-                                                coroutineScope.launch { pagerState.animateScrollToPage(index) }
-                                            }
-                                    ) {
-                                        AsyncImage(
-                                            model = File(p.processedImagePath),
-                                            contentDescription = null,
-                                            contentScale = ContentScale.Crop,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                        // Page Number
-                                        Box(
-                                            modifier = Modifier
-                                                .align(Alignment.BottomStart)
-                                                .background(Color.Black.copy(alpha = 0.6f))
-                                                .padding(horizontal = 3.dp, vertical = 1.dp)
-                                        ) {
-                                            Text(
-                                                text = "${index + 1}",
-                                                color = Color.White,
-                                                style = MaterialTheme.typography.labelSmall
-                                            )
-                                        }
-                                    }
+                                AsyncImage(
+                                    model = File(p.processedImagePath),
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .align(Alignment.BottomStart)
+                                        .background(Color.Black.copy(alpha = 0.6f))
+                                        .padding(horizontal = 3.dp, vertical = 1.dp)
+                                ) {
+                                    Text("${index + 1}", color = Color.White, style = MaterialTheme.typography.labelSmall)
                                 }
                             }
                         }
@@ -574,130 +555,79 @@ fun DocumentViewerScreen(
             }
         }
     ) { innerPadding ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(innerPadding)
-                .background(StudioCanvasBg)
-        ) {
-            // Quality Report Banner with Auto-Fix
-            val quality = uiState.currentQualityReport
-            if (quality != null) {
-                Surface(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    shape = RoundedCornerShape(12.dp),
-                    color = if (quality.isBlurry || quality.isDark) Color(0xFF451A03) else Color(0xFF064E3B),
-                    border = BorderStroke(
-                        0.5.dp,
-                        if (quality.isBlurry || quality.isDark) WarningAmber.copy(alpha = 0.5f) else Emerald400.copy(alpha = 0.5f)
-                    )
-                ) {
+        Box(modifier = Modifier.fillMaxSize().padding(innerPadding).background(StudioCanvasBg)) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                analysisProgress?.let { (done, total) ->
                     Row(
-                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.5.dp, color = Emerald400)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (total > 0) t("Extracting text in background… $done/$total", "جاري استخراج النص في الخلفية… $done/$total")
+                            else t("Extracting text in background…", "جاري استخراج النص في الخلفية…"),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                // Quality banner with one-tap fix
+                val quality = uiState.currentQualityReport
+                if (quality != null && !isGridView && (quality.isBlurry || quality.isDark || quality.isLowContrast)) {
+                    Surface(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                        shape = RoundedCornerShape(12.dp),
+                        color = Color(0xFF451A03),
+                        border = BorderStroke(0.5.dp, WarningAmber.copy(alpha = 0.5f))
                     ) {
                         Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(
-                                imageVector = if (quality.isBlurry || quality.isDark) Icons.Default.Warning else Icons.Default.CheckCircle,
-                                contentDescription = null,
-                                tint = if (quality.isBlurry || quality.isDark) WarningAmber else Emerald400,
-                                modifier = Modifier.size(18.dp)
-                            )
+                            Icon(Icons.Default.Warning, null, tint = WarningAmber, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.width(8.dp))
                             Text(
-                                text = quality.statusTextEn,
+                                text = if (isArabic) quality.statusTextAr else quality.statusTextEn,
                                 color = Color.White,
                                 style = MaterialTheme.typography.bodySmall,
-                                fontWeight = FontWeight.Medium
+                                modifier = Modifier.weight(1f)
                             )
-                        }
-
-                        if (quality.isBlurry || quality.isDark || quality.isLowContrast) {
                             TextButton(
                                 onClick = { viewModel.applyFilterToActivePage(FilterType.AUTO) },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                             ) {
-                                Icon(Icons.Default.AutoFixHigh, contentDescription = null, tint = Emerald400, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("Auto Fix", color = Emerald400, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text(t("Auto Fix", "إصلاح تلقائي"), color = Emerald400, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
                 }
-            }
 
-            // Main Document Page View (Grid or Pager)
-            if (!isGridView && pages.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    horizontalArrangement = Arrangement.SpaceAround
-                ) {
-                    val activePage = pages.getOrNull(pagerState.currentPage)
-                    
-                    // Filters
-                    IconButton(onClick = { 
-                        if (activePage != null) {
-                            showFilterSheet = true 
-                        }
-                    }) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.ColorLens, contentDescription = null, tint = GoldBase)
-                            Text(stringResource(R.string.txt_filter), style = MaterialTheme.typography.labelSmall, color = GoldBase)
-                        }
-                    }
-
-                    // Crop / Document Editor
-                    IconButton(onClick = {
-                        val currentPage = pages.getOrNull(pagerState.currentPage)
-                        if (currentPage != null) {
-                            onNavigateToCrop(docId, currentPage.id)
-                        }
-                    }) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.Crop, contentDescription = "Edit & Crop", tint = GoldBase)
-                            Text("Edit", style = MaterialTheme.typography.labelSmall, color = GoldBase)
-                        }
-                    }
-
-                    // OCR & Document Text
-                    IconButton(onClick = {
-                        val currentPage = pages.getOrNull(pagerState.currentPage)
-                        if (currentPage != null) {
-                            onNavigateToOcr(docId, currentPage.id)
-                        }
-                    }) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.TextFields, contentDescription = stringResource(R.string.desc_ocr), tint = GoldBase)
-                            Text(stringResource(R.string.txt_ocr), style = MaterialTheme.typography.labelSmall, color = GoldBase)
-                        }
-                    }
-
-                    // Annotate & Sign
-                    IconButton(onClick = {
-                        val currentPage = pages.getOrNull(pagerState.currentPage)
-                        if (currentPage != null) {
-                            onNavigateToAnnotate(docId, currentPage.id)
-                        }
-                    }) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(Icons.Default.Draw, contentDescription = stringResource(R.string.desc_sign___annotate), tint = GoldBase)
-                            Text(stringResource(R.string.txt_sign), style = MaterialTheme.typography.labelSmall, color = GoldBase)
+                // Per-page tools
+                if (!isGridView && pages.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceAround
+                    ) {
+                        val current = pages.getOrNull(pagerState.currentPage)
+                        PageTool(Icons.Default.ColorLens, stringResource(R.string.txt_filter)) { if (current != null) showFilterSheet = true }
+                        PageTool(Icons.Default.Crop, t("Edit", "تعديل")) { current?.let { onNavigateToCrop(docId, it.id) } }
+                        PageTool(Icons.Default.TextFields, stringResource(R.string.txt_ocr)) { current?.let { onNavigateToOcr(docId, it.id) } }
+                        PageTool(Icons.Default.Draw, stringResource(R.string.txt_sign)) { current?.let { onNavigateToAnnotate(docId, it.id) } }
+                        PageTool(Icons.Default.MoreHoriz, t("More", "المزيد")) {
+                            current?.let {
+                                pageForActionsIndex = pagerState.currentPage
+                                pageForActions = it
+                            }
                         }
                     }
                 }
-            }
 
-            // Main Document Page View (Grid or Pager)
-            if (pages.isNotEmpty()) {
-                if (isGridView) {
+                if (pages.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                    }
+                } else if (isGridView) {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(2),
                         contentPadding = PaddingValues(16.dp),
@@ -705,7 +635,7 @@ fun DocumentViewerScreen(
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                         modifier = Modifier.weight(1f).fillMaxWidth()
                     ) {
-                        gridItemsIndexed(pages) { index, page ->
+                        gridItemsIndexed(pages, key = { _, p -> p.id }) { index, page ->
                             val isPageSelected = selectedPageIds.contains(page.id)
                             Card(
                                 modifier = Modifier
@@ -716,20 +646,15 @@ fun DocumentViewerScreen(
                                             onTap = {
                                                 if (selectionMode) {
                                                     selectedPageIds = if (isPageSelected) selectedPageIds - page.id else selectedPageIds + page.id
-                                                    if (selectedPageIds.isEmpty()) {
-                                                        selectionMode = false
-                                                    }
+                                                    if (selectedPageIds.isEmpty()) selectionMode = false
                                                 } else {
-                                                    onNavigateToCrop(docId, page.id)
+                                                    isGridView = false
+                                                    coroutineScope.launch { pagerState.scrollToPage(index) }
                                                 }
                                             },
                                             onLongPress = {
-                                                // Long press selects the image and activates merge, share, and other options!
-                                                        selectionMode = true
-                                                selectedPageIds = if (isPageSelected) selectedPageIds - page.id else selectedPageIds + page.id
-                                                if (selectedPageIds.isEmpty()) {
-                                                    selectionMode = false
-                                                }
+                                                selectionMode = true
+                                                selectedPageIds = selectedPageIds + page.id
                                             }
                                         )
                                     },
@@ -738,8 +663,7 @@ fun DocumentViewerScreen(
                                 border = BorderStroke(
                                     width = if (isPageSelected) 3.dp else 1.dp,
                                     color = if (isPageSelected) Emerald400 else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
-                                ),
-                                elevation = CardDefaults.cardElevation(defaultElevation = if (isPageSelected) 6.dp else 2.dp)
+                                )
                             ) {
                                 Box(modifier = Modifier.fillMaxSize()) {
                                     AsyncImage(
@@ -759,15 +683,11 @@ fun DocumentViewerScreen(
                                                 .border(1.5.dp, Color.White, CircleShape),
                                             contentAlignment = Alignment.Center
                                         ) {
-                                            if (isPageSelected) {
-                                                Icon(Icons.Default.Check, contentDescription = null, tint = Color.Black, modifier = Modifier.size(16.dp))
-                                            }
+                                            if (isPageSelected) Icon(Icons.Default.Check, null, tint = Color.Black, modifier = Modifier.size(16.dp))
                                         }
                                     }
                                     Surface(
-                                        modifier = Modifier
-                                            .align(Alignment.BottomEnd)
-                                            .padding(6.dp),
+                                        modifier = Modifier.align(Alignment.BottomEnd).padding(6.dp),
                                         shape = RoundedCornerShape(6.dp),
                                         color = Color.Black.copy(alpha = 0.75f)
                                     ) {
@@ -786,119 +706,108 @@ fun DocumentViewerScreen(
                 } else {
                     HorizontalPager(
                         state = pagerState,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .weight(1f)
-                            .padding(14.dp)
+                        key = { pages.getOrNull(it)?.id ?: it },
+                        modifier = Modifier.fillMaxWidth().weight(1f).padding(14.dp)
                     ) { index ->
-                        val pageItem = pages[index]
+                        val pageItem = pages.getOrNull(index) ?: return@HorizontalPager
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .clip(RoundedCornerShape(16.dp))
                                 .background(Color.Black.copy(alpha = 0.45f))
                                 .border(0.5.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(16.dp))
-                            .pointerInput(pageItem.id) {
-                                detectTapGestures(
-                                    onLongPress = {
-                                        selectionMode = true
-                                        selectedPageIds = setOf(pageItem.id)
-                                        isGridView = true
-                                    }
-                                )
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        AsyncImage(
-                            model = File(pageItem.processedImagePath),
-                            contentDescription = stringResource(R.string.page_n, index + 1),
-                            contentScale = ContentScale.Fit,
-                            modifier = Modifier.fillMaxSize()
-                        )
+                                .pointerInput(pageItem.id) {
+                                    detectTapGestures(
+                                        onLongPress = {
+                                            selectionMode = true
+                                            selectedPageIds = setOf(pageItem.id)
+                                            isGridView = true
+                                        }
+                                    )
+                                },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AsyncImage(
+                                model = File(pageItem.processedImagePath),
+                                contentDescription = stringResource(R.string.page_n, index + 1),
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
                     }
                 }
             }
-            } else {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+
+            // Export progress overlay (blocks double taps; everything runs off the main thread).
+            busyMessage?.let { msg ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.5f))
+                        .pointerInput(Unit) { detectTapGestures { } },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Surface(shape = RoundedCornerShape(16.dp), color = MaterialTheme.colorScheme.surface) {
+                        Row(Modifier.padding(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(22.dp), color = Emerald400, strokeWidth = 2.dp)
+                            Spacer(Modifier.width(14.dp))
+                            Text(msg, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
                 }
             }
         }
     }
 
-    // Delete Confirmation Dialog
-    if (showDeleteConfirmDialog) {
-        val currentPageNumber = pagerState.currentPage + 1
-        AlertDialog(
-            onDismissRequest = { showDeleteConfirmDialog = false },
-            shape = RoundedCornerShape(22.dp),
-            title = { Text(if (isArabic) "حذف الصفحة" else "Delete Page", fontWeight = FontWeight.Bold) },
-            text = { Text(if (isArabic) "هل أنت متأكد من حذف الصفحة $currentPageNumber من ${pages.size}؟" else "Are you sure you want to delete Page $currentPageNumber of ${pages.size}?") },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        showDeleteConfirmDialog = false
-                        viewModel.deleteActivePage()
-                        if (pages.size <= 1) {
-                            onNavigateBack()
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text(if (isArabic) "حذف" else "Delete", fontWeight = FontWeight.Bold)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDeleteConfirmDialog = false }) {
-                    Text(stringResource(R.string.txt_cancel))
-                }
-            }
+    // ================================================================================== sheets & dialogs
+
+    if (showShareSheet) {
+        val targets = targetPages()
+        SaveShareSheet(
+            isArabic = isArabic,
+            pageCount = targets.size,
+            isSelection = selectionMode && selectedPageIds.isNotEmpty(),
+            onDismiss = { showShareSheet = false },
+            onSavePdf = { showShareSheet = false; savePdf(targets) },
+            onSavePdfAs = { showShareSheet = false; savePdfAs(targets) },
+            onSaveImages = { showShareSheet = false; saveImages(targets) },
+            onSharePdf = { showShareSheet = false; sharePdf(targets) },
+            onShareImages = { showShareSheet = false; shareImages(targets) },
+            onPrint = { showShareSheet = false; print(targets) },
+            onPdfSettings = { showShareSheet = false; showPdfExportDialog = true }
         )
     }
 
-    // Delete Selected Confirmation Dialog
     if (showDeleteSelectedConfirmDialog) {
         val count = selectedPageIds.size
+        val deletesAll = count >= pages.size
         AlertDialog(
             onDismissRequest = { showDeleteSelectedConfirmDialog = false },
             shape = RoundedCornerShape(22.dp),
-            title = { Text(if (isArabic) "حذف الصور المحددة" else "Delete Selected Images", fontWeight = FontWeight.Bold) },
+            title = { Text(t("Delete $count page(s)?", "حذف $count صفحة؟"), fontWeight = FontWeight.Bold) },
             text = {
                 Text(
-                    if (isArabic)
-                        "هل أنت متأكد من حذف $count من الصور المحددة؟ لا يمكن التراجع عن هذا الإجراء."
-                    else
-                        "Are you sure you want to delete $count selected image(s)? This action cannot be undone."
+                    if (deletesAll) t("All pages are selected: the document will be moved to Trash.", "كل الصفحات محددة: سيتم نقل المستند إلى سلة المحذوفات.")
+                    else t("This action cannot be undone.", "لا يمكن التراجع عن هذا الإجراء.")
                 )
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        val idsToDelete = selectedPageIds.toList()
+                        val ids = selectedPageIds.toList()
                         showDeleteSelectedConfirmDialog = false
-                        selectionMode = false
-                        selectedPageIds = emptySet()
-                        idsToDelete.forEach { viewModel.deletePageById(it) }
-                        if (pages.size <= idsToDelete.size) {
-                            onNavigateBack()
-                        }
+                        deletePages(ids)
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
                     shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text(if (isArabic) "حذف" else "Delete", fontWeight = FontWeight.Bold)
-                }
+                ) { Text(t("Delete", "حذف"), fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteSelectedConfirmDialog = false }) {
-                    Text(stringResource(R.string.txt_cancel))
-                }
+                TextButton(onClick = { showDeleteSelectedConfirmDialog = false }) { Text(stringResource(R.string.txt_cancel)) }
             }
         )
     }
 
-    // Reorder Pages Dialog
     if (showReorderDialog) {
         ReorderPagesScreen(
             pages = pages,
@@ -910,7 +819,6 @@ fun DocumentViewerScreen(
         )
     }
 
-    // Rename Document Dialog
     if (showRenameDialog) {
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
@@ -922,344 +830,96 @@ fun DocumentViewerScreen(
                     onValueChange = { renameInput = it },
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = MaterialTheme.colorScheme.primary,
-                        unfocusedBorderColor = MaterialTheme.colorScheme.outlineVariant
-                    ),
                     modifier = Modifier.fillMaxWidth()
                 )
             },
             confirmButton = {
                 Button(
                     onClick = {
-                        if (renameInput.isNotBlank() && doc != null) {
-                            viewModel.renameDocument(doc.id, renameInput.trim())
-                        }
+                        if (renameInput.isNotBlank() && doc != null) viewModel.renameDocument(doc.id, renameInput.trim())
                         showRenameDialog = false
                     },
                     shape = RoundedCornerShape(12.dp)
                 ) { Text(stringResource(R.string.txt_save), fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
-                TextButton(onClick = { showRenameDialog = false }, shape = RoundedCornerShape(12.dp)) {
-                    Text(stringResource(R.string.txt_cancel))
-                }
+                TextButton(onClick = { showRenameDialog = false }) { Text(stringResource(R.string.txt_cancel)) }
             }
         )
     }
 
-    // Filter Selection Bottom Sheet
     if (showFilterSheet) {
         ModalBottomSheet(
             onDismissRequest = { showFilterSheet = false },
             shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
             containerColor = MaterialTheme.colorScheme.surface
         ) {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp)
-            ) {
-                Text(
-                    text = stringResource(R.string.txt_document_filters),
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-
+            val activeFilterName = pages.getOrNull(pagerState.currentPage)?.filterType
+            Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(stringResource(R.string.txt_document_filters), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     FilterType.values().forEach { filter ->
-                        val activeFilter = pages.getOrNull(pagerState.currentPage)?.filterType
-                        val isSelected = filter.name == activeFilter
-
-                        Surface(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(14.dp))
-                                .clickable {
-                                    viewModel.applyFilterToActivePage(filter)
-                                    showFilterSheet = false
-                                }
-                                .border(
-                                    width = if (isSelected) 2.dp else 1.dp,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant,
-                                    shape = RoundedCornerShape(14.dp)
-                                ),
-                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh
-                        ) {
-                            Column(
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Text(
-                                    text = filter.displayNameEn,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
-                                )
-                            }
-                        }
+                        val isSelected = filter.name == activeFilterName
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = {
+                                viewModel.applyFilterToActivePage(filter)
+                                showFilterSheet = false
+                            },
+                            label = { Text(if (isArabic) filter.displayNameAr else filter.displayNameEn) }
+                        )
                     }
                 }
                 if (pages.size > 1) {
                     Button(
                         onClick = {
-                            val activeFilterStr = pages.getOrNull(pagerState.currentPage)?.filterType ?: FilterType.AUTO.name
-                            val activeFilter = try { FilterType.valueOf(activeFilterStr) } catch(e: Exception) { FilterType.AUTO }
-                            viewModel.applyFilterToAllPages(docId, activeFilter)
+                            val active = runCatching { FilterType.valueOf(activeFilterName ?: "") }.getOrDefault(FilterType.AUTO)
+                            viewModel.applyFilterToAllPages(docId, active)
                             showFilterSheet = false
                         },
                         shape = RoundedCornerShape(14.dp),
                         modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(stringResource(R.string.txt_apply_to_all_pages), fontWeight = FontWeight.Bold)
-                    }
+                    ) { Text(stringResource(R.string.txt_apply_to_all_pages), fontWeight = FontWeight.Bold) }
                 }
-                Spacer(modifier = Modifier.height(16.dp))
+                Spacer(Modifier.height(16.dp))
             }
         }
     }
 
-    // PDF Export & Share Dialog with Compression, Print Framework & Quality Controls
     if (showPdfExportDialog) {
-        val stateVal by viewModel.uiState.collectAsState()
-        var selectedSize by remember { mutableStateOf(stateVal.defaultPdfPageSize) }
-        var selectedCompression by remember { mutableStateOf(stateVal.defaultPdfCompression) }
-        var includeOcr by remember { mutableStateOf(true) }
-        var includePageNumbers by remember { mutableStateOf(true) }
-        var selectedWatermark by remember { mutableStateOf<String?>(null) }
-
-        val targetPages = if (selectionMode) {
-            pages.filter { selectedPageIds.contains(it.id) }
-        } else {
-            pages
-        }
-        val pageCount = targetPages.size
-        val estimatedBytes = remember(selectedCompression, pageCount) {
-            PdfEngine.estimatePdfSizeBytes(pageCount, selectedCompression)
-        }
-        val formattedSize = remember(estimatedBytes) {
-            PdfEngine.formatEstimatedSize(estimatedBytes)
-        }
-
-        AlertDialog(
-            onDismissRequest = { showPdfExportDialog = false },
-            shape = RoundedCornerShape(24.dp),
-            title = {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                    Text(
-                        text = stringResource(R.string.txt_export_document_as_pdf),
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
+        PdfSettingsDialog(
+            isArabic = isArabic,
+            pageCount = targetPages().size,
+            initialSize = uiState.defaultPdfPageSize,
+            initialCompression = uiState.defaultPdfCompression,
+            isExporting = uiState.isExportingPdf,
+            onDismiss = { showPdfExportDialog = false },
+            onExport = { size, compression, includeOcr, includeNumbers, watermark ->
+                val config = PdfExportConfig(
+                    title = docTitle,
+                    pageSize = size,
+                    compression = compression,
+                    includeSearchableText = includeOcr,
+                    includePageNumbers = includeNumbers,
+                    watermarkText = watermark
+                )
+                val ids = if (selectionMode && selectedPageIds.isNotEmpty()) selectedPageIds else null
+                viewModel.exportDocumentToPdf(config, ids) { generatedPdf ->
+                    showPdfExportDialog = false
+                    exitSelection()
+                    previewPdfFile = generatedPdf
                 }
             },
-            text = {
-                Column(
-                    modifier = Modifier.verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
-                ) {
-                    // Estimated File Size Pill
-                    Surface(
-                        shape = RoundedCornerShape(10.dp),
-                        color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Icon(Icons.Default.Storage, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
-                            Text(
-                                text = if (isArabic) "الحجم التقريبي: ~$formattedSize ($pageCount صفحات)" else "Estimated size: ~$formattedSize ($pageCount pages)",
-                                style = MaterialTheme.typography.labelMedium,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer
-                            )
-                        }
-                    }
-
-                    // Android Print Framework Action Banner (Save as PDF / Print)
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.45f),
-                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.secondary.copy(alpha = 0.25f)),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                showPdfExportDialog = false
-                                val docTitle = doc?.title ?: "Document"
-                                PdfEngine.printScannedDocuments(context, docTitle, targetPages.map { it.processedImagePath })
-                            }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(38.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.secondary.copy(alpha = 0.2f)),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(
-                                    Icons.Default.Print,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.secondary,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = if (isArabic) "طباعة / حفظ كـ PDF عبر أندرويد" else "Print / Save as PDF (Android)",
-                                    fontWeight = FontWeight.Bold,
-                                    style = MaterialTheme.typography.bodyMedium
-                                )
-                                Text(
-                                    text = if (isArabic) "استخدام إطار الطباعة لنظام أندرويد (معاينة وحفظ)" else "Use Android Print Framework (Preview & Save)",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            Icon(
-                                Icons.AutoMirrored.Filled.ArrowForward,
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp),
-                                tint = MaterialTheme.colorScheme.secondary
-                            )
-                        }
-                    }
-
-                    Text(stringResource(R.string.txt_page_format), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        PageSizePreset.values().forEach { size ->
-                            FilterChip(
-                                selected = size == selectedSize,
-                                onClick = { selectedSize = size },
-                                shape = RoundedCornerShape(50),
-                                label = { Text(size.name, style = MaterialTheme.typography.labelSmall) }
-                            )
-                        }
-                    }
-
-                    Text(stringResource(R.string.txt_quality___compression), fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        CompressionPreset.values().forEach { comp ->
-                            val label = when (comp) {
-                                CompressionPreset.LOW -> if (isArabic) "صغير (~120KB)" else "Small (~120KB/p)"
-                                CompressionPreset.MEDIUM -> if (isArabic) "متوسط" else "Medium"
-                                CompressionPreset.HIGH -> if (isArabic) "عالي (طباعة)" else "High (Print)"
-                                CompressionPreset.MAXIMUM -> if (isArabic) "أقصى دقة" else "Maximum"
-                            }
-                            FilterChip(
-                                selected = comp == selectedCompression,
-                                onClick = { selectedCompression = comp },
-                                shape = RoundedCornerShape(50),
-                                label = { Text(label, style = MaterialTheme.typography.labelSmall) }
-                            )
-                        }
-                    }
-
-                    // Watermark selector
-                    Text(if (isArabic) "العلامة المائية (اختياري)" else "Watermark (Optional)", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        val watermarks = listOf(
-                            null to (if (isArabic) "بدون" else "None"),
-                            "CONFIDENTIAL" to (if (isArabic) "سري" else "Confidential"),
-                            "APPROVED" to (if (isArabic) "مكتمل" else "Approved"),
-                            "DRAFT" to (if (isArabic) "مسودة" else "Draft")
-                        )
-                        watermarks.forEach { (wm, label) ->
-                            FilterChip(
-                                selected = selectedWatermark == wm,
-                                onClick = { selectedWatermark = wm },
-                                shape = RoundedCornerShape(50),
-                                label = { Text(label, style = MaterialTheme.typography.labelSmall) }
-                            )
-                        }
-                    }
-
-                    // Toggles
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(if (isArabic) "ترقيم الصفحات في الأسفل" else "Include Page Numbers", style = MaterialTheme.typography.bodyMedium)
-                        Switch(
-                            checked = includePageNumbers,
-                            onCheckedChange = { includePageNumbers = it }
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(stringResource(R.string.txt_searchable_ocr_text_layer), style = MaterialTheme.typography.bodyMedium)
-                        Switch(
-                            checked = includeOcr,
-                            onCheckedChange = { includeOcr = it }
-                        )
-                    }
-                }
-            },
-            confirmButton = {
-                Button(
-                    onClick = {
-                        val config = PdfExportConfig(
-                            title = doc?.title ?: "Document",
-                            pageSize = selectedSize,
-                            compression = selectedCompression,
-                            includeSearchableText = includeOcr,
-                            includePageNumbers = includePageNumbers,
-                            watermarkText = selectedWatermark
-                        )
-                        viewModel.exportDocumentToPdf(config, if (selectionMode) selectedPageIds else null) { generatedPdf ->
-                            showPdfExportDialog = false
-                            if (selectionMode) {
-                                selectionMode = false
-                                selectedPageIds = emptySet()
-                            }
-                            previewPdfFile = generatedPdf
-                        }
-                    },
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.testTag("export_pdf_confirm_btn")
-                ) {
-                    if (uiState.isExportingPdf) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White)
-                    } else {
-                        Text(stringResource(R.string.txt_export___share), fontWeight = FontWeight.Bold)
-                    }
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showPdfExportDialog = false }, shape = RoundedCornerShape(12.dp)) {
-                    Text(stringResource(R.string.txt_cancel))
-                }
+            onPrint = {
+                showPdfExportDialog = false
+                print(targetPages())
             }
         )
     }
 
-    // Page Actions Bottom Sheet (Triggered on Page Long-Press)
     pageForActions?.let { targetPage ->
         PageActionsBottomSheet(
             page = targetPage,
@@ -1271,61 +931,52 @@ fun DocumentViewerScreen(
                 initialMergePageIds = listOf(targetPage.id)
                 showMergeDialog = true
             },
-            onEditCropClick = {
-                pageForActions = null
-                onNavigateToCrop(docId, targetPage.id)
-            },
-            onOcrClick = {
-                pageForActions = null
-                onNavigateToOcr(docId, targetPage.id)
-            },
-            onAnnotateClick = {
-                pageForActions = null
-                onNavigateToAnnotate(docId, targetPage.id)
-            },
-            onRotateClick = {
-                pageForActions = null
-                viewModel.rotatePage(targetPage.id)
-            },
-            onDuplicateClick = {
-                pageForActions = null
-                viewModel.duplicatePage(targetPage.id)
-            },
+            onEditCropClick = { pageForActions = null; onNavigateToCrop(docId, targetPage.id) },
+            onOcrClick = { pageForActions = null; onNavigateToOcr(docId, targetPage.id) },
+            onAnnotateClick = { pageForActions = null; onNavigateToAnnotate(docId, targetPage.id) },
+            onRotateClick = { pageForActions = null; viewModel.rotatePage(targetPage.id) },
+            onDuplicateClick = { pageForActions = null; viewModel.duplicatePage(targetPage.id) },
             onReplaceClick = {
                 pageForActions = null
                 targetPageForReplace = targetPage
-                replacePhotoPickerLauncher.launch(
-                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                )
+                replacePhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             },
-            onPrintClick = {
-                pageForActions = null
-                viewModel.printActivePage(context)
-            },
-            onShareClick = {
-                pageForActions = null
-                shareFile(context, File(targetPage.processedImagePath))
-            },
+            onPrintClick = { pageForActions = null; print(listOf(targetPage)) },
+            onShareClick = { pageForActions = null; shareImages(listOf(targetPage)) },
             onExportDocxClick = {
                 pageForActions = null
-                exportToDocx(context, targetPage)
+                if (targetPage.ocrText.isBlank()) {
+                    toast(t("No text yet — run OCR first", "لا يوجد نص بعد — شغّل استخراج النص أولاً"))
+                } else runBusy(t("Exporting…", "جاري التصدير…")) {
+                    val html = "<html><body>${targetPage.ocrText.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>")}</body></html>"
+                    val file = PdfEngine.exportText(context, html, "${docTitle}_p${pageForActionsIndex + 1}", "doc")
+                    PdfEngine.shareFiles(context, listOf(file), "application/msword")
+                }
             },
             onExportTxtClick = {
                 pageForActions = null
-                exportToTxt(context, targetPage)
+                if (targetPage.ocrText.isBlank()) {
+                    toast(t("No text yet — run OCR first", "لا يوجد نص بعد — شغّل استخراج النص أولاً"))
+                } else runBusy(t("Exporting…", "جاري التصدير…")) {
+                    val file = PdfEngine.exportText(context, targetPage.ocrText, "${docTitle}_p${pageForActionsIndex + 1}", "txt")
+                    PdfEngine.shareFiles(context, listOf(file), "text/plain")
+                }
             },
             onExportPngClick = {
                 pageForActions = null
-                exportToPng(context, targetPage)
+                runBusy(t("Exporting…", "جاري التصدير…")) {
+                    val file = PdfEngine.exportPng(context, imagePathOf(targetPage), "${docTitle}_p${pageForActionsIndex + 1}")
+                    if (file != null) PdfEngine.shareFiles(context, listOf(file), "image/png")
+                    else toast(t("Could not export PNG", "تعذر تصدير PNG"))
+                }
             },
             onDeleteClick = {
                 pageForActions = null
-                viewModel.deletePageById(targetPage.id)
+                deletePages(listOf(targetPage.id))
             }
         )
     }
 
-    // Multi-Image Grid Merge Dialog (دمج الصور في صفحة واحدة)
     if (showMergeDialog) {
         MergePagesDialog(
             allPages = pages,
@@ -1338,76 +989,197 @@ fun DocumentViewerScreen(
                     replaceSelected = replaceSelected
                 ) {
                     showMergeDialog = false
-                    selectionMode = false
-                    selectedPageIds = emptySet()
-                    Toast.makeText(
-                        context,
-                        if (isArabic) "تم دمج الصور في صفحة واحدة بنجاح" else "Images merged into single page successfully",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    exitSelection()
+                    toast(t("Images merged into a single page", "تم دمج الصور في صفحة واحدة"))
                 }
             }
         )
     }
 
-    // In-App PDF Review Overlay before sharing via FileProvider
     previewPdfFile?.let { file ->
-        PdfViewerOverlay(
-            pdfFile = file,
-            onDismiss = { previewPdfFile = null }
-        )
+        PdfViewerOverlay(pdfFile = file, onDismiss = { previewPdfFile = null })
     }
 }
 
-private fun shareFile(context: Context, file: File, mimeType: String = "image/jpeg") {
-    try {
-        val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = mimeType
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        }
-        context.startActivity(Intent.createChooser(intent, "Share Document via"))
-    } catch (e: Exception) {}
-}
-
-private fun shareMultipleFiles(context: Context, files: List<File>, scope: kotlinx.coroutines.CoroutineScope, onLoading: (Boolean) -> Unit) {
-    scope.launch {
-        try {
-            if (files.isEmpty()) return@launch
-            onLoading(true)
-            val paths = files.map { it.absolutePath }
-            val pdfFile = com.example.engine.cv.ImageProcessor.mergeToPdf(context, paths)
-            shareFile(context, pdfFile, "application/pdf")
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            onLoading(false)
+@Composable
+private fun PageTool(icon: ImageVector, label: String, onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(icon, contentDescription = label, tint = GoldBase)
+            Text(label, style = MaterialTheme.typography.labelSmall, color = GoldBase, maxLines = 1)
         }
     }
 }
 
-private fun exportToTxt(context: Context, page: PageEntity) {
-    if (page.ocrText.isBlank()) {
-        Toast.makeText(context, "No OCR text available", Toast.LENGTH_SHORT).show()
-        return
+/** The single Save & Share entry point (document or selected pages). */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SaveShareSheet(
+    isArabic: Boolean,
+    pageCount: Int,
+    isSelection: Boolean,
+    onDismiss: () -> Unit,
+    onSavePdf: () -> Unit,
+    onSavePdfAs: () -> Unit,
+    onSaveImages: () -> Unit,
+    onSharePdf: () -> Unit,
+    onShareImages: () -> Unit,
+    onPrint: () -> Unit,
+    onPdfSettings: () -> Unit
+) {
+    fun t(en: String, ar: String) = if (isArabic) ar else en
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Text(t("Save & Share", "حفظ ومشاركة"), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text(
+                if (isSelection) t("$pageCount selected page(s)", "$pageCount صفحة محددة")
+                else t("Whole document · $pageCount page(s)", "المستند كاملاً · $pageCount صفحة"),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(6.dp))
+            SheetSection(t("Share", "مشاركة"))
+            SheetAction(Icons.Default.PictureAsPdf, t("Share as PDF", "مشاركة كملف PDF"), t("One PDF file", "ملف PDF واحد"), Emerald400, onSharePdf)
+            SheetAction(Icons.Default.Collections, t("Share as images", "مشاركة كصور"), t("JPEG, one per page", "صورة JPEG لكل صفحة"), Emerald400, onShareImages)
+            SheetSection(t("Save to device", "الحفظ على الجهاز"))
+            SheetAction(Icons.Default.Download, t("Save as PDF", "حفظ كملف PDF"), t("Downloads / MS Scanner", "التنزيلات / MS Scanner"), MaterialTheme.colorScheme.primary, onSavePdf)
+            SheetAction(Icons.Default.FolderOpen, t("Save PDF as…", "حفظ PDF باسم…"), t("Choose name and location", "اختيار الاسم والمكان"), MaterialTheme.colorScheme.primary, onSavePdfAs)
+            SheetAction(Icons.Default.Image, t("Save as images", "حفظ كصور"), t("Gallery / MS Scanner", "المعرض / MS Scanner"), MaterialTheme.colorScheme.primary, onSaveImages)
+            SheetSection(t("More", "المزيد"))
+            SheetAction(Icons.Default.Print, t("Print", "طباعة"), t("Printer or system “Save as PDF”", "طابعة أو حفظ PDF من النظام"), MaterialTheme.colorScheme.secondary, onPrint)
+            SheetAction(Icons.Default.Tune, t("PDF settings…", "إعدادات PDF…"), t("Page size, quality, watermark", "حجم الصفحة، الجودة، العلامة المائية"), MaterialTheme.colorScheme.secondary, onPdfSettings)
+        }
     }
-    val file = File(context.cacheDir, "page_${page.id}.txt")
-    file.writeText(page.ocrText)
-    shareFile(context, file, "text/plain")
 }
 
-private fun exportToPng(context: Context, page: PageEntity) {
-    val file = File(page.processedImagePath)
-    if (file.exists()) {
-        shareFile(context, file, "image/png")
+@Composable
+private fun SheetSection(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 8.dp, bottom = 2.dp)
+    )
+}
+
+@Composable
+private fun SheetAction(icon: ImageVector, title: String, subtitle: String, tint: Color, onClick: () -> Unit) {
+    Surface(
+        shape = RoundedCornerShape(14.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.6f),
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick)
+    ) {
+        Row(Modifier.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                Modifier.size(38.dp).clip(CircleShape).background(tint.copy(alpha = 0.15f)),
+                contentAlignment = Alignment.Center
+            ) { Icon(icon, null, tint = tint, modifier = Modifier.size(20.dp)) }
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+                Text(subtitle, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
 }
 
-private fun exportToDocx(context: Context, page: PageEntity) {
-    val htmlContent = "<html><body>${page.ocrText.replace("\n", "<br>")}</body></html>"
-    val file = File(context.cacheDir, "page_${page.id}.doc")
-    file.writeText(htmlContent)
-    shareFile(context, file, "application/msword")
+/** Advanced PDF export (page size, quality, OCR layer, numbers, watermark) with in-app preview. */
+@Composable
+private fun PdfSettingsDialog(
+    isArabic: Boolean,
+    pageCount: Int,
+    initialSize: PageSizePreset,
+    initialCompression: CompressionPreset,
+    isExporting: Boolean,
+    onDismiss: () -> Unit,
+    onExport: (PageSizePreset, CompressionPreset, Boolean, Boolean, String?) -> Unit,
+    onPrint: () -> Unit
+) {
+    fun t(en: String, ar: String) = if (isArabic) ar else en
+    var selectedSize by remember { mutableStateOf(initialSize) }
+    var selectedCompression by remember { mutableStateOf(initialCompression) }
+    var includeOcr by remember { mutableStateOf(true) }
+    var includePageNumbers by remember { mutableStateOf(true) }
+    var selectedWatermark by remember { mutableStateOf<String?>(null) }
+    val formattedSize = remember(selectedCompression, pageCount) {
+        PdfEngine.formatEstimatedSize(PdfEngine.estimatePdfSizeBytes(pageCount, selectedCompression))
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(24.dp),
+        title = { Text(stringResource(R.string.txt_export_document_as_pdf), fontWeight = FontWeight.Bold) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    t("Estimated size: ~$formattedSize ($pageCount pages)", "الحجم التقريبي: ~$formattedSize ($pageCount صفحات)"),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(stringResource(R.string.txt_page_format), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PageSizePreset.values().forEach { size ->
+                        FilterChip(selected = size == selectedSize, onClick = { selectedSize = size }, label = { Text(size.name, fontSize = 11.sp) })
+                    }
+                }
+                Text(stringResource(R.string.txt_quality___compression), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CompressionPreset.values().forEach { comp ->
+                        val label = when (comp) {
+                            CompressionPreset.LOW -> t("Small", "صغير")
+                            CompressionPreset.MEDIUM -> t("Medium", "متوسط")
+                            CompressionPreset.HIGH -> t("High (Print)", "عالي (طباعة)")
+                            CompressionPreset.MAXIMUM -> t("Maximum", "أقصى دقة")
+                        }
+                        FilterChip(selected = comp == selectedCompression, onClick = { selectedCompression = comp }, label = { Text(label, fontSize = 11.sp) })
+                    }
+                }
+                Text(t("Watermark (optional)", "العلامة المائية (اختياري)"), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        null to t("None", "بدون"),
+                        "CONFIDENTIAL" to t("Confidential", "سري"),
+                        "APPROVED" to t("Approved", "معتمد"),
+                        "DRAFT" to t("Draft", "مسودة")
+                    ).forEach { (wm, label) ->
+                        FilterChip(selected = selectedWatermark == wm, onClick = { selectedWatermark = wm }, label = { Text(label, fontSize = 11.sp) })
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(t("Include page numbers", "ترقيم الصفحات"), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    Switch(checked = includePageNumbers, onCheckedChange = { includePageNumbers = it })
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.txt_searchable_ocr_text_layer), Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+                    Switch(checked = includeOcr, onCheckedChange = { includeOcr = it })
+                }
+                TextButton(onClick = onPrint) {
+                    Icon(Icons.Default.Print, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
+                    Text(t("Print / system Save as PDF", "طباعة / حفظ PDF من النظام"))
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onExport(selectedSize, selectedCompression, includeOcr, includePageNumbers, selectedWatermark) },
+                enabled = !isExporting,
+                shape = RoundedCornerShape(12.dp),
+                modifier = Modifier.testTag("export_pdf_confirm_btn")
+            ) {
+                if (isExporting) CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                else Text(stringResource(R.string.txt_export___share), fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.txt_cancel)) } }
+    )
 }
-

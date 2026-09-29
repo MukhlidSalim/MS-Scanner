@@ -1,10 +1,13 @@
 package com.example.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
+import com.example.data.db.DocScanDatabase
 import com.example.data.db.DocumentDao
 import com.example.data.model.DocumentEntity
 import com.example.data.model.PageEntity
 import com.example.data.model.SignatureEntity
+import com.example.engine.cv.QuadStore
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
@@ -20,20 +23,35 @@ data class StorageStats(
     val trashCount: Int
 )
 
+/**
+ * Input of the single save transaction.
+ * [pages] is the FINAL ordered page list: id == 0 -> inserted, id > 0 -> updated (documentId and
+ * pageIndex are always rewritten from the list order). Pages of the document that are not in the list
+ * are deleted (their ids must be listed in [removedPageIds] for safety).
+ */
+data class DocumentSaveRequest(
+    val existingDocId: Long?,
+    val title: String,
+    val folderName: String = "Default",
+    val category: String? = null,
+    val pages: List<PageEntity>,
+    val removedPageIds: List<Long> = emptyList()
+)
+
 class DocumentRepository(
     private val context: Context,
     private val documentDao: DocumentDao
 ) {
+    private val database by lazy { DocScanDatabase.getInstance(context.applicationContext) }
 
-    
     suspend fun getAllDocumentsSync(): List<DocumentEntity> = withContext(Dispatchers.IO) {
         documentDao.getAllDocumentsSync()
     }
-    
+
     suspend fun getPagesForDocumentSync(docId: Long): List<PageEntity> = withContext(Dispatchers.IO) {
         documentDao.getPagesForDocumentSync(docId)
     }
-    
+
     suspend fun insertDocumentForRestore(doc: DocumentEntity): Long = withContext(Dispatchers.IO) {
         documentDao.insertDocument(doc)
     }
@@ -62,7 +80,85 @@ class DocumentRepository(
     }
 
     /**
-     * Transactional creation of new Document with pages
+     * THE single save path for new scans, imports, "add pages to document" and edit sessions.
+     *
+     * - The thumbnail is rendered BEFORE the transaction (file I/O never inside a DB transaction).
+     * - Document + every page are written in ONE Room transaction: either all pages are saved with
+     *   their final order, crop quad, rotation and filter, or nothing is (no partial / lost pages).
+     * - The previous thumbnail is deleted only after a successful commit.
+     * Returns the document id.
+     */
+    suspend fun saveDocument(request: DocumentSaveRequest): Long = withContext(Dispatchers.IO) {
+        require(request.pages.isNotEmpty()) { "A document must contain at least one page" }
+        val now = System.currentTimeMillis()
+        val firstPath = request.pages.first().processedImagePath.ifBlank { request.pages.first().rawImagePath }
+        val newThumb = com.example.engine.cv.ImageProcessor.createThumbnail(context, firstPath)
+        var oldThumb: String? = null
+        try {
+            val docId = database.withTransaction {
+                val existing = request.existingDocId?.takeIf { it > 0L }?.let { documentDao.getDocumentById(it) }
+                if (request.existingDocId != null && request.existingDocId > 0L && existing == null) {
+                    throw IllegalStateException("Document ${request.existingDocId} no longer exists")
+                }
+                val id = if (existing == null) {
+                    documentDao.insertDocument(
+                        DocumentEntity(
+                            title = request.title.ifBlank {
+                                "Doc_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date(now))}"
+                            },
+                            folderName = request.folderName,
+                            category = request.category ?: com.example.data.model.DocumentCategory.OTHER.name,
+                            createdAt = now,
+                            updatedAt = now,
+                            pageCount = request.pages.size,
+                            thumbnailPath = newThumb
+                        )
+                    )
+                } else {
+                    oldThumb = existing.thumbnailPath
+                    existing.id
+                }
+                request.removedPageIds.forEach { documentDao.deletePageById(it) }
+                val savedIds = HashSet<Long>()
+                request.pages.forEachIndexed { index, page ->
+                    val p = page.copy(documentId = id, pageIndex = index)
+                    if (p.id == 0L) {
+                        savedIds += documentDao.insertPage(p)
+                    } else {
+                        documentDao.updatePage(p)
+                        savedIds += p.id
+                    }
+                }
+                // Safety net: the final list IS the document; no orphan page can survive the save.
+                documentDao.getPagesListForDocument(id)
+                    .filter { it.id !in savedIds }
+                    .forEach { documentDao.deletePageById(it.id) }
+                val finalCount = request.pages.size
+                if (existing != null) {
+                    documentDao.updateDocument(
+                        existing.copy(
+                            title = request.title.ifBlank { existing.title },
+                            category = request.category ?: existing.category,
+                            pageCount = finalCount,
+                            thumbnailPath = newThumb ?: existing.thumbnailPath,
+                            updatedAt = now
+                        )
+                    )
+                }
+                id
+            }
+            if (newThumb != null && oldThumb != null && oldThumb != newThumb) {
+                runCatching { File(oldThumb!!).delete() }
+            }
+            docId
+        } catch (e: Throwable) {
+            newThumb?.let { runCatching { File(it).delete() } }
+            throw e
+        }
+    }
+
+    /**
+     * Legacy entry point kept for existing callers: delegates to [saveDocument] (one save path).
      */
     suspend fun createDocumentWithPages(
         title: String,
@@ -70,64 +166,49 @@ class DocumentRepository(
         category: String = "OTHER",
         ocrText: String = "",
         pages: List<Pair<String, String>> // (rawImagePath, processedImagePath)
-    ): Long = withContext(Dispatchers.IO) {
+    ): Long {
         val now = System.currentTimeMillis()
-        
-        // Generate thumbnail from first page's processed image
-        val firstPagePath = pages.firstOrNull()?.second ?: pages.firstOrNull()?.first
-        val thumbPath = firstPagePath?.let { 
-            com.example.engine.cv.ImageProcessor.createThumbnail(context, it)
-        }
-
-        val doc = DocumentEntity(
-            title = title.ifBlank { "Doc_${SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date(now))}" },
-            folderName = folderName,
-            category = category,
-            ocrText = ocrText,
-            createdAt = now,
-            updatedAt = now,
-            pageCount = pages.size,
-            thumbnailPath = thumbPath
-        )
-        val docId = documentDao.insertDocument(doc)
-
-        val pageEntities = pages.mapIndexed { index, pair ->
-            PageEntity(
-                documentId = docId,
-                pageIndex = index,
-                rawImagePath = pair.first,
-                processedImagePath = pair.second,
-                createdAt = now
+        val id = saveDocument(
+            DocumentSaveRequest(
+                existingDocId = null,
+                title = title,
+                folderName = folderName,
+                category = category,
+                pages = pages.mapIndexed { index, pair ->
+                    PageEntity(
+                        documentId = 0L,
+                        pageIndex = index,
+                        rawImagePath = pair.first,
+                        processedImagePath = pair.second,
+                        createdAt = now
+                    )
+                }
             )
+        )
+        if (ocrText.isNotBlank()) {
+            getDocumentById(id)?.let { updateDocument(it.copy(ocrText = ocrText)) }
         }
-        documentDao.insertPages(pageEntities)
-        docId
+        return id
     }
 
     suspend fun addPageToDocument(docId: Long, rawPath: String, processedPath: String): Long = withContext(Dispatchers.IO) {
-        val existingPages = documentDao.getPagesListForDocument(docId)
-        val newIndex = existingPages.size
-        val page = PageEntity(
-            documentId = docId,
-            pageIndex = newIndex,
-            rawImagePath = rawPath,
-            processedImagePath = processedPath
-        )
-        val pageId = documentDao.insertPage(page)
-
-        val doc = documentDao.getDocumentById(docId)
-        if (doc != null) {
-            documentDao.updateDocument(
-                doc.copy(
-                    pageCount = existingPages.size + 1,
-                    updatedAt = System.currentTimeMillis()
+        database.withTransaction {
+            val existingPages = documentDao.getPagesListForDocument(docId)
+            val pageId = documentDao.insertPage(
+                PageEntity(
+                    documentId = docId,
+                    pageIndex = existingPages.size,
+                    rawImagePath = rawPath,
+                    processedImagePath = processedPath
                 )
             )
+            documentDao.getDocumentById(docId)?.let { doc ->
+                documentDao.updateDocument(doc.copy(pageCount = existingPages.size + 1, updatedAt = System.currentTimeMillis()))
+            }
+            pageId
         }
-        pageId
     }
 
-    
     suspend fun renameFolder(oldName: String, newName: String) = withContext(Dispatchers.IO) {
         documentDao.renameFolder(oldName, newName)
     }
@@ -157,56 +238,37 @@ class DocumentRepository(
     }
 
     suspend fun deletePage(pageId: Long, docId: Long) = withContext(Dispatchers.IO) {
-        documentDao.deletePageById(pageId)
-        val remaining = documentDao.getPagesListForDocument(docId)
-        val doc = documentDao.getDocumentById(docId)
-        if (doc != null) {
-            // Re-index remaining pages
+        val oldThumb = database.withTransaction {
+            documentDao.deletePageById(pageId)
+            val remaining = documentDao.getPagesListForDocument(docId)
             remaining.forEachIndexed { idx, p ->
-                if (p.pageIndex != idx) {
-                    documentDao.updatePage(p.copy(pageIndex = idx))
-                }
+                if (p.pageIndex != idx) documentDao.updatePage(p.copy(pageIndex = idx))
             }
-            
-            // Delete old thumbnail if it exists
-            doc.thumbnailPath?.let { try { File(it).delete() } catch (_: Exception) {} }
-            
-            // Generate new thumbnail from new first page
-            val newThumbPath = remaining.firstOrNull()?.processedImagePath?.let {
-                com.example.engine.cv.ImageProcessor.createThumbnail(context, it)
+            val doc = documentDao.getDocumentById(docId)
+            if (doc != null) {
+                documentDao.updateDocument(doc.copy(pageCount = remaining.size, updatedAt = System.currentTimeMillis()))
             }
-
-            documentDao.updateDocument(
-                doc.copy(
-                    pageCount = remaining.size,
-                    thumbnailPath = newThumbPath,
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
+            doc?.thumbnailPath
         }
+        // Thumbnail regenerated outside the transaction.
+        val first = documentDao.getPagesListForDocument(docId).firstOrNull()
+        val newThumb = first?.processedImagePath?.let { com.example.engine.cv.ImageProcessor.createThumbnail(context, it) }
+        documentDao.getDocumentById(docId)?.let { documentDao.updateDocument(it.copy(thumbnailPath = newThumb)) }
+        oldThumb?.let { if (it != newThumb) runCatching { File(it).delete() } }
     }
 
     suspend fun reorderPages(docId: Long, reorderedPages: List<PageEntity>) = withContext(Dispatchers.IO) {
-        reorderedPages.forEachIndexed { idx, p ->
-            documentDao.updatePage(p.copy(pageIndex = idx))
+        val oldThumb = database.withTransaction {
+            reorderedPages.forEachIndexed { idx, p -> documentDao.updatePage(p.copy(pageIndex = idx)) }
+            documentDao.getDocumentById(docId)?.thumbnailPath
         }
-        val doc = documentDao.getDocumentById(docId)
-        if (doc != null) {
-            // Delete old thumbnail
-            doc.thumbnailPath?.let { try { File(it).delete() } catch (_: Exception) {} }
-            
-            // Generate new thumbnail from new first page
-            val newThumbPath = reorderedPages.firstOrNull()?.processedImagePath?.let {
-                com.example.engine.cv.ImageProcessor.createThumbnail(context, it)
-            }
-
-            documentDao.updateDocument(
-                doc.copy(
-                    thumbnailPath = newThumbPath,
-                    updatedAt = System.currentTimeMillis()
-                )
-            )
+        val newThumbPath = reorderedPages.firstOrNull()?.processedImagePath?.let {
+            com.example.engine.cv.ImageProcessor.createThumbnail(context, it)
         }
+        documentDao.getDocumentById(docId)?.let {
+            documentDao.updateDocument(it.copy(thumbnailPath = newThumbPath, updatedAt = System.currentTimeMillis()))
+        }
+        oldThumb?.let { if (it != newThumbPath) runCatching { File(it).delete() } }
     }
 
     suspend fun updateDocument(doc: DocumentEntity) = withContext(Dispatchers.IO) {
@@ -226,34 +288,33 @@ class DocumentRepository(
         documentDao.restoreFromTrash(id)
     }
 
+    private fun deletePageFiles(p: PageEntity) {
+        runCatching { File(p.rawImagePath).delete() }
+        runCatching { QuadStore.delete(p.rawImagePath) }
+        if (p.processedImagePath != p.rawImagePath) runCatching { File(p.processedImagePath).delete() }
+    }
+
     suspend fun deleteDocumentPermanently(id: Long) = withContext(Dispatchers.IO) {
         val doc = documentDao.getDocumentById(id)
-        // Delete thumbnail
-        doc?.thumbnailPath?.let { try { File(it).delete() } catch (_: Exception) {} }
-        
         val pages = documentDao.getPagesListForDocument(id)
-        pages.forEach { p ->
-            try { File(p.rawImagePath).delete() } catch (_: Exception) {}
-            try { File(p.processedImagePath).delete() } catch (_: Exception) {}
+        database.withTransaction {
+            documentDao.deletePagesForDocument(id)
+            documentDao.permanentDeleteDocument(id)
         }
-        documentDao.deletePagesForDocument(id)
-        documentDao.permanentDeleteDocument(id)
+        // Files are removed only after the rows are gone (never rows pointing to deleted files).
+        doc?.thumbnailPath?.let { runCatching { File(it).delete() } }
+        pages.forEach { deletePageFiles(it) }
     }
 
     suspend fun emptyTrash() = withContext(Dispatchers.IO) {
         val trashDocs = documentDao.getTrashDocumentsList()
-        trashDocs.forEach { doc ->
-            // Delete thumbnail
-            doc.thumbnailPath?.let { try { File(it).delete() } catch (_: Exception) {} }
-            
-            val pages = documentDao.getPagesListForDocument(doc.id)
-            pages.forEach { p ->
-                try { File(p.rawImagePath).delete() } catch (_: Exception) {}
-                try { File(p.processedImagePath).delete() } catch (_: Exception) {}
-            }
-            documentDao.deletePagesForDocument(doc.id)
+        val pagesToDelete = trashDocs.flatMap { documentDao.getPagesListForDocument(it.id) }
+        database.withTransaction {
+            trashDocs.forEach { documentDao.deletePagesForDocument(it.id) }
+            documentDao.emptyTrash()
         }
-        documentDao.emptyTrash()
+        trashDocs.forEach { d -> d.thumbnailPath?.let { runCatching { File(it).delete() } } }
+        pagesToDelete.forEach { deletePageFiles(it) }
     }
 
     suspend fun saveSignature(title: String, path: String): Long = withContext(Dispatchers.IO) {
@@ -264,17 +325,15 @@ class DocumentRepository(
         documentDao.deleteSignature(id)
     }
 
-        suspend fun getStorageStats(): StorageStats = withContext(Dispatchers.IO) {
+    suspend fun getStorageStats(): StorageStats = withContext(Dispatchers.IO) {
         val scansDir = java.io.File(context.filesDir, "scans")
         val cacheDir = context.cacheDir
         val scansSize = getFolderSize(scansDir)
         val cacheSize = getFolderSize(cacheDir)
-        
         val allDocs = documentDao.getAllDocumentsSync()
         val totalDocs = allDocs.size
         val totalPages = allDocs.sumOf { it.pageCount }
         val trashCount = allDocs.count { it.isTrash }
-        
         StorageStats(
             totalDocumentsCount = totalDocs,
             totalPagesCount = totalPages,

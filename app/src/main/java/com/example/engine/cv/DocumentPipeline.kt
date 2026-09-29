@@ -17,6 +17,21 @@ import java.io.File
 import kotlin.math.max
 import kotlin.math.roundToInt
 
+/**
+ * Result of automatic edge detection for one page. Persisted next to the raw image so that every
+ * screen (review, preview, editor) knows whether the crop is REAL or a full-image fallback.
+ */
+enum class DetectionStatus {
+    /** Edges found and validated: the page is auto-cropped and perspective-corrected. */
+    DETECTED,
+    /** Detection ran (all passes) and found nothing reliable: full image kept, user must be told. */
+    NOT_FOUND,
+    /** Detection intentionally not run (PDF pages, auto-crop disabled). */
+    SKIPPED,
+    /** The user set the crop by hand in the editor. */
+    MANUAL
+}
+
 /** Outcome of processing one page through the unified pipeline. */
 data class ProcessedPage(
     /** Upright, uncropped source. All quads refer to this image. */
@@ -27,7 +42,8 @@ data class ProcessedPage(
     val quad: DocumentQuad,
     /** True when [quad] comes from a real detection (or a confirmed live-preview quad). */
     val autoCropped: Boolean,
-    val confidence: Float
+    val confidence: Float,
+    val detectionStatus: DetectionStatus = if (autoCropped) DetectionStatus.DETECTED else DetectionStatus.NOT_FOUND
 )
 
 /** Expected document shapes. Values are long-side / short-side. */
@@ -44,18 +60,19 @@ object ScanAspect {
  * Invariants:
  *  - A raw image is always saved upright (EXIF applied) and never modified afterwards.
  *  - The quad is always normalized to that raw image and persisted next to it ([QuadStore]),
- *    so the editor opens with the real detected quad instead of re-guessing.
+ *    together with the [DetectionStatus], so a failed detection is never presented as a real crop.
+ *  - Detection chain (one engine, DocumentDetector): guided pass -> relaxed-shape pass -> contrast-
+ *    boosted pass. Only when all fail is the full image kept, marked NOT_FOUND for manual review.
  *  - Rendering order is ALWAYS: perspective warp (raw + quad) -> user rotation -> filter -> enhancements.
  *  - All work runs on Dispatchers.Default / IO; callers never block the main thread.
  */
 object DocumentPipeline {
-
     /** One default scan filter for every source (previously AUTO in some paths, MAGIC in others). */
     val DEFAULT_FILTER: FilterType = FilterType.AUTO
-
     private const val CAPTURE_MAX_SIDE = 2400
     private const val IMPORT_MAX_SIDE = 2048
     private const val PDF_MAX_SIDE = 2200
+    private const val ALT_PASS_MAX_SIDE = 900
 
     // ------------------------------------------------------------------ entry points
 
@@ -113,7 +130,7 @@ object DocumentPipeline {
 
     /**
      * PDF import: each page is rasterized on a white background. PDF pages are already flat and
-     * rectangular, so no border detection is run (quad = full page, autoCropped = false); the user can
+     * rectangular, so no border detection is run (quad = full page, status SKIPPED); the user can
      * still crop manually in the editor.
      */
     suspend fun importPdf(
@@ -157,7 +174,11 @@ object DocumentPipeline {
         result
     }
 
-    /** Re-runs detection on an existing raw page and re-renders it (batch "auto-crop all"). */
+    /**
+     * Re-runs the full detection chain on an existing raw page and re-renders it ("Retry detection",
+     * batch "auto-crop all"). When nothing is found the previous quad is kept and the page stays
+     * NOT_FOUND (never silently replaced by a fake crop).
+     */
     suspend fun redetect(
         context: Context,
         rawPath: String,
@@ -168,13 +189,20 @@ object DocumentPipeline {
     ): ProcessedPage? = withContext(Dispatchers.Default) {
         val raw = ImageProcessor.loadBitmapFromFile(rawPath, IMPORT_MAX_SIDE) ?: return@withContext null
         try {
-            val detection = runCatching { DocumentDetector.detect(raw, expectedAspectRatio) }.getOrNull()
+            val detection = detectWithFallback(raw, null, expectedAspectRatio)
+            val previousStatus = QuadStore.loadStatus(rawPath)
             val quad = detection?.quad ?: (QuadStore.load(rawPath) ?: DocumentQuad.fullQuad())
+            val status = when {
+                detection != null -> DetectionStatus.DETECTED
+                previousStatus == DetectionStatus.MANUAL -> DetectionStatus.MANUAL
+                else -> DetectionStatus.NOT_FOUND
+            }
             QuadStore.save(rawPath, quad)
+            QuadStore.saveStatus(rawPath, status)
             val out = renderBitmap(raw, quad, rotationDegrees, filter, 0f, 1f, false)
             try {
                 val path = ImageProcessor.saveBitmapToFile(context, out, "${prefix}_")
-                ProcessedPage(rawPath, path, quad, detection != null, detection?.confidence ?: 0f)
+                ProcessedPage(rawPath, path, quad, detection != null, detection?.confidence ?: 0f, status)
             } finally {
                 if (out !== raw) out.recycle()
             }
@@ -185,7 +213,7 @@ object DocumentPipeline {
 
     /** Detection only (crop editor "Auto Detect"). Returns null when nothing reliable is found. */
     suspend fun detectOnRaw(bitmap: Bitmap, expectedAspectRatio: Float? = null): DocumentDetection? =
-        withContext(Dispatchers.Default) { DocumentDetector.detect(bitmap, expectedAspectRatio) }
+        withContext(Dispatchers.Default) { detectWithFallback(bitmap, null, expectedAspectRatio) }
 
     /**
      * Authoritative render used by editor save, rotate, filter and re-crop.
@@ -275,6 +303,48 @@ object DocumentPipeline {
         return out
     }
 
+    // ------------------------------------------------------------------ detection chain
+
+    /**
+     * One engine (DocumentDetector), three passes:
+     *  1. guided by the live-preview quad when available (sub-pixel confirmation on the still);
+     *  2. without the ID-card / passport aspect constraint (user may have chosen the wrong mode);
+     *  3. on a down-scaled, contrast-boosted copy (white paper on light desk, soft shadows).
+     * Returns null only when every pass fails. Coordinates are normalized, so pass 3 is size-independent.
+     */
+    private suspend fun detectWithFallback(
+        upright: Bitmap,
+        prior: DocumentQuad?,
+        expectedAspectRatio: Float?
+    ): DocumentDetection? {
+        fun valid(d: DocumentDetection?) = d?.takeIf { DocumentDetector.isPlausible(it.quad) && !it.quad.isFullImage() }
+
+        valid(runCatching { DocumentDetector.detectWithPrior(upright, prior, expectedAspectRatio) }.getOrNull())?.let { return it }
+        if (expectedAspectRatio != null) {
+            valid(runCatching { DocumentDetector.detect(upright, null) }.getOrNull())?.let { return it }
+        }
+        val scale = ALT_PASS_MAX_SIDE.toFloat() / max(upright.width, upright.height)
+        val small = if (scale < 1f) {
+            Bitmap.createScaledBitmap(
+                upright,
+                (upright.width * scale).roundToInt().coerceAtLeast(32),
+                (upright.height * scale).roundToInt().coerceAtLeast(32),
+                true
+            )
+        } else upright
+        try {
+            val boosted = ImageProcessor.adjustEnhancements(small, 0f, 1.8f, false)
+            try {
+                return valid(runCatching { DocumentDetector.detect(boosted, null) }.getOrNull())
+                    ?.copy(imageWidth = upright.width, imageHeight = upright.height)
+            } finally {
+                if (boosted !== small) boosted.recycle()
+            }
+        } finally {
+            if (small !== upright) small.recycle()
+        }
+    }
+
     // ------------------------------------------------------------------ core
 
     private suspend fun processUpright(
@@ -287,19 +357,22 @@ object DocumentPipeline {
         prefix: String
     ): ProcessedPage {
         val rawPath = ImageProcessor.saveBitmapToFile(context, upright, "${prefix}_raw_")
-        val detection = if (autoCrop) {
-            runCatching { DocumentDetector.detectWithPrior(upright, prior, expectedAspectRatio) }.getOrNull()
-        } else null
-        val quad = detection?.quad?.takeIf { DocumentDetector.isPlausible(it) } ?: DocumentQuad.fullQuad()
-        val autoCropped = detection != null && !quad.isFullImage()
+        val detection = if (autoCrop) detectWithFallback(upright, prior, expectedAspectRatio) else null
+        val quad = detection?.quad ?: DocumentQuad.fullQuad()
+        val status = when {
+            !autoCrop -> DetectionStatus.SKIPPED
+            detection != null -> DetectionStatus.DETECTED
+            else -> DetectionStatus.NOT_FOUND
+        }
         QuadStore.save(rawPath, quad)
+        QuadStore.saveStatus(rawPath, status)
         val out = renderBitmap(upright, quad, 0, filter, 0f, 1f, false)
         val procPath = try {
             ImageProcessor.saveBitmapToFile(context, out, "${prefix}_proc_")
         } finally {
             if (out !== upright) out.recycle()
         }
-        return ProcessedPage(rawPath, procPath, quad, autoCropped, detection?.confidence ?: 0f)
+        return ProcessedPage(rawPath, procPath, quad, detection != null, detection?.confidence ?: 0f, status)
     }
 
     // ------------------------------------------------------------------ decoding
@@ -365,11 +438,13 @@ object DocumentPipeline {
 }
 
 /**
- * Persists the crop quad next to its raw image ("<raw>.quad.json"), so that every workflow that only
- * passes (rawPath, processedPath) pairs (camera -> edit session -> crop editor) keeps the real quad.
+ * Persists the crop quad ("<raw>.quad.json") and the detection status ("<raw>.detect") next to the
+ * raw image, so every workflow that only passes (rawPath, processedPath) pairs (camera -> edit
+ * session -> crop editor -> save) keeps the real quad AND knows whether it was really detected.
  */
 object QuadStore {
     private fun fileFor(rawPath: String) = File("$rawPath.quad.json")
+    private fun statusFileFor(rawPath: String) = File("$rawPath.detect")
 
     fun save(rawPath: String, quad: DocumentQuad) {
         try { fileFor(rawPath).writeText(quad.toJson()) } catch (_: Exception) { }
@@ -380,7 +455,18 @@ object QuadStore {
         if (f.exists()) DocumentQuad.fromJsonOrNull(f.readText()) else null
     } catch (_: Exception) { null }
 
+    fun saveStatus(rawPath: String, status: DetectionStatus) {
+        try { statusFileFor(rawPath).writeText(status.name) } catch (_: Exception) { }
+    }
+
+    /** Null for pages created before detection status was recorded (treated as "unknown"). */
+    fun loadStatus(rawPath: String): DetectionStatus? = try {
+        val f = statusFileFor(rawPath)
+        if (f.exists()) DetectionStatus.valueOf(f.readText().trim()) else null
+    } catch (_: Exception) { null }
+
     fun delete(rawPath: String) {
         try { fileFor(rawPath).delete() } catch (_: Exception) { }
+        try { statusFileFor(rawPath).delete() } catch (_: Exception) { }
     }
 }

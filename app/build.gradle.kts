@@ -3,21 +3,17 @@ plugins {
   alias(libs.plugins.kotlin.compose)
   alias(libs.plugins.google.devtools.ksp)
 }
-
 android {
   namespace = "com.example"
   compileSdk = 36
-
   defaultConfig {
     applicationId = "com.aistudio.docscan.pro"
     minSdk = 24
     targetSdk = 36
     versionCode = (System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1)
     versionName = "1.0.${versionCode}"
-
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
-
   signingConfigs {
     create("release") {
       val keystorePath = System.getenv("KEYSTORE_PATH") ?: "${rootDir}/my-upload-key.jks"
@@ -27,7 +23,6 @@ android {
       keyPassword = System.getenv("KEY_PASSWORD")
     }
   }
-
   buildTypes {
     release {
       isCrunchPngs = false
@@ -36,8 +31,7 @@ android {
       proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
       signingConfig = signingConfigs.getByName("release")
     }
-    debug {
-      
+    debug {      
     }
   }
   compileOptions {
@@ -49,7 +43,6 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
-
   // ✅ يُخبر Room بمكان حفظ ملفات الـ schema للتحقق من صحة الـ Migrations وقت التجميع
   ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
@@ -60,10 +53,11 @@ android {
     includeInBundle = true
   }
 }
-
 dependencies {
     implementation("androidx.print:print:1.0.0")
   implementation("androidx.appcompat:appcompat:1.6.1")
+  // Background OCR / classification / suggested title (DocumentAnalysisWorker)
+  implementation("androidx.work:work-runtime-ktx:2.10.0")
   implementation(platform(libs.androidx.compose.bom))
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.biometric)

@@ -3,16 +3,13 @@ package com.example.ui.screens.camera
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
-import android.media.ExifInterface
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -41,43 +38,37 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import android.view.Surface
-import androidx.core.content.FileProvider
-import com.example.R
-import com.example.data.model.FilterType
-import com.example.engine.cv.DocumentQuad
-import com.example.engine.cv.ImageProcessor
-import com.example.ui.theme.*
+import coil.compose.AsyncImage
+import com.example.engine.cv.DocumentPipeline
+import com.example.engine.cv.LiveDetectionPhase
+import com.example.engine.cv.ProcessedPage
+import com.example.engine.cv.QuadStore
 import com.example.ui.screens.camera.components.PermissionRationaleScreen
-import kotlinx.coroutines.Dispatchers
+import com.example.ui.theme.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import coil.compose.AsyncImage
-import androidx.compose.ui.layout.ContentScale
 import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
-import kotlin.math.max
 
 enum class ScanCameraMode(val titleEn: String, val titleAr: String) {
     DOCUMENT("Document", "مستند"),
@@ -86,16 +77,23 @@ enum class ScanCameraMode(val titleEn: String, val titleAr: String) {
     PASSPORT("Passport", "جواز")
 }
 
-private fun quadDistance(a: DocumentQuad, b: DocumentQuad): Float {
-    val pointsA = listOf(a.topLeft, a.topRight, a.bottomRight, a.bottomLeft)
-    val pointsB = listOf(b.topLeft, b.topRight, b.bottomRight, b.bottomLeft)
-    return pointsA.indices.map { i ->
-        val dx = pointsA[i].x - pointsB[i].x
-        val dy = pointsA[i].y - pointsB[i].y
-        kotlin.math.sqrt(dx * dx + dy * dy)
-    }.average().toFloat()
-}
-
+/**
+ * Camera scanning screen.
+ *
+ * Architecture (single authoritative path):
+ *   CameraX ImageAnalysis -> LiveDocumentAnalyzer (DocumentDetector, off the main thread)
+ *   -> DetectionStabilizer -> DocumentScanController.state (main thread only)
+ *   -> DocumentDetectionOverlay + AutoCaptureEffect
+ *   Shutter -> ImageCapture -> DocumentPipeline.processCapturedFile(prior = live quad)
+ *   (EXIF -> upright raw -> full-resolution re-detection guided by the live quad -> warp -> AUTO filter)
+ *
+ * Gallery / system camera use the SAME pipeline (processUri / processFile). No image work runs on
+ * the main thread. When detection fails, the full frame is kept and the user can crop manually in
+ * the editor (the raw image + quad sidecar are always preserved).
+ *
+ * Multi-page (BATCH): capture is continuous (Page 1 -> Page 2 -> ... -> Finish); the editor is never
+ * opened between pages. Auto-capture re-arms only when the page changes (no duplicate shots).
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CameraScanScreen(
@@ -113,9 +111,10 @@ fun CameraScanScreen(
     val coroutineScope = rememberCoroutineScope()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
 
-    // Multi-page batch toggle
-    var isMultiPage by remember { mutableStateOf(initialMode == ScanCameraMode.DOCUMENT) } // Default to multi-page if doc
-    var scanMode by remember { mutableStateOf(initialMode) }
+    // Replacing a single page never makes sense in batch mode.
+    val startMode = if (replacePageId > 0L && initialMode == ScanCameraMode.BATCH) ScanCameraMode.DOCUMENT else initialMode
+    var scanMode by remember { mutableStateOf(startMode) }
+    val isMultiPage = scanMode == ScanCameraMode.BATCH
 
     // Camera runtime permission state
     var hasCameraPermission by remember {
@@ -144,25 +143,22 @@ fun CameraScanScreen(
     }
 
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
-    
-    // Lifecycle observer to trigger camera rebind on resume (prevents preview freeze)
+
+    // Rebind camera on resume (prevents frozen preview after returning from system camera / picker).
     var resumedCount by remember { mutableStateOf(0) }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                resumedCount++
-            }
+            if (event == Lifecycle.Event.ON_RESUME) resumedCount++
         }
         lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose {
-            lifecycleOwner.lifecycle.removeObserver(observer)
-        }
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // Dedicated executor for image analysis to prevent thread leaks and multiple bindings
+    // Dedicated analysis executor; camera is unbound before the executor is shut down.
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     DisposableEffect(analysisExecutor) {
         onDispose {
+            try { cameraProvider?.unbindAll() } catch (_: Throwable) {}
             analysisExecutor.shutdown()
         }
     }
@@ -180,66 +176,67 @@ fun CameraScanScreen(
     var minZoomRatio by remember { mutableStateOf(1f) }
     var maxZoomRatio by remember { mutableStateOf(4f) }
 
-    // Grid and spirit level
     var showGridLines by remember { mutableStateOf(false) }
-    var pitchAngle by remember { mutableStateOf(0f) }
-    var rollAngle by remember { mutableStateOf(0f) }
     var isPhoneFlat by remember { mutableStateOf(false) }
 
     var isAutoCaptureEnabled by remember { mutableStateOf(true) }
 
-    var detectedImageQuad by remember { mutableStateOf<DocumentQuad?>(null) }
-    var detectionConfidence by remember { mutableStateOf(0f) }
-    var detectionImageWidth by remember { mutableStateOf(1) }
-    var detectionImageHeight by remember { mutableStateOf(1) }
-    var isDocumentStable by remember { mutableStateOf(false) }
-    var stabilityCount by remember { mutableStateOf(0) }
+    // ---- Single owner of live detection / stability / auto-capture state ----
+    val scanController = rememberDocumentScanController(context)
+    val liveState = scanController.state
+    val isDocumentStable = liveState.phase == LiveDetectionPhase.STABLE
+    val isDocumentTracked = liveState.quad != null
+    val autoCaptureProgress = liveState.stableProgress
 
-    // Automatically activate auto-capture whenever in document scanning mode
-    LaunchedEffect(scanMode) {
-        if (scanMode == ScanCameraMode.DOCUMENT || scanMode == ScanCameraMode.BATCH) {
-            isAutoCaptureEnabled = true
-        }
-        if (scanMode == ScanCameraMode.BATCH) {
-            isMultiPage = true
-        } else if (scanMode == ScanCameraMode.DOCUMENT) {
-            isMultiPage = false
-        }
-        detectedImageQuad = null
-        detectionConfidence = 0f
-        detectionImageWidth = 1
-        detectionImageHeight = 1
-        stabilityCount = 0
-        isDocumentStable = false
-    }
-    var autoCaptureProgress by remember { mutableStateOf(0f) }
-    var countdownRemaining by remember { mutableStateOf<Int?>(null) }
-    var isCountdownCancelled by remember { mutableStateOf(false) }
+    var isAutoCancelled by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
     var captureCooldown by remember { mutableStateOf(false) }
 
-    // Tap to focus state
+    LaunchedEffect(scanMode) {
+        scanController.setMode(scanMode)
+        isAutoCancelled = false
+    }
+    // Re-allow auto-capture once the document leaves the frame after a manual cancel.
+    LaunchedEffect(liveState.phase) {
+        if (liveState.phase == LiveDetectionPhase.SEARCHING) isAutoCancelled = false
+    }
+
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
 
-    // Multi-page batch, ID card and passport accumulation
+    // Multi-page batch, ID card and passport accumulation (raw + processed are always kept together).
     val batchPages = remember { mutableStateListOf<Pair<String, String>>() }
-    var idCardFrontPath by remember { mutableStateOf<String?>(null) }
-    var idCardFrontRawPath by remember { mutableStateOf<String?>(null) }
-    var isIdCardFrontDone by remember { mutableStateOf(false) }
-    var passportFrontPath by remember { mutableStateOf<String?>(null) }
-    var passportFrontRawPath by remember { mutableStateOf<String?>(null) }
-    var isPassportFrontDone by remember { mutableStateOf(false) }
+    var frontPage by remember { mutableStateOf<Pair<String, String>?>(null) }
+    val isIdCardFrontDone = scanMode == ScanCameraMode.ID_CARD && frontPage != null
+    val isPassportFrontDone = scanMode == ScanCameraMode.PASSPORT && frontPage != null
 
-    // Shutter animation flash
+    // Switching mode discards a half-finished 2-sided capture (it belonged to the previous mode).
+    LaunchedEffect(scanMode) { frontPage = null }
+
     var showFlashEffect by remember { mutableStateOf(false) }
+    var showDiscardDialog by remember { mutableStateOf(false) }
 
-    // Capture Review State
-    var reviewPage by remember { mutableStateOf<Pair<String, String>?>(null) }
+    fun deletePageFiles(page: Pair<String, String>) {
+        runCatching {
+            if (page.first.isNotBlank()) {
+                QuadStore.delete(page.first)
+                File(page.first).delete()
+            }
+            if (page.second.isNotBlank() && page.second != page.first) File(page.second).delete()
+        }
+    }
 
-    // Haptic feedback intentionally omitted; CAMERA is the only runtime permission used.
-    fun triggerHapticFeedback() = Unit
+    fun discardAndExit() {
+        batchPages.forEach { deletePageFiles(it) }
+        batchPages.clear()
+        frontPage?.let { deletePageFiles(it) }
+        frontPage = null
+        onNavigateBack()
+    }
 
-    // Accelerometer listener for level/horizon indicator
+    val hasUnsavedCaptures = batchPages.isNotEmpty() || frontPage != null
+    BackHandler(enabled = hasUnsavedCaptures) { showDiscardDialog = true }
+
+    // Accelerometer listener for level indicator
     DisposableEffect(Unit) {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
         val accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -249,94 +246,76 @@ fun CameraScanScreen(
                     val x = event.values[0]
                     val y = event.values[1]
                     val z = event.values[2]
-                    rollAngle = x
-                    pitchAngle = y
                     isPhoneFlat = abs(x) < 1.6f && abs(y) < 1.6f && abs(z) > 8.0f
                 }
             }
             override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
         }
-        sensorManager?.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_UI)
-        onDispose {
-            sensorManager?.unregisterListener(listener)
+        if (accelerometer != null) {
+            sensorManager?.registerListener(listener, accelerometer, SensorManager.SENSOR_DELAY_UI)
+        }
+        onDispose { sensorManager?.unregisterListener(listener) }
+    }
+
+    /**
+     * Routes processed pages to the current mode. Shared by camera, gallery and system camera so
+     * every source behaves identically.
+     */
+    fun deliverPages(pages: List<Pair<String, String>>) {
+        if (pages.isEmpty()) return
+        when (scanMode) {
+            ScanCameraMode.DOCUMENT -> onDocumentCaptured(listOf(pages.first()))
+            ScanCameraMode.BATCH -> batchPages.addAll(pages)
+            ScanCameraMode.ID_CARD, ScanCameraMode.PASSPORT -> {
+                val front = frontPage
+                when {
+                    pages.size >= 2 -> {
+                        frontPage = null
+                        onDocumentCaptured(listOf(pages[0], pages[1]))
+                    }
+                    front == null -> frontPage = pages[0]
+                    else -> {
+                        frontPage = null
+                        onDocumentCaptured(listOf(front, pages[0]))
+                    }
+                }
+            }
         }
     }
 
-    // Multi-Image Gallery Picker as instant fallback & batch import option
+    // Gallery import: same pipeline as the camera (EXIF, bounded decode, detection, warp, filter), off main.
     val multipleGalleryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 30)
     ) { uris: List<Uri> ->
-        if (uris.isNotEmpty()) {
-            coroutineScope.launch {
-                isCapturing = true
-                try {
-                    val importedList = mutableListOf<Pair<String, String>>()
-                    for (uri in uris) {
-                        val stream = context.contentResolver.openInputStream(uri)
-                        val bmp = BitmapFactory.decodeStream(stream)
-                        stream?.close()
-                        if (bmp != null) {
-                            val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "import_raw_")
-                            val quad = ImageProcessor.detectDocumentQuad(bmp)
-                            val procBmp = try {
-                                val warped = ImageProcessor.warpPerspective(bmp, quad)
-                                val filtered = ImageProcessor.applyFilter(warped, FilterType.AUTO)
-                                if (warped != bmp && warped != filtered) warped.recycle()
-                                filtered
-                            } catch (e: Exception) {
-                                ImageProcessor.applyFilter(bmp, FilterType.AUTO)
-                            }
-                            val procPath = ImageProcessor.saveBitmapToFile(context, procBmp, "import_proc_")
-                            if (procBmp != bmp) procBmp.recycle()
-                            bmp.recycle()
-                            importedList.add(Pair(rawPath, procPath))
-                        }
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        coroutineScope.launch {
+            isCapturing = true
+            scanController.onCaptureStarted()
+            try {
+                val aspect = DocumentScanController.expectedAspectFor(scanMode)
+                val imported = mutableListOf<Pair<String, String>>()
+                var failed = 0
+                for ((index, uri) in uris.withIndex()) {
+                    val page: ProcessedPage? = try {
+                        DocumentPipeline.processUri(context, uri, expectedAspectRatio = aspect, prefix = "import_p${index + 1}")
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        null
                     }
-
-                    if (importedList.isNotEmpty()) {
-                        triggerHapticFeedback()
-                        when (scanMode) {
-                            ScanCameraMode.DOCUMENT, ScanCameraMode.BATCH -> {
-                                if (isMultiPage) batchPages.addAll(importedList)
-                                else onDocumentCaptured(importedList)
-                            }
-                            ScanCameraMode.PASSPORT -> {
-                                if (importedList.size >= 2) {
-                                    onPassportCaptured?.invoke(importedList[0].second, importedList[1].second)
-                                        ?: onDocumentCaptured(listOf(importedList[0], importedList[1]))
-                                } else {
-                                    val first = importedList[0].second
-                                    if (!isPassportFrontDone) {
-                                        passportFrontPath = first
-                                        isPassportFrontDone = true
-                                    } else {
-                                        val front = passportFrontPath ?: first
-                                        onDocumentCaptured(listOf(Pair("", front), Pair("", first)))
-                                    }
-                                }
-                            }
-                            ScanCameraMode.ID_CARD -> {
-                                if (importedList.size >= 2) {
-                                    onDocumentCaptured(listOf(importedList[0], importedList[1]))
-                                } else {
-                                    val first = importedList[0].second
-                                    if (!isIdCardFrontDone) {
-                                        idCardFrontPath = first
-                                        isIdCardFrontDone = true
-                                    } else {
-                                        val front = idCardFrontPath ?: first
-                                        onDocumentCaptured(listOf(Pair("", front), Pair("", first)))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    Toast.makeText(context, if (isArabic) "فشل استيراد الصور" else "Failed to import photos", Toast.LENGTH_SHORT).show()
-                } finally {
-                    isCapturing = false
+                    if (page != null) imported += Pair(page.rawPath, page.processedPath) else failed++
                 }
+                if (failed > 0) {
+                    Toast.makeText(
+                        context,
+                        if (isArabic) "تعذر استيراد $failed صورة" else "Could not import $failed image(s)",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                deliverPages(imported)
+            } finally {
+                isCapturing = false
+                scanController.onCaptureFinished(stayOnCamera = true)
             }
         }
     }
@@ -345,98 +324,49 @@ fun CameraScanScreen(
         multipleGalleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
 
-    // System Camera fallback launcher
-    var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
+    // System camera fallback (devices where CameraX cannot bind).
     var tempCameraFile by remember { mutableStateOf<File?>(null) }
     val systemCameraLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
         val file = tempCameraFile
-        if (success && file != null && file.exists()) {
-            coroutineScope.launch {
-                isCapturing = true
-                try {
-                    val exif = ExifInterface(file.absolutePath)
-                    val orientation = exif.getAttributeInt(
-                        ExifInterface.TAG_ORIENTATION,
-                        ExifInterface.ORIENTATION_NORMAL
+        tempCameraFile = null
+        if (!success || file == null || !file.exists()) {
+            file?.delete()
+            return@rememberLauncherForActivityResult
+        }
+        coroutineScope.launch {
+            isCapturing = true
+            try {
+                val page = try {
+                    DocumentPipeline.processFile(
+                        context, file.absolutePath,
+                        expectedAspectRatio = DocumentScanController.expectedAspectFor(scanMode),
+                        prefix = "cam"
                     )
-                    val rotationDegrees = when (orientation) {
-                        ExifInterface.ORIENTATION_ROTATE_90 -> 90
-                        ExifInterface.ORIENTATION_ROTATE_180 -> 180
-                        ExifInterface.ORIENTATION_ROTATE_270 -> 270
-                        else -> 0
-                    }
-                    var bmp = BitmapFactory.decodeFile(file.absolutePath)
-                    if (bmp != null) {
-                        if (rotationDegrees != 0) {
-                            val rotated = ImageProcessor.rotateBitmap(bmp, rotationDegrees)
-                            if (rotated != bmp) {
-                                bmp.recycle()
-                                bmp = rotated
-                            }
-                        }
-                        val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "cam_raw_")
-                        val quad = ImageProcessor.detectDocumentQuad(bmp)
-                        val procBmp = try {
-                            val warped = ImageProcessor.warpPerspective(bmp, quad)
-                            val filtered = ImageProcessor.applyFilter(warped, FilterType.AUTO)
-                            if (warped != bmp && warped != filtered) warped.recycle()
-                            filtered
-                        } catch (e: Exception) {
-                            ImageProcessor.applyFilter(bmp, FilterType.AUTO)
-                        }
-                        val procPath = ImageProcessor.saveBitmapToFile(context, procBmp, "cam_proc_")
-                        if (procBmp != bmp) procBmp.recycle()
-                        bmp.recycle()
-
-                        triggerHapticFeedback()
-                        when (scanMode) {
-                            ScanCameraMode.DOCUMENT, ScanCameraMode.BATCH -> {
-                                if (isMultiPage) batchPages.add(Pair(rawPath, procPath))
-                                else onDocumentCaptured(listOf(Pair(rawPath, procPath)))
-                            }
-                            ScanCameraMode.PASSPORT -> {
-                                if (!isPassportFrontDone) {
-                                    passportFrontPath = procPath
-                                    isPassportFrontDone = true
-                                } else {
-                                    val front = passportFrontPath ?: procPath
-                                    onDocumentCaptured(listOf(Pair(rawPath, front), Pair(rawPath, procPath)))
-                                }
-                            }
-                            ScanCameraMode.ID_CARD -> {
-                                if (!isIdCardFrontDone) {
-                                    idCardFrontPath = procPath
-                                    isIdCardFrontDone = true
-                                } else {
-                                    val front = idCardFrontPath ?: procPath
-                                    onDocumentCaptured(listOf(Pair(rawPath, front), Pair(rawPath, procPath)))
-                                }
-                            }
-                        }
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                } finally {
-                    file.delete()
-                    isCapturing = false
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    null
                 }
+                if (page != null) {
+                    deliverPages(listOf(Pair(page.rawPath, page.processedPath)))
+                } else {
+                    Toast.makeText(context, if (isArabic) "تعذر معالجة الصورة" else "Could not process the photo", Toast.LENGTH_SHORT).show()
+                }
+            } finally {
+                file.delete()
+                isCapturing = false
             }
         }
     }
 
-    val launchSystemCamera = {
+    val launchSystemCamera: () -> Unit = {
         try {
             val dir = File(context.cacheDir, "camera_scans").apply { if (!exists()) mkdirs() }
             val file = File(dir, "sys_${System.currentTimeMillis()}.jpg")
             tempCameraFile = file
-            val uri = FileProvider.getUriForFile(
-                context,
-                "${context.packageName}.provider",
-                file
-            )
-            tempCameraUri = uri
+            val uri = FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
             systemCameraLauncher.launch(uri)
         } catch (e: Exception) {
             e.printStackTrace()
@@ -444,213 +374,64 @@ fun CameraScanScreen(
         }
     }
 
-    // Reactive CameraX binding with robust fallback. Detection is performed on
-    // the actual ImageProxy Y plane; no hard-coded document rectangle is used.
+    // CameraX binding: Preview + ImageCapture + ImageAnalysis in one UseCaseGroup with a ViewPort
+    // (built only after layout), so overlay, analysis and photo share the same field of view.
     LaunchedEffect(hasCameraPermission, cameraSelector, previewViewRef, resumedCount) {
         val pView = previewViewRef
         if (!hasCameraPermission || pView == null) return@LaunchedEffect
-
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
-        cameraProviderFuture.addListener({
-            try {
-                val provider = cameraProviderFuture.get()
-                cameraProvider = provider
-                provider.unbindAll()
-
-                val targetRotation = pView.display?.rotation ?: Surface.ROTATION_0
-                val preview = Preview.Builder()
-                    .setTargetRotation(targetRotation)
-                    .build()
-                    .also { it.setSurfaceProvider(pView.surfaceProvider) }
-
-                val imageCap = ImageCapture.Builder()
-                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
-                    .setTargetRotation(targetRotation)
-                    .setFlashMode(flashMode)
-                    .build()
-                imageCapture = imageCap
-
-                val imageAnalysis = ImageAnalysis.Builder()
-                    .setTargetRotation(targetRotation)
-                    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-                    .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
-                    .build()
-
-                var previousDetection: ImageProcessor.DocumentDetection? = null
-                var previousLuma: FloatArray? = null
-                var frameCount = 0
-                var lastAnalysisAtNs = 0L
-                var lastUiUpdateAtNs = 0L
-
-                imageAnalysis.setAnalyzer(analysisExecutor) { imageProxy ->
-                    try {
-                        val now = System.nanoTime()
-                        if (now - lastAnalysisAtNs < 120_000_000L) {
-                            return@setAnalyzer
-                        }
-                        lastAnalysisAtNs = now
-
-                        val currentMode = scanMode
-                        val expectedAspect = when (currentMode) {
-                            ScanCameraMode.ID_CARD -> 1.586f
-                            ScanCameraMode.PASSPORT -> 1.42f
-                            else -> null
-                        }
-                        val detection = ImageProcessor.detectDocumentFromImageProxy(imageProxy, expectedAspect)
-
-                        var motionStable = false
-                        val yPlane = imageProxy.planes.firstOrNull()
-                        if (yPlane != null) {
-                            val buffer = yPlane.buffer
-                            val rowStride = yPlane.rowStride
-                            val pixelStride = yPlane.pixelStride.coerceAtLeast(1)
-                            val w = imageProxy.width
-                            val h = imageProxy.height
-                            val grid = 6
-                            val samples = FloatArray(grid * grid)
-                            var diffSum = 0f
-                            var valid = 0
-                            for (gy in 0 until grid) {
-                                val py = (h * (gy + 1)) / (grid + 1)
-                                for (gx in 0 until grid) {
-                                    val px = (w * (gx + 1)) / (grid + 1)
-                                    val pos = py * rowStride + px * pixelStride
-                                    if (pos in 0 until buffer.capacity()) {
-                                        val v = (buffer.get(pos).toInt() and 0xFF).toFloat()
-                                        val index = gy * grid + gx
-                                        samples[index] = v
-                                        previousLuma?.let { prev ->
-                                            diffSum += abs(v - prev[index])
-                                            valid++
-                                        }
-                                    }
-                                }
-                            }
-                            if (previousLuma != null && valid > 0) {
-                                motionStable = diffSum / valid.toFloat() < 7.5f
-                            }
-                            previousLuma = samples
-                        }
-
-                        val previous = previousDetection
-                        val quadStable = detection != null && previous != null &&
-                            quadDistance(detection.quad, previous.quad) < 0.018f
-                        val detectionStable = detection != null && detection.confidence >= 0.62f &&
-                            (previous == null || quadStable) && motionStable
-
-                        frameCount++
-                        previousDetection = detection
-
-                        if (now - lastUiUpdateAtNs >= 100_000_000L) {
-                            lastUiUpdateAtNs = now
-                            val nextStabilityCount = if (detectionStable && frameCount > 5) {
-                                (stabilityCount + 1).coerceAtMost(20)
-                            } else {
-                                0
-                            }
-                            val stableNow = detectionStable && nextStabilityCount >= 10
-                            ContextCompat.getMainExecutor(context).execute {
-                                detectedImageQuad = detection?.quad
-                                detectionConfidence = detection?.confidence ?: 0f
-                                detectionImageWidth = detection?.imageWidth ?: 1
-                                detectionImageHeight = detection?.imageHeight ?: 1
-                                stabilityCount = nextStabilityCount
-                                isDocumentStable = stableNow
-                            }
-                        }
-                    } catch (_: Throwable) {
-                        // Camera analysis must never kill the analyzer thread.
-                    } finally {
-                        imageProxy.close()
-                    }
-                }
-
-                var camera: Camera? = null
-                try {
-                    camera = provider.bindToLifecycle(
-                        lifecycleOwner,
-                        cameraSelector,
-                        preview,
-                        imageCap,
-                        imageAnalysis
-                    )
-                } catch (_: Throwable) {
-                    try {
-                        camera = provider.bindToLifecycle(
-                            lifecycleOwner,
-                            cameraSelector,
-                            preview,
-                            imageCap
-                        )
-                    } catch (_: Throwable) {
-                        if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
-                            try {
-                                camera = provider.bindToLifecycle(
-                                    lifecycleOwner,
-                                    CameraSelector.DEFAULT_FRONT_CAMERA,
-                                    preview,
-                                    imageCap
-                                )
-                                cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
-                            } catch (_: Throwable) {
-                                camera = null
-                            }
-                        }
-                    }
-                }
-
-                if (camera != null) {
-                    cameraControl = camera.cameraControl
-                    cameraInfo = camera.cameraInfo
-                    camera.cameraInfo.zoomState.observe(lifecycleOwner) { state ->
-                        zoomRatio = state.zoomRatio
-                        minZoomRatio = state.minZoomRatio
-                        maxZoomRatio = state.maxZoomRatio
-                    }
-                }
-            } catch (_: Throwable) {
-                ContextCompat.getMainExecutor(context).execute {
-                    detectedImageQuad = null
-                    detectionConfidence = 0f
-                    isDocumentStable = false
-                    stabilityCount = 0
-                }
-            }
-        }, ContextCompat.getMainExecutor(context))
-    }
-
-    fun previewQuad(quad: DocumentQuad, imageWidth: Int, imageHeight: Int, viewWidth: Float, viewHeight: Float): DocumentQuad {
-        val scale = max(viewWidth / imageWidth.coerceAtLeast(1), viewHeight / imageHeight.coerceAtLeast(1))
-        val renderedW = imageWidth * scale
-        val renderedH = imageHeight * scale
-        val offsetX = (viewWidth - renderedW) / 2f
-        val offsetY = (viewHeight - renderedH) / 2f
-
-        fun map(p: android.graphics.PointF): android.graphics.PointF {
-            val px = p.x * imageWidth * scale + offsetX
-            val py = p.y * imageHeight * scale + offsetY
-            return android.graphics.PointF(
-                (px / viewWidth.coerceAtLeast(1f)).coerceIn(-0.5f, 1.5f),
-                (py / viewHeight.coerceAtLeast(1f)).coerceIn(-0.5f, 1.5f)
+        try {
+            awaitLaidOut(pView)
+            val provider = awaitCameraProvider(context)
+            cameraProvider = provider
+            val bound = bindScannerCamera(
+                provider = provider,
+                lifecycleOwner = lifecycleOwner,
+                previewView = pView,
+                cameraSelector = cameraSelector,
+                flashMode = flashMode,
+                analysisExecutor = analysisExecutor,
+                controller = scanController
             )
+            scanController.reset()
+            cameraInfo?.zoomState?.removeObservers(lifecycleOwner)
+            if (bound == null) {
+                imageCapture = null
+                cameraControl = null
+                cameraInfo = null
+                return@LaunchedEffect
+            }
+            imageCapture = bound.imageCapture
+            cameraControl = bound.camera.cameraControl
+            cameraInfo = bound.camera.cameraInfo
+            if (isTorchActive) bound.camera.cameraControl.enableTorch(true)
+            // Single observer per binding (previous code added one more on every resume).
+            bound.camera.cameraInfo.zoomState.removeObservers(lifecycleOwner)
+            bound.camera.cameraInfo.zoomState.observe(lifecycleOwner) { state ->
+                zoomRatio = state.zoomRatio
+                minZoomRatio = state.minZoomRatio
+                maxZoomRatio = state.maxZoomRatio
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            scanController.reset()
         }
-        return DocumentQuad(map(quad.topLeft), map(quad.topRight), map(quad.bottomRight), map(quad.bottomLeft))
     }
 
     fun capturePhoto() {
         val cap = imageCapture
         if (cap == null) {
-            Toast.makeText(
-                context,
-                if (isArabic) "جاري تشغيل الكاميرا، يرجى الانتظار ثانية..." else "Initializing camera, please wait…",
-                Toast.LENGTH_SHORT
-            ).show()
             launchSystemCamera()
             return
         }
         if (isCapturing || captureCooldown) return
         isCapturing = true
         showFlashEffect = true
+
+        // Snapshot at shutter time, read from the controller (never a stale composition value).
+        val priorQuad = scanController.captureQuadForShutter()
+        val modeAtShutter = scanMode
+        scanController.onCaptureStarted()
 
         val cacheDir = File(context.cacheDir, "camera_scans").apply { if (!exists()) mkdirs() }
         val photoFile = File(cacheDir, "scan_${System.currentTimeMillis()}.jpg")
@@ -661,122 +442,46 @@ fun CameraScanScreen(
             ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                    showFlashEffect = false
                     coroutineScope.launch {
-                        showFlashEffect = false
-                        try {
-                            // Check EXIF rotation
-                            val exif = ExifInterface(photoFile.absolutePath)
-                            val orientation = exif.getAttributeInt(
-                                ExifInterface.TAG_ORIENTATION,
-                                ExifInterface.ORIENTATION_NORMAL
-                            )
-                            val rotationDegrees = when (orientation) {
-                                ExifInterface.ORIENTATION_ROTATE_90 -> 90
-                                ExifInterface.ORIENTATION_ROTATE_180 -> 180
-                                ExifInterface.ORIENTATION_ROTATE_270 -> 270
-                                else -> 0
-                            }
-
-                            var bmp = ImageProcessor.loadBitmapFromFile(photoFile.absolutePath, 2400)
-                            if (bmp != null) {
-                                if (rotationDegrees != 0) {
-                                    val rotated = ImageProcessor.rotateBitmap(bmp, rotationDegrees)
-                                    if (rotated != bmp) {
-                                        bmp.recycle()
-                                        bmp = rotated
-                                    }
-                                }
-
-                                val rawPath = ImageProcessor.saveBitmapToFile(context, bmp, "raw_")
-
-                                // Re-detect on the captured oriented bitmap so the crop
-                                // is computed in the exact coordinate space being saved.
-                                val procBmp = try {
-                                    val expectedAspect = when (scanMode) {
-                                        ScanCameraMode.ID_CARD -> 1.586f
-                                        ScanCameraMode.PASSPORT -> 1.42f
-                                        else -> null
-                                    }
-                                    val detection = ImageProcessor.detectDocument(bmp, expectedAspect)
-                                    if (detection != null && detection.confidence >= 0.58f && ImageProcessor.isQuadValid(detection.quad)) {
-                                        val warped = ImageProcessor.applyPerspectiveWarp(bmp, detection.quad)
-                                        val filtered = ImageProcessor.applyFilter(warped, FilterType.AUTO)
-                                        if (warped != bmp && warped != filtered) warped.recycle()
-                                        filtered
-                                    } else {
-                                        // Safe fallback: preserve the full captured frame and only enhance it.
-                                        ImageProcessor.applyFilter(bmp, FilterType.AUTO)
-                                    }
-                                } catch (_: Throwable) {
-                                    ImageProcessor.applyFilter(bmp, FilterType.AUTO)
-                                }
-
-                                val procPath = ImageProcessor.saveBitmapToFile(context, procBmp, "proc_")
-
-                                if (procBmp != bmp) procBmp.recycle()
-                                bmp.recycle()
-                                photoFile.delete()
-
-                                triggerHapticFeedback()
-
-                                if (scanMode == ScanCameraMode.DOCUMENT) {
-                                    onDocumentCaptured(listOf(Pair(rawPath, procPath)))
-                                } else if (scanMode == ScanCameraMode.BATCH) {
-                                    batchPages.add(Pair(rawPath, procPath))
-                                    isCapturing = false
-                                    captureCooldown = true
-                                    stabilityCount = 0
-                                    isDocumentStable = false
-                                    autoCaptureProgress = 0f
-                                    delay(1400)
-                                    captureCooldown = false
-                                } else if (scanMode == ScanCameraMode.PASSPORT) {
-                                    if (!isPassportFrontDone) {
-                                        passportFrontPath = procPath
-                                        passportFrontRawPath = rawPath
-                                        isPassportFrontDone = true
-                                        isCapturing = false
-                                        captureCooldown = true
-                                        stabilityCount = 0
-                                        isDocumentStable = false
-                                        autoCaptureProgress = 0f
-                                        delay(1000)
-                                        captureCooldown = false
-                                    } else {
-                                        isCapturing = false
-                                        val fRaw = passportFrontRawPath ?: rawPath
-                                        val fProc = passportFrontPath ?: procPath
-                                        onDocumentCaptured(listOf(Pair(fRaw, fProc), Pair(rawPath, procPath)))
-                                    }
-                                } else if (scanMode == ScanCameraMode.ID_CARD) {
-                                    if (!isIdCardFrontDone) {
-                                        idCardFrontPath = procPath
-                                        idCardFrontRawPath = rawPath
-                                        isIdCardFrontDone = true
-                                        isCapturing = false
-                                        captureCooldown = true
-                                        stabilityCount = 0
-                                        isDocumentStable = false
-                                        autoCaptureProgress = 0f
-                                        delay(1000)
-                                        captureCooldown = false
-                                    } else {
-                                        isCapturing = false
-                                        val fRaw = idCardFrontRawPath ?: rawPath
-                                        val fProc = idCardFrontPath ?: procPath
-                                        onDocumentCaptured(listOf(Pair(fRaw, fProc), Pair(rawPath, procPath)))
-                                    }
-                                }
-                            } else {
-                                isCapturing = false
-                                photoFile.delete()
-                                Toast.makeText(context, if (isArabic) "تعذر معالجة الصورة، جرب مجدداً" else "Could not decode captured photo", Toast.LENGTH_SHORT).show()
-                            }
-                        } catch (e: Exception) {
+                        // Decode + EXIF + detection (guided by live quad) + warp + filter: all off main.
+                        val page = try {
+                            scanController.processCapture(context, photoFile, modeAtShutter, priorQuad)
+                        } catch (e: CancellationException) {
                             photoFile.delete()
+                            throw e
+                        } catch (e: Throwable) {
                             e.printStackTrace()
+                            null
+                        }
+                        if (page == null) {
+                            photoFile.delete()
                             isCapturing = false
-                            Toast.makeText(context, if (isArabic) "حدث خطأ أثناء حفظ الصورة" else "Error processing photo", Toast.LENGTH_SHORT).show()
+                            scanController.onCaptureFinished(stayOnCamera = true)
+                            Toast.makeText(
+                                context,
+                                if (isArabic) "تعذر معالجة الصورة، حاول مرة أخرى" else "Could not process the photo, please retry",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                            return@launch
+                        }
+                        val pair = Pair(page.rawPath, page.processedPath)
+                        val staysOnCamera = when (modeAtShutter) {
+                            ScanCameraMode.DOCUMENT -> false
+                            ScanCameraMode.BATCH -> true
+                            ScanCameraMode.ID_CARD, ScanCameraMode.PASSPORT -> frontPage == null
+                        }
+                        isCapturing = false
+                        scanController.onCaptureFinished(stayOnCamera = staysOnCamera)
+                        if (modeAtShutter == scanMode) {
+                            deliverPages(listOf(pair))
+                        } else {
+                            deletePageFiles(pair) // mode changed while processing: never mix pages
+                        }
+                        if (staysOnCamera) {
+                            captureCooldown = true
+                            delay(700)
+                            captureCooldown = false
                         }
                     }
                 }
@@ -786,48 +491,45 @@ fun CameraScanScreen(
                     photoFile.delete()
                     showFlashEffect = false
                     isCapturing = false
+                    scanController.onCaptureFinished(stayOnCamera = true)
                     Toast.makeText(
                         context,
-                        if (isArabic) "تعذر التصوير عبر الكاميرا الداخلية، جاري فتح كاميرا النظام..." else "Camera capture error, opening system camera…",
+                        if (isArabic) "تعذر التصوير، حاول مرة أخرى" else "Capture failed, please retry",
                         Toast.LENGTH_SHORT
                     ).show()
-                    launchSystemCamera()
                 }
             }
         )
     }
 
-    // Auto Capture countdown
-    LaunchedEffect(isDocumentStable, isAutoCaptureEnabled, isCapturing, captureCooldown, isCountdownCancelled) {
-        if (isAutoCaptureEnabled && isDocumentStable && !isCapturing && !captureCooldown && !isCountdownCancelled) {
-            autoCaptureProgress = 0f
-            val totalDuration = 2500L
-            val intervals = 5 // 2500 / 500 = 5 steps
-            val stepDuration = totalDuration / intervals
+    // One time source: the stabilizer hold time IS the countdown (ring on the overlay).
+    AutoCaptureEffect(
+        controller = scanController,
+        enabled = isAutoCaptureEnabled && !isCapturing && !captureCooldown &&
+            !isAutoCancelled && scanController.analysisActive && !showDiscardDialog
+    ) {
+        capturePhoto()
+    }
 
-            for (i in intervals downTo 1) {
-                // Approximate countdown in seconds or just use steps
-                countdownRemaining = i 
-                autoCaptureProgress = (intervals - i + 1).toFloat() / intervals.toFloat()
-                delay(stepDuration)
-                if (!isDocumentStable || isCapturing || captureCooldown || isCountdownCancelled) {
-                    countdownRemaining = null
-                    autoCaptureProgress = 0f
-                    return@LaunchedEffect
+    if (showDiscardDialog) {
+        AlertDialog(
+            onDismissRequest = { showDiscardDialog = false },
+            title = { Text(if (isArabic) "تجاهل الصفحات الملتقطة؟" else "Discard captured pages?") },
+            text = {
+                Text(
+                    if (isArabic) "سيتم حذف الصفحات التي لم يتم حفظها."
+                    else "Pages that were not saved will be deleted."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showDiscardDialog = false; discardAndExit() }) {
+                    Text(if (isArabic) "تجاهل" else "Discard", color = MaterialTheme.colorScheme.error)
                 }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardDialog = false }) { Text(if (isArabic) "متابعة" else "Continue") }
             }
-
-            countdownRemaining = null
-            if (isDocumentStable && !isCapturing && !captureCooldown && !isCountdownCancelled) {
-                capturePhoto()
-            }
-        } else {
-            countdownRemaining = null
-            autoCaptureProgress = 0f
-            if (!isDocumentStable) {
-                isCountdownCancelled = false
-            }
-        }
+        )
     }
 
     Box(
@@ -843,7 +545,7 @@ fun CameraScanScreen(
                 onNavigateBack = onNavigateBack
             )
         } else {
-            // Camera Preview View
+            val density = LocalDensity.current
             AndroidView(
                 factory = { ctx ->
                     PreviewView(ctx).apply {
@@ -871,119 +573,48 @@ fun CameraScanScreen(
                     }
             )
 
-            // 3x3 Grid Lines Overlay
             if (showGridLines) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val lineCol = Color.White.copy(alpha = 0.25f)
-                    val stroke = Stroke(width = 1.dp.toPx())
-                    drawLine(lineCol, Offset(size.width / 3f, 0f), Offset(size.width / 3f, size.height), stroke.width)
-                    drawLine(lineCol, Offset(size.width * 2f / 3f, 0f), Offset(size.width * 2f / 3f, size.height), stroke.width)
-                    drawLine(lineCol, Offset(0f, size.height / 3f), Offset(size.width, size.height / 3f), stroke.width)
-                    drawLine(lineCol, Offset(0f, size.height * 2f / 3f), Offset(size.width, size.height * 2f / 3f), stroke.width)
+                    val w = 1.dp.toPx()
+                    drawLine(lineCol, Offset(size.width / 3f, 0f), Offset(size.width / 3f, size.height), w)
+                    drawLine(lineCol, Offset(size.width * 2f / 3f, 0f), Offset(size.width * 2f / 3f, size.height), w)
+                    drawLine(lineCol, Offset(0f, size.height / 3f), Offset(size.width, size.height / 3f), w)
+                    drawLine(lineCol, Offset(0f, size.height * 2f / 3f), Offset(size.width, size.height * 2f / 3f), w)
                 }
             }
 
-            // Live Document Quad Overlay & Mode Guides
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val strokeColor = if (isDocumentStable) Emerald400 else CyanScan
-                val strokeW = if (isDocumentStable) 3.5.dp.toPx() else 2.dp.toPx()
-
-                if (scanMode == ScanCameraMode.PASSPORT) {
-                    // Passport Guide Frame (Standard Passport spread)
-                    val padX = size.width * 0.08f
-                    val w = size.width - (padX * 2)
-                    val h = (w * 1.36f).coerceAtMost(size.height * 0.65f)
+            // ID card / passport alignment guides (visual help only, never used as the crop).
+            if (scanMode == ScanCameraMode.ID_CARD || scanMode == ScanCameraMode.PASSPORT) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val guideColor = (if (isDocumentStable) Emerald400 else Color.White).copy(alpha = if (isDocumentTracked) 0.35f else 0.7f)
+                    val strokeW = 2.dp.toPx()
+                    val padX = size.width * if (scanMode == ScanCameraMode.PASSPORT) 0.08f else 0.10f
+                    val w = size.width - padX * 2
+                    val h = if (scanMode == ScanCameraMode.PASSPORT) (w / 1.42f) else (w / 1.586f)
                     val topY = (size.height - h) / 2.2f
-
                     drawRoundRect(
-                        color = strokeColor,
+                        color = guideColor,
                         topLeft = Offset(padX, topY),
                         size = androidx.compose.ui.geometry.Size(w, h),
                         cornerRadius = androidx.compose.ui.geometry.CornerRadius(16.dp.toPx()),
                         style = Stroke(width = strokeW)
                     )
-
-                    // Photo box guide (left/top area of passport bio page)
-                    val photoW = w * 0.32f
-                    val photoH = photoW * 1.3f
-                    drawRoundRect(
-                        color = strokeColor.copy(alpha = 0.55f),
-                        topLeft = Offset(padX + 16.dp.toPx(), topY + 22.dp.toPx()),
-                        size = androidx.compose.ui.geometry.Size(photoW, photoH),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx()),
-                        style = Stroke(width = 1.5.dp.toPx())
-                    )
-
-                    // MRZ guide lines (bottom area of passport)
-                    val mrzY1 = topY + h - 38.dp.toPx()
-                    val mrzY2 = topY + h - 18.dp.toPx()
-                    drawLine(strokeColor.copy(alpha = 0.5f), Offset(padX + 16.dp.toPx(), mrzY1), Offset(padX + w - 16.dp.toPx(), mrzY1), strokeWidth = 1.5.dp.toPx())
-                    drawLine(strokeColor.copy(alpha = 0.5f), Offset(padX + 16.dp.toPx(), mrzY2), Offset(padX + w - 16.dp.toPx(), mrzY2), strokeWidth = 1.5.dp.toPx())
-                } else if (scanMode == ScanCameraMode.ID_CARD) {
-                    // ID Card Frame
-                    val padX = size.width * 0.10f
-                    val w = size.width - (padX * 2)
-                    val h = w * 0.63f
-                    val topY = (size.height - h) / 2.2f
-
-                    drawRoundRect(
-                        color = strokeColor,
-                        topLeft = Offset(padX, topY),
-                        size = androidx.compose.ui.geometry.Size(w, h),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(16.dp.toPx()),
-                        style = Stroke(width = strokeW)
-                    )
-
-                    // Photo box guide
-                    val photoW = w * 0.28f
-                    val photoH = photoW * 1.25f
-                    drawRoundRect(
-                        color = strokeColor.copy(alpha = 0.55f),
-                        topLeft = Offset(padX + 14.dp.toPx(), topY + 16.dp.toPx()),
-                        size = androidx.compose.ui.geometry.Size(photoW, photoH),
-                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx()),
-                        style = Stroke(width = 1.5.dp.toPx())
-                    )
-                } else {
-                    val imageQ = detectedImageQuad
-                    if (imageQ != null) {
-                        val q = previewQuad(imageQ, detectionImageWidth, detectionImageHeight, size.width, size.height)
-                        val p = Path().apply {
-                            moveTo(q.topLeft.x * size.width, q.topLeft.y * size.height)
-                            lineTo(q.topRight.x * size.width, q.topRight.y * size.height)
-                            lineTo(q.bottomRight.x * size.width, q.bottomRight.y * size.height)
-                            lineTo(q.bottomLeft.x * size.width, q.bottomLeft.y * size.height)
-                            close()
-                        }
-
-                        val borderCol = if (isDocumentStable) SemanticSuccess else GoldBase.copy(alpha = 0.85f)
-
-                        if (isDocumentStable) {
-                            drawPath(path = p, color = SemanticSuccess.copy(alpha = 0.12f))
-                        }
-
-                        drawPath(path = p, color = borderCol, style = Stroke(width = strokeW))
-
-                        val cornerColor = if (isDocumentStable) SemanticSuccess else GoldBase
-                        val pts = listOf(
-                            Offset(q.topLeft.x * size.width, q.topLeft.y * size.height),
-                            Offset(q.topRight.x * size.width, q.topRight.y * size.height),
-                            Offset(q.bottomRight.x * size.width, q.bottomRight.y * size.height),
-                            Offset(q.bottomLeft.x * size.width, q.bottomLeft.y * size.height)
-                        )
-                        for (pt in pts) {
-                            drawCircle(color = Color.White, radius = 6.dp.toPx(), center = pt)
-                            drawCircle(color = cornerColor, radius = 4.5.dp.toPx(), center = pt)
-                        }
-                    }
                 }
             }
 
-            // Tap to focus indicator
+            // Live detected document (edges + corners + hold-progress ring), same bounds as PreviewView.
+            DocumentDetectionOverlay(
+                state = liveState,
+                isFrontCamera = scanController.isFrontCamera,
+                modifier = Modifier.fillMaxSize()
+            )
+
             focusPoint?.let { pt ->
+                val (dx, dy) = with(density) { (pt.x.toDp() - 32.dp) to (pt.y.toDp() - 32.dp) }
                 Box(
                     modifier = Modifier
-                        .offset(x = (pt.x - 32).dp, y = (pt.y - 32).dp)
+                        .offset(x = dx, y = dy)
                         .size(64.dp)
                         .border(1.8.dp, GoldBase, CircleShape),
                     contentAlignment = Alignment.Center
@@ -996,7 +627,6 @@ fun CameraScanScreen(
                 }
             }
 
-            // Flash White Effect on Shutter
             AnimatedVisibility(
                 visible = showFlashEffect,
                 enter = fadeIn(animationSpec = tween(60)),
@@ -1005,57 +635,20 @@ fun CameraScanScreen(
                 Box(modifier = Modifier.fillMaxSize().background(Color.White))
             }
 
-            // Countdown Overlay
-            countdownRemaining?.let { _ ->
+            // Processing indicator (capture/import runs in background; UI stays responsive).
+            if (isCapturing && !showFlashEffect) {
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.35f)),
-                    contentAlignment = Alignment.Center
+                        .align(Alignment.Center)
+                        .background(Color.Black.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+                        .padding(horizontal = 20.dp, vertical = 14.dp)
                 ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        // Display a visual indicator of the countdown
-                        Box(contentAlignment = Alignment.Center) {
-                            CircularProgressIndicator(
-                                progress = { autoCaptureProgress },
-                                modifier = Modifier.size(120.dp),
-                                color = Emerald400,
-                                strokeWidth = 8.dp,
-                                trackColor = Color.White.copy(alpha = 0.3f)
-                            )
-                            Text(
-                                text = if (isArabic) "جاري التصوير..." else "Capturing...",
-                                color = Color.White,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        
-                        Spacer(modifier = Modifier.height(32.dp))
-                        
-                        Button(
-                            onClick = { isCountdownCancelled = true },
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                            shape = RoundedCornerShape(24.dp),
-                            modifier = Modifier
-                                .height(56.dp)
-                                .padding(horizontal = 24.dp)
-                                .testTag("cancel_autocapture_button")
-                        ) {
-                            Icon(Icons.Default.Close, contentDescription = null)
-                            Spacer(Modifier.width(8.dp))
-                            Text(
-                                text = if (isArabic) "إلغاء التلقائي" else "Cancel Auto",
-                                fontSize = 18.sp,
-                                fontWeight = FontWeight.Medium
-                            )
-                        }
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Emerald400, strokeWidth = 2.dp)
+                        Text(if (isArabic) "جاري المعالجة..." else "Processing…", color = Color.White, fontSize = 14.sp)
                     }
                 }
             }
-
-
-            // Removed Capture Review Overlay
 
             // Top Controls Bar
             Row(
@@ -1067,17 +660,19 @@ fun CameraScanScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(
-                    onClick = onNavigateBack,
+                    onClick = { if (hasUnsavedCaptures) showDiscardDialog = true else onNavigateBack() },
                     modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
                 ) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                 }
 
-                // Auto Capture Toggle Pill
                 Surface(
                     shape = RoundedCornerShape(20.dp),
                     color = if (isAutoCaptureEnabled) GoldBase else Color.Black.copy(alpha = 0.55f),
-                    modifier = Modifier.clickable { isAutoCaptureEnabled = !isAutoCaptureEnabled }
+                    modifier = Modifier.clickable {
+                        isAutoCaptureEnabled = !isAutoCaptureEnabled
+                        isAutoCancelled = false
+                    }
                 ) {
                     Row(
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
@@ -1100,7 +695,6 @@ fun CameraScanScreen(
                 }
 
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    // Flash / Torch Mode Toggle
                     IconButton(
                         onClick = {
                             when (flashMode) {
@@ -1115,9 +709,12 @@ fun CameraScanScreen(
                                     cameraControl?.enableTorch(false)
                                 }
                                 ImageCapture.FLASH_MODE_ON -> {
+                                    if (!isTorchActive) {
+                                        // ON -> TORCH (continuous light, keeps flash mode OFF for capture)
+                                        isTorchActive = true
+                                        cameraControl?.enableTorch(true)
+                                    }
                                     flashMode = ImageCapture.FLASH_MODE_OFF
-                                    isTorchActive = true
-                                    cameraControl?.enableTorch(true)
                                 }
                                 else -> {
                                     flashMode = ImageCapture.FLASH_MODE_OFF
@@ -1141,19 +738,13 @@ fun CameraScanScreen(
                         )
                     }
 
-                    // Grid Lines Toggle
                     IconButton(
                         onClick = { showGridLines = !showGridLines },
                         modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
                     ) {
-                        Icon(
-                            Icons.Default.GridOn,
-                            contentDescription = "Grid",
-                            tint = if (showGridLines) Emerald400 else Color.White
-                        )
+                        Icon(Icons.Default.GridOn, contentDescription = "Grid", tint = if (showGridLines) Emerald400 else Color.White)
                     }
 
-                    // Camera Switch (Back / Front)
                     IconButton(
                         onClick = {
                             cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
@@ -1169,7 +760,7 @@ fun CameraScanScreen(
                 }
             }
 
-            // Mode Status / Guidance Banner
+            // Guidance banner
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -1180,50 +771,28 @@ fun CameraScanScreen(
                     color = Color.Black.copy(alpha = 0.70f),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f))
                 ) {
-                    val bannerText = when (scanMode) {
-                        ScanCameraMode.DOCUMENT -> if (isDocumentStable) {
-                            if (isArabic) "ثبّت الهاتف — جاري التقاط المستند تلقائياً..." else "Hold steady — Auto-capturing document…"
-                        } else {
-                            if (isArabic) "تصوير مستند — وجه الكاميرا" else "Single Mode — Align document"
-                        }
-                        ScanCameraMode.BATCH -> if (isDocumentStable) {
-                            if (isArabic) "ثبّت الهاتف — جاري الالتقاط..." else "Hold steady — Auto-capturing…"
-                        } else {
-                            if (isArabic) "وضع التصوير المتعدد (${batchPages.size} صفحات)" else "Batch Mode (${batchPages.size} pages)"
-                        }
-                        ScanCameraMode.PASSPORT -> if (!isPassportFrontDone) {
-                            if (isDocumentStable) {
-                                if (isArabic) "ثبّت الهاتف — جاري التقاط صفحة بيانات الجواز..." else "Hold steady — Capturing passport bio page…"
-                            } else {
-                                if (isArabic) "الخطوة 1: مسح صفحة بيانات وصورة الجواز" else "Step 1: Scan passport bio-data page"
-                            }
-                        } else {
-                            if (isDocumentStable) {
-                                if (isArabic) "ثبّت الهاتف — جاري التقاط الصفحة الثانية..." else "Hold steady — Capturing 2nd page…"
-                            } else {
-                                if (isArabic) "الخطوة 2: مسح صفحة إضافية (أو اضغط 'تم' لاكتمال الجواز)" else "Step 2: Scan additional page (or tap 'Done')"
-                            }
-                        }
-                        ScanCameraMode.ID_CARD -> if (!isIdCardFrontDone) {
-                            if (isDocumentStable) {
-                                if (isArabic) "ثبّت الهاتف — جاري التقاط الوجه الأمامي للبطاقة..." else "Hold steady — Capturing ID front…"
-                            } else {
-                                if (isArabic) "الخطوة 1: مسح الوجه الأمامي للبطاقة" else "Step 1: Scan ID card front"
-                            }
-                        } else {
-                            if (isDocumentStable) {
-                                if (isArabic) "ثبّت الهاتف — جاري التقاط الوجه الخلفي..." else "Hold steady — Capturing ID back…"
-                            } else {
-                                if (isArabic) "الخطوة 2: مسح الوجه الخلفي للبطاقة" else "Step 2: Scan ID card back"
-                            }
-                        }
+                    val guidance = when {
+                        !scanController.analysisActive ->
+                            if (isArabic) "الاكتشاف التلقائي غير متاح — التقط يدوياً" else "Auto-detect unavailable — capture manually"
+                        isDocumentStable ->
+                            if (isArabic) "ثبّت الهاتف — جاري الالتقاط..." else "Hold steady — capturing…"
+                        isDocumentTracked ->
+                            if (isArabic) "تم اكتشاف المستند — ثبّت الهاتف" else "Document detected — hold steady"
+                        else ->
+                            if (isArabic) "وجّه الكاميرا نحو المستند" else "Point the camera at the document"
+                    }
+                    val step = when (scanMode) {
+                        ScanCameraMode.DOCUMENT -> null
+                        ScanCameraMode.BATCH -> if (isArabic) "صفحة ${batchPages.size + 1}" else "Page ${batchPages.size + 1}"
+                        ScanCameraMode.ID_CARD -> if (!isIdCardFrontDone) (if (isArabic) "الوجه الأمامي" else "Front side") else (if (isArabic) "الوجه الخلفي" else "Back side")
+                        ScanCameraMode.PASSPORT -> if (!isPassportFrontDone) (if (isArabic) "صفحة البيانات" else "Bio-data page") else (if (isArabic) "الصفحة الثانية" else "Second page")
                     }
                     Row(
                         modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        if (isDocumentStable) {
+                        if (isDocumentTracked && autoCaptureProgress > 0f && isAutoCaptureEnabled) {
                             CircularProgressIndicator(
                                 progress = { autoCaptureProgress },
                                 modifier = Modifier.size(14.dp),
@@ -1232,16 +801,28 @@ fun CameraScanScreen(
                             )
                         }
                         Text(
-                            text = bannerText,
+                            text = if (step != null) "$step • $guidance" else guidance,
                             color = if (isDocumentStable) Emerald400 else Color.White,
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold
                         )
+                        if (isAutoCaptureEnabled && isDocumentTracked && !isAutoCancelled) {
+                            Text(
+                                text = if (isArabic) "إلغاء" else "Cancel",
+                                color = GoldBase,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier
+                                    .clickable { isAutoCancelled = true }
+                                    .padding(start = 6.dp)
+                                    .testTag("cancel_autocapture_button")
+                            )
+                        }
                     }
                 }
             }
 
-            // Bottom Controls Container
+            // Bottom Controls
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -1251,7 +832,51 @@ fun CameraScanScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // Zoom Selector (1x, 2x, 3x)
+                // Batch thumbnails: last pages, tap the last one to remove it (retake).
+                if (isMultiPage && batchPages.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        batchPages.forEachIndexed { index, page ->
+                            val isLast = index == batchPages.lastIndex
+                            Box(
+                                modifier = Modifier
+                                    .size(width = 44.dp, height = 58.dp)
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .border(1.dp, if (isLast) Emerald400 else Color.White.copy(alpha = 0.4f), RoundedCornerShape(6.dp))
+                            ) {
+                                AsyncImage(
+                                    model = File(page.second),
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                                if (isLast) {
+                                    Box(
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .size(18.dp)
+                                            .background(Color.Black.copy(alpha = 0.7f), CircleShape)
+                                            .clickable {
+                                                val removed = batchPages.removeAt(batchPages.lastIndex)
+                                                deletePageFiles(removed)
+                                                scanController.reset()
+                                            },
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Icon(Icons.Default.Close, contentDescription = if (isArabic) "إعادة التقاط" else "Retake", tint = Color.White, modifier = Modifier.size(12.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Zoom presets
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier
@@ -1283,7 +908,6 @@ fun CameraScanScreen(
                     }
                 }
 
-                // Shutter Button Row
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -1291,124 +915,101 @@ fun CameraScanScreen(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    // Left action: Import from Gallery
                     IconButton(
-                        onClick = { launchGalleryImport() },
+                        onClick = { if (!isCapturing) launchGalleryImport() },
                         modifier = Modifier
                             .size(50.dp)
                             .background(Color.Black.copy(alpha = 0.45f), CircleShape)
                     ) {
-                        Icon(
-                            imageVector = Icons.Default.PhotoLibrary,
-                            contentDescription = if (isArabic) "المعرض" else "Gallery",
-                            tint = Color.White
+                        Icon(Icons.Default.PhotoLibrary, contentDescription = if (isArabic) "المعرض" else "Gallery", tint = Color.White)
+                    }
+
+                    // Shutter
+                    Box(
+                        modifier = Modifier
+                            .size(80.dp)
+                            .clickable(enabled = !isCapturing && !captureCooldown) { capturePhoto() }
+                            .testTag("camera_shutter_btn"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (isAutoCaptureEnabled && autoCaptureProgress > 0f) {
+                            CircularProgressIndicator(
+                                progress = { autoCaptureProgress },
+                                modifier = Modifier.size(80.dp),
+                                color = Emerald400,
+                                strokeWidth = 4.dp
+                            )
+                        } else {
+                            Box(
+                                modifier = Modifier
+                                    .size(76.dp)
+                                    .clip(CircleShape)
+                                    .background(Color.White.copy(alpha = 0.25f))
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(62.dp)
+                                .clip(CircleShape)
+                                .background(if (isCapturing) Color.Gray else if (isDocumentStable) Emerald400 else Color.White)
                         )
                     }
 
-                    // Center: Shutter and Multi-page Toggle
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        // Multi-page Toggle
-                        // Removed redundant multi-page switch as it is now a Mode
-                        
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Box(
-                            modifier = Modifier
-                                .size(80.dp)
-                                .clickable { capturePhoto() }
-                                .testTag("camera_shutter_btn"),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isAutoCaptureEnabled && autoCaptureProgress > 0f) {
-                                CircularProgressIndicator(
-                                    progress = { autoCaptureProgress },
-                                    modifier = Modifier.size(80.dp),
-                                    color = Emerald400,
-                                    strokeWidth = 4.dp
-                                )
-                            } else {
-                                Box(
-                                    modifier = Modifier
-                                        .size(76.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.White.copy(alpha = 0.25f))
+                    when {
+                        isMultiPage && batchPages.isNotEmpty() -> {
+                            Button(
+                                onClick = {
+                                    if (!isCapturing) {
+                                        val pages = batchPages.toList()
+                                        batchPages.clear() // ownership moves to the edit session: no double save / delete
+                                        onDocumentCaptured(pages)
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
+                                shape = RoundedCornerShape(20.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = if (isArabic) "إنهاء (${batchPages.size})" else "Finish (${batchPages.size})",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
                                 )
                             }
-
-                            // Inner Shutter circle
-                            Box(
+                        }
+                        frontPage != null -> {
+                            // Single-sided card / passport: finish with the front only.
+                            Button(
+                                onClick = {
+                                    val front = frontPage ?: return@Button
+                                    frontPage = null
+                                    onDocumentCaptured(listOf(front))
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
+                                shape = RoundedCornerShape(20.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
+                            ) {
+                                Text(
+                                    text = if (isArabic) "تم (وجه واحد)" else "Done (1 side)",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 13.sp
+                                )
+                            }
+                        }
+                        else -> {
+                            IconButton(
+                                onClick = { if (!isCapturing) launchSystemCamera() },
                                 modifier = Modifier
-                                    .size(62.dp)
-                                    .clip(CircleShape)
-                                    .background(if (isDocumentStable) Emerald400 else Color.White)
-                            )
-                        }
-                    }
-
-                    // Right action: Done
-                    if (isMultiPage && batchPages.isNotEmpty()) {
-                        Button(
-                            onClick = { onDocumentCaptured(batchPages.toList()) },
-                            colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
-                            shape = RoundedCornerShape(20.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = if (isArabic) "تم (${batchPages.size})" else "Done (${batchPages.size})",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
-                        }
-                    } else if (scanMode == ScanCameraMode.PASSPORT && isPassportFrontDone) {
-                        Button(
-                            onClick = {
-                                val front = passportFrontPath ?: ""
-                                onPassportCaptured?.invoke(front, "") ?: onIdCardCaptured(front, "")
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
-                            shape = RoundedCornerShape(20.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = if (isArabic) "تم (صفحة 1)" else "Done (1 Page)",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
-                        }
-                    } else if (scanMode == ScanCameraMode.ID_CARD && isIdCardFrontDone) {
-                        Button(
-                            onClick = {
-                                val front = idCardFrontPath ?: ""
-                                onIdCardCaptured(front, "")
-                            },
-                            colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
-                            shape = RoundedCornerShape(20.dp),
-                            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 8.dp)
-                        ) {
-                            Text(
-                                text = if (isArabic) "تم (وجه 1)" else "Done (Front)",
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp
-                            )
-                        }
-                    } else {
-                        // System camera button as immediate hardware fallback
-                        IconButton(
-                            onClick = launchSystemCamera,
-                            modifier = Modifier
-                                .size(50.dp)
-                                .background(Color.White.copy(alpha = 0.15f), CircleShape)
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.PhotoCamera,
-                                contentDescription = if (isArabic) "كاميرا النظام" else "System Camera",
-                                tint = Color.White
-                            )
+                                    .size(50.dp)
+                                    .background(Color.White.copy(alpha = 0.15f), CircleShape)
+                            ) {
+                                Icon(Icons.Default.PhotoCamera, contentDescription = if (isArabic) "كاميرا النظام" else "System Camera", tint = Color.White)
+                            }
                         }
                     }
                 }
 
-                // Mode Selector Bar (شريط سفلي لتغيير نوع التصوير: تصوير / تصوير متعدد / تصوير بطاقة / تصوير جواز)
+                // Mode selector (locked while pages of the current mode are pending or replacing a page)
+                val modeLocked = hasUnsavedCaptures || replacePageId > 0L
                 Surface(
                     shape = RoundedCornerShape(28.dp),
                     color = Color.Black.copy(alpha = 0.75f),
@@ -1424,18 +1025,13 @@ fun CameraScanScreen(
                     ) {
                         ScanCameraMode.values().forEach { m ->
                             val isSelected = scanMode == m
+                            val enabled = !modeLocked || isSelected
                             Surface(
                                 shape = RoundedCornerShape(22.dp),
                                 color = if (isSelected) Emerald400 else Color.Transparent,
                                 modifier = Modifier
                                     .clip(RoundedCornerShape(22.dp))
-                                    .clickable {
-                                        triggerHapticFeedback()
-                                        scanMode = m
-                                        if (m == ScanCameraMode.DOCUMENT) {
-                                            isAutoCaptureEnabled = true
-                                        }
-                                    }
+                                    .clickable(enabled = enabled && !isCapturing) { scanMode = m }
                             ) {
                                 Row(
                                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
@@ -1451,11 +1047,19 @@ fun CameraScanScreen(
                                         },
                                         contentDescription = null,
                                         modifier = Modifier.size(17.dp),
-                                        tint = if (isSelected) Color.Black else Color.White.copy(alpha = 0.85f)
+                                        tint = when {
+                                            isSelected -> Color.Black
+                                            enabled -> Color.White.copy(alpha = 0.85f)
+                                            else -> Color.White.copy(alpha = 0.3f)
+                                        }
                                     )
                                     Text(
                                         text = if (isArabic) m.titleAr else m.titleEn,
-                                        color = if (isSelected) Color.Black else Color.White,
+                                        color = when {
+                                            isSelected -> Color.Black
+                                            enabled -> Color.White
+                                            else -> Color.White.copy(alpha = 0.3f)
+                                        },
                                         fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                         fontSize = 13.sp
                                     )
