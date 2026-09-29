@@ -5,11 +5,14 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.ImageDecoder
 import android.graphics.Paint
 import android.graphics.pdf.PdfRenderer
 import android.media.ExifInterface
 import android.net.Uri
+import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import com.example.data.model.FilterType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -26,7 +29,7 @@ enum class DetectionStatus {
     DETECTED,
     /** Detection ran (all passes) and found nothing reliable: full image kept, user must be told. */
     NOT_FOUND,
-    /** Detection intentionally not run (PDF pages, auto-crop disabled). */
+    /** Detection intentionally not run (PDF pages, Google scanner pages, auto-crop disabled). */
     SKIPPED,
     /** The user set the crop by hand in the editor. */
     MANUAL
@@ -52,10 +55,13 @@ object ScanAspect {
     const val PASSPORT = 1.42f   // ID-3 data page
 }
 
+/** An image URI that cannot be read (no access, not an image, empty, corrupt). The message says why. */
+class ImageImportException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
 /**
  * THE single processing pipeline for every input source:
- *   Single scan, Batch scan, ID card, Passport, Imported photos, Imported PDF, Re-crop, Editor save,
- *   Rotate, Filter.
+ *   Google scanner pages, built-in camera, gallery / files import, PDF import, re-crop, editor save,
+ *   rotate, filter.
  *
  * Invariants:
  *  - A raw image is always saved upright (EXIF applied) and never modified afterwards.
@@ -67,6 +73,7 @@ object ScanAspect {
  *  - All work runs on Dispatchers.Default / IO; callers never block the main thread.
  */
 object DocumentPipeline {
+    private const val TAG = "DocumentPipeline"
     /** One default scan filter for every source (previously AUTO in some paths, MAGIC in others). */
     val DEFAULT_FILTER: FilterType = FilterType.AUTO
     private const val CAPTURE_MAX_SIDE = 2400
@@ -94,7 +101,11 @@ object DocumentPipeline {
         }
     }
 
-    /** Imported gallery image / system camera result / shared image. */
+    /**
+     * Gallery / Files / shared image / Google scanner page (content:// or file:// URI).
+     * Contract unchanged for all callers: null when the image cannot be read (the reason is logged by
+     * [decodeUprightUri]); callers count and report failed pages.
+     */
     suspend fun processUri(
         context: Context,
         uri: Uri,
@@ -103,7 +114,12 @@ object DocumentPipeline {
         filter: FilterType? = FilterType.AUTO,
         prefix: String = "import"
     ): ProcessedPage? = withContext(Dispatchers.Default) {
-        val upright = decodeUprightUri(context, uri, IMPORT_MAX_SIDE) ?: return@withContext null
+        val upright = try {
+            decodeUprightUri(context, uri, IMPORT_MAX_SIDE)
+        } catch (e: ImageImportException) {
+            Log.w(TAG, "Image not imported: ${e.message}", e)
+            return@withContext null
+        }
         try {
             processUpright(context, upright, null, expectedAspectRatio, filter, autoCrop, prefix)
         } finally {
@@ -454,22 +470,78 @@ object DocumentPipeline {
         return uprightAndBound(decoded, rotation, maxSide)
     }
 
-    fun decodeUprightUri(context: Context, uri: Uri, maxSide: Int): Bitmap? {
+    /**
+     * Decodes a content:// / file:// image, upright (EXIF applied) and bounded to [maxSide].
+     *
+     * ROOT CAUSE of "Could not import images" (every gallery / files import AND every Google scanner page):
+     * the bounds pass was written as
+     *     openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+     * A decode with inJustDecodeBounds = true ALWAYS returns null (only the options are filled), so the
+     * elvis operator returned null for every image. The camera path used decodeFile() without that elvis,
+     * which is why only camera capture worked.
+     *
+     * Now: Android 9+ uses ImageDecoder (content/file URIs, JPEG/PNG/WebP/HEIF, EXIF orientation applied
+     * by the decoder, power-of-two subsampling for large photos, software bitmap for pixel access). Older
+     * versions and decoder failures use a corrected BitmapFactory path. Failures throw
+     * [ImageImportException] with the real reason (no access, not an image, corrupt).
+     */
+    fun decodeUprightUri(context: Context, uri: Uri, maxSide: Int): Bitmap {
         val resolver = context.contentResolver
-        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
-        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-        val opts = BitmapFactory.Options().apply {
-            inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxSide)
-            inPreferredConfig = Bitmap.Config.ARGB_8888
+        var imageDecoderError: Throwable? = null
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            try {
+                val source = ImageDecoder.createSource(resolver, uri)
+                val decoded = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE // getPixels / Canvas need a software bitmap
+                    decoder.isMutableRequired = false
+                    val size = info.size
+                    decoder.setTargetSampleSize(sampleSize(size.width, size.height, maxSide))
+                }
+                val argb = if (decoded.config == Bitmap.Config.ARGB_8888) decoded else {
+                    val copy = decoded.copy(Bitmap.Config.ARGB_8888, false)
+                    decoded.recycle()
+                    copy ?: throw ImageImportException("Unsupported pixel format")
+                }
+                // Orientation is already applied by ImageDecoder; only bound the size.
+                return uprightAndBound(argb, 0, maxSide)
+            } catch (e: SecurityException) {
+                throw ImageImportException("No permission to read the selected image", e)
+            } catch (e: OutOfMemoryError) {
+                imageDecoderError = e
+            } catch (e: Exception) {
+                imageDecoderError = e // e.g. vendor-specific formats: try BitmapFactory below
+            }
         }
-        val decoded = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
-        val rotation = try {
-            resolver.openInputStream(uri)?.use {
-                exifToDegrees(ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL))
-            } ?: 0
-        } catch (_: Exception) { 0 }
-        return uprightAndBound(decoded, rotation, maxSide)
+        try {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            val stream = resolver.openInputStream(uri)
+                ?: throw ImageImportException("The selected image cannot be opened")
+            stream.use { BitmapFactory.decodeStream(it, null, bounds) } // returns null by design; fills bounds
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+                throw ImageImportException("The selected file is not a readable image (${bounds.outMimeType ?: "unknown type"})", imageDecoderError)
+            }
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxSide)
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            val decoded = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+                ?: throw ImageImportException("The selected image could not be decoded", imageDecoderError)
+            val rotation = try {
+                resolver.openInputStream(uri)?.use {
+                    exifToDegrees(ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL))
+                } ?: 0
+            } catch (_: Exception) { 0 }
+            return uprightAndBound(decoded, rotation, maxSide)
+        } catch (e: ImageImportException) {
+            Log.w(TAG, "Import failed for $uri: ${e.message}", e)
+            throw e
+        } catch (e: SecurityException) {
+            throw ImageImportException("No permission to read the selected image", e)
+        } catch (e: java.io.FileNotFoundException) {
+            throw ImageImportException("The selected image no longer exists", e)
+        } catch (e: OutOfMemoryError) {
+            throw ImageImportException("The image is too large to open", e)
+        }
     }
 
     private fun uprightAndBound(decoded: Bitmap, rotation: Int, maxSide: Int): Bitmap {

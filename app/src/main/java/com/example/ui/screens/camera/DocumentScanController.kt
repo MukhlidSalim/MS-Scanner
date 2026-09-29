@@ -2,6 +2,7 @@ package com.example.ui.screens.camera
 
 import android.content.Context
 import android.util.Rational
+import android.util.Size
 import android.view.Surface
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
@@ -24,7 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.geometry.Size as ComposeSize
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
@@ -50,27 +51,19 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Owns live detection state for CameraScanScreen. Replaces the scattered state variables
- * (detectedImageQuad, detectionConfidence, detectionImageWidth/Height, isDocumentStable,
- * stabilityCount, autoCaptureProgress, countdownRemaining, previousLuma, quadDistance ...).
- *
+ * Owns live detection state for CameraScanScreen (built-in camera = fallback scanner).
  * All Compose state here is written on the main thread only.
  */
 class DocumentScanController(context: Context) {
-
     var state: LiveDetectionState by mutableStateOf(LiveDetectionState.EMPTY)
         private set
-
     /** True when Preview/Capture/Analysis are bound with a shared ViewPort (frames are aligned). */
     var viewportActive: Boolean by mutableStateOf(false)
         internal set
-
     /** True when ImageAnalysis is bound at all (detection available). */
     var analysisActive: Boolean by mutableStateOf(false)
         internal set
-
     var isFrontCamera: Boolean by mutableStateOf(false)
-
     val analyzer = LiveDocumentAnalyzer(ContextCompat.getMainExecutor(context)) { s -> state = s }
 
     fun setMode(mode: ScanCameraMode) {
@@ -158,14 +151,14 @@ class BoundScanner(val camera: Camera, val imageCapture: ImageCapture)
 
 /**
  * Binds Preview + ImageCapture + ImageAnalysis.
- *
- * Fixes: the previous code built `ViewPort(Rational(pView.width, pView.height))` possibly before the
- * PreviewView was laid out (0 x 0). Binding then threw and the fallback bound ONLY Preview + Capture,
- * i.e. no ImageAnalysis -> no detection -> auto-capture never fired. Now:
  *  1. ViewPort is used only with a valid, laid-out size (aligned frames, capture prior usable).
- *  2. Otherwise / on failure, the three use cases are bound WITHOUT ViewPort (detection still works;
- *     the overlay uses FILL_CENTER mapping; the capture prior is disabled because FOVs may differ).
+ *  2. Otherwise / on failure, the three use cases are bound WITHOUT ViewPort.
  *  3. Only as a last resort Preview + Capture are bound (manual capture still works).
+ *
+ * Analysis resolution: CameraX's default analysis stream is 640x480. After the ViewPort crop to a tall
+ * phone screen only ~288x640 sensor pixels remained, i.e. a page ~115 px wide in the detector: one pixel of
+ * detection noise was ~1 % of the screen, visible as a shaking overlay. The analysis stream now requests
+ * 1280x960 (the detector still works on a <= 400 px copy, so the CPU cost stays bounded).
  */
 fun bindScannerCamera(
     provider: ProcessCameraProvider,
@@ -179,22 +172,23 @@ fun bindScannerCamera(
     provider.unbindAll()
     previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
     val rotation = previewView.display?.rotation ?: Surface.ROTATION_0
-
+    val portrait = rotation == Surface.ROTATION_0 || rotation == Surface.ROTATION_180
     fun newPreview() = Preview.Builder().setTargetRotation(rotation).build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
     fun newCapture() = ImageCapture.Builder()
         .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
         .setTargetRotation(rotation)
         .setFlashMode(flashMode)
         .build()
+    @Suppress("DEPRECATION")
     fun newAnalysis() = ImageAnalysis.Builder()
         .setTargetRotation(rotation)
+        // Expressed in the target-rotation frame; CameraX picks the closest supported size.
+        .setTargetResolution(if (portrait) Size(960, 1280) else Size(1280, 960))
         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)
         .build()
         .also { it.setAnalyzer(analysisExecutor, controller.analyzer) }
-
     controller.isFrontCamera = cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA
-
     if (previewView.width > 0 && previewView.height > 0) {
         try {
             val capture = newCapture()
@@ -240,8 +234,7 @@ fun bindScannerCamera(
 
 /**
  * Fires [onAutoCapture] exactly once each time the tracker enters STABLE while [enabled].
- * No separate countdown coroutine keyed on flickering booleans: the stabilizer's hold time IS the
- * countdown (shown as the progress ring), so there is one time source and nothing to desynchronize.
+ * The stabilizer's hold time IS the countdown (shown as the progress ring): one time source.
  */
 @Composable
 fun AutoCaptureEffect(controller: DocumentScanController, enabled: Boolean, onAutoCapture: () -> Unit) {
@@ -297,7 +290,7 @@ fun DocumentDetectionOverlay(
                 sweepAngle = 360f * state.stableProgress,
                 useCenter = false,
                 topLeft = Offset(cx - r, cy - r),
-                size = Size(2 * r, 2 * r),
+                size = ComposeSize(2 * r, 2 * r),
                 style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round)
             )
         }

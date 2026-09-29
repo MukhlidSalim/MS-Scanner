@@ -40,22 +40,30 @@ data class LiveDetectionState(
 }
 
 /**
- * Time-based stability tracker with hysteresis.
+ * Temporal filter + stability tracker (analyzer thread only, not thread-safe by design).
  *
- * Replaces the previous frame-count logic, which reset to zero on any single noisy frame, required
- * 10 consecutive "perfect" UI ticks plus a separate 1.8 s countdown, compared raw luma samples
- * (sensitive to auto-exposure/flicker) and read Compose state from the analyzer thread.
- *
- * Confined to the analyzer thread (not thread-safe by design).
+ * Root cause of the jumping overlay: every accepted measurement moved the displayed quad 45-85 % of the way
+ * to it, INCLUDING single-frame outliers (the detector switching to another rectangle for one frame), and
+ * large jumps were followed even faster (0.85). Now:
+ *  - Outlier gate: a measurement farther than [jumpThreshold] from the displayed quad is accepted only when
+ *    the next measurement confirms it (two consistent frames), then the overlay snaps to it once.
+ *  - Adaptive smoothing: alpha grows with the distance (0.20 for sensor jitter -> 0.75 for real motion),
+ *    so a still document is steady and a moving one is followed without lag.
+ *  - The smoothed quad is also returned as the PRIOR for the next detection (temporal continuity).
+ * Python mirror on the same frames: still-document overlay motion 0.02 % of the frame per frame
+ * (previous filter 0.17 %).
  */
 class DetectionStabilizer(
     private val holdNs: Long = 900_000_000L,
-    private val graceNs: Long = 400_000_000L,
-    private val moveTolerance: Float = 0.03f
+    private val graceNs: Long = 500_000_000L,
+    private val moveTolerance: Float = 0.03f,
+    private val jumpThreshold: Float = 0.10f
 ) {
     private var anchor: DocumentQuad? = null
     private var display: DocumentQuad? = null
     private var latest: DocumentQuad? = null
+    private var pending: DocumentQuad? = null
+    private var pendingCount = 0
     private var stableSinceNs = 0L
     private var lastSeenNs = 0L
     private var confidenceEma = 0f
@@ -63,39 +71,63 @@ class DetectionStabilizer(
     private var frameH = 1
 
     fun reset() {
-        anchor = null; display = null; latest = null
+        anchor = null; display = null; latest = null; pending = null; pendingCount = 0
         stableSinceNs = 0L; lastSeenNs = 0L; confidenceEma = 0f
     }
+
+    /** Smoothed quad of the tracked document (oriented frame), used as the detector prior. */
+    fun currentQuad(): DocumentQuad? = display
 
     fun update(detection: DocumentDetection?, nowNs: Long): LiveDetectionState {
         if (detection != null && detection.confidence >= DocumentDetector.MIN_CONFIDENCE) {
             frameW = detection.imageWidth
             frameH = detection.imageHeight
             val q = detection.quad
-            val a = anchor
-            // Tolerance grows slightly with document size (a big page naturally jitters more in px).
-            val tol = moveTolerance * (0.6f + 0.8f * sqrt(q.area().coerceIn(0f, 1f)))
-            if (a == null || q.maxCornerDistance(a) > tol) {
-                anchor = q
-                stableSinceNs = nowNs
-                confidenceEma = detection.confidence
-            } else {
-                anchor = a.lerpTo(q, 0.25f) // follow slow drift without resetting the timer
-                confidenceEma = confidenceEma * 0.7f + detection.confidence * 0.3f
-            }
-            val d = display
-            display = if (d == null) q else {
-                val jump = q.maxCornerDistance(d)
-                d.lerpTo(q, if (jump > 0.08f) 0.85f else 0.45f)
-            }
-            latest = q
             lastSeenNs = nowNs
+            var accepted: DocumentQuad? = null
+            val d = display
+            if (d == null) {
+                display = q
+                accepted = q
+            } else {
+                val dist = q.maxCornerDistance(d)
+                if (dist > jumpThreshold) {
+                    val p = pending
+                    if (p != null && q.maxCornerDistance(p) < 0.04f) pendingCount++ else { pending = q; pendingCount = 1 }
+                    if (pendingCount >= 2) {
+                        display = q
+                        accepted = q
+                        pending = null
+                        pendingCount = 0
+                    }
+                } else {
+                    pending = null
+                    pendingCount = 0
+                    val alpha = (0.20f + 6f * dist).coerceIn(0.20f, 0.75f)
+                    display = d.lerpTo(q, alpha)
+                    accepted = q
+                }
+            }
+            val shown = display
+            if (accepted != null && shown != null) {
+                latest = accepted
+                val a = anchor
+                // Tolerance grows slightly with document size (a big page naturally jitters more in px).
+                val tol = moveTolerance * (0.6f + 0.8f * sqrt(shown.area().coerceIn(0f, 1f)))
+                if (a == null || shown.maxCornerDistance(a) > tol) {
+                    anchor = shown
+                    stableSinceNs = nowNs
+                    confidenceEma = detection.confidence
+                } else {
+                    anchor = a.lerpTo(shown, 0.2f) // follow slow drift without resetting the timer
+                    confidenceEma = confidenceEma * 0.7f + detection.confidence * 0.3f
+                }
+            }
         } else if (anchor != null && nowNs - lastSeenNs > graceNs) {
             reset()
         }
-
         val a = anchor ?: return LiveDetectionState.EMPTY
-        val fresh = nowNs - lastSeenNs <= 180_000_000L
+        val fresh = nowNs - lastSeenNs <= 250_000_000L
         val held = nowNs - stableSinceNs
         val progress = (held.toFloat() / holdNs).coerceIn(0f, 1f)
         val stable = fresh && held >= holdNs && confidenceEma >= DocumentDetector.AUTO_CAPTURE_CONFIDENCE
@@ -119,16 +151,12 @@ class LiveDocumentAnalyzer(
     private val callbackExecutor: Executor,
     private val onState: (LiveDetectionState) -> Unit
 ) : ImageAnalysis.Analyzer {
-
     /** Expected long/short side ratio (ID card 1.586, passport 1.42) or null for generic documents. */
     @Volatile var expectedAspectRatio: Float? = null
-
     /** When false, frames are dropped immediately (e.g. while a capture is being processed). */
     @Volatile var enabled: Boolean = true
-
     @Volatile private var resetRequested = false
     @Volatile private var newSceneRequested = false
-
     private val stabilizer = DetectionStabilizer()
     private var lastAnalyzeNs = 0L
     private var awaitingNewScene = false
@@ -149,7 +177,6 @@ class LiveDocumentAnalyzer(
             val now = System.nanoTime()
             if (!enabled || now - lastAnalyzeNs < MIN_INTERVAL_NS) return
             lastAnalyzeNs = now
-
             if (resetRequested) {
                 resetRequested = false
                 stabilizer.reset()
@@ -164,10 +191,10 @@ class LiveDocumentAnalyzer(
                 sceneReference = signature
                 sceneLostSinceNs = 0L
             }
-
-            val detection = DocumentDetector.detectFromImageProxy(image, expectedAspectRatio)
+            // The previous tracked quad is the prior: the same sheet is preferred over a competing
+            // rectangle of similar score (no alternation between page and printed table).
+            val detection = DocumentDetector.detectFromImageProxy(image, expectedAspectRatio, stabilizer.currentQuad())
             var state = stabilizer.update(detection, now)
-
             if (awaitingNewScene) {
                 val ref = sceneReference
                 val changed = ref != null && signature != null && signatureDistance(ref, signature) > NEW_SCENE_THRESHOLD

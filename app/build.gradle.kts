@@ -141,6 +141,8 @@ dependencies {
   implementation(libs.mlkit.text.recognition)
   // Google ML Kit Document Scanner (primary capture engine; UI + models delivered by Google Play services, ~300 KB).
   implementation("com.google.android.gms:play-services-mlkit-document-scanner:16.0.0")
+  // ModuleInstallClient: checks / installs the scanner module on first use (GoogleDocumentScanner.start).
+  implementation("com.google.android.gms:play-services-base:18.5.0")
   // On-device Arabic OCR (ML Kit has no Arabic model). Model file: TessDataManager (asset or one-time download).
   implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
   // Password-protected (encrypted) PDF export.

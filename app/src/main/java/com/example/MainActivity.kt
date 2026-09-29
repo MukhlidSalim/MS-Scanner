@@ -78,9 +78,9 @@ import com.example.engine.updater.AppUpdateInfo
 import com.example.engine.updater.GitHubUpdateManager
 import com.example.engine.updater.UpdateCheckWorker
 import com.example.engine.updater.UpdateInstaller
+import com.example.engine.scanner.GoogleDocumentScanner
 import com.example.engine.scanner.findActivity
 import androidx.activity.result.contract.ActivityResultContracts
-
 import androidx.lifecycle.repeatOnLifecycle
 import com.example.engine.updater.UpdateCheckState
 import com.example.engine.updater.UpdateDownloadState
@@ -115,7 +115,6 @@ class AppViewModelFactory(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = AppPreferences(application)
     private val updater = GitHubUpdateManager(application)
-
     // ------------------------------------------------------------------ lock
     private val _isAuthenticated = MutableStateFlow(false)
     val isAuthenticated: StateFlow<Boolean> = _isAuthenticated.asStateFlow()
@@ -123,7 +122,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val isPromptShowing: Boolean get() = _isPromptShowing
     /** elapsedRealtime when the app went to background; 0 = never (cold start: always locked). */
     private var backgroundedAt = 0L
-
+    /**
+     * True while an activity started BY the app for a result is in front (Google document scanner).
+     * Without this, a multi-page scan longer than the lock grace period re-locked the app on return:
+     * the navigation tree left the composition and the scanner result (the pages) was lost.
+     */
+    private var externalFlowActive = false
     fun setAuthenticated(value: Boolean) {
         _isAuthenticated.value = value
     }
@@ -131,6 +135,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isPromptShowing = value
     }
     fun onAppBackgrounded() {
+        backgroundedAt = SystemClock.elapsedRealtime()
+    }
+    fun beginExternalFlow() {
+        externalFlowActive = true
+    }
+    fun endExternalFlow() {
+        externalFlowActive = false
         backgroundedAt = SystemClock.elapsedRealtime()
     }
     /**
@@ -142,13 +153,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _isAuthenticated.value = true
             return
         }
+        if (externalFlowActive) return
         val away = if (backgroundedAt == 0L) Long.MAX_VALUE else SystemClock.elapsedRealtime() - backgroundedAt
         if (away > LOCK_GRACE_MS) {
             _isAuthenticated.value = false
             _isPromptShowing = false
         }
     }
-
     // ------------------------------------------------------------------ incoming files
     /** PDF / image opened or shared from another app (the manifest declares the PDF VIEW / SEND filters). */
     sealed class IncomingImport {
@@ -159,14 +170,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val incomingImport: StateFlow<IncomingImport?> = _incomingImport.asStateFlow()
     fun offerIncoming(item: IncomingImport?) { if (item != null) _incomingImport.value = item }
     fun consumeIncoming(): IncomingImport? = _incomingImport.value.also { _incomingImport.value = null }
-
     // ------------------------------------------------------------------ updates
     private val _updateCheckState = MutableStateFlow<UpdateCheckState>(UpdateCheckState.Idle)
     val updateCheckState: StateFlow<UpdateCheckState> = _updateCheckState.asStateFlow()
     private val _updateDownloadState = MutableStateFlow<UpdateDownloadState>(UpdateDownloadState.Idle)
     val updateDownloadState: StateFlow<UpdateDownloadState> = _updateDownloadState.asStateFlow()
     private var downloadJob: Job? = null
-
     /** Automatic check at most once a day; [manual] always checks and ignores "skip this version". */
     fun checkForUpdates(manual: Boolean = false) {
         val repo = BuildConfig.UPDATE_REPO
@@ -192,7 +201,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-
     fun startUpdateDownload(info: AppUpdateInfo) {
         if (downloadJob?.isActive == true) return
         downloadJob = viewModelScope.launch {
@@ -227,7 +235,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-
     /**
      * Install button: grants "install unknown apps" first when needed, then installs IN PLACE through a
      * PackageInstaller session (same package + same key = update over the existing app, data kept).
@@ -259,7 +266,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
     }
-
     fun onInstallFailed(signatureMismatch: Boolean, message: String) {
         _updateDownloadState.value = if (signatureMismatch) {
             UpdateDownloadState.Error(
@@ -270,7 +276,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             UpdateDownloadState.Error("فشل التثبيت: $message", "Installation failed: $message")
         }
     }
-
     /** Back from the "install unknown apps" settings screen. */
     fun onResumeCheckInstallPermission() {
         val st = _updateDownloadState.value
@@ -278,7 +283,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _updateDownloadState.value = UpdateDownloadState.ReadyToInstall(st.apkFile, st.updateInfo)
         }
     }
-
     fun dismissUpdate(ignoreVersion: Boolean) {
         (_updateCheckState.value as? UpdateCheckState.Available)?.let {
             if (ignoreVersion) prefs.ignoredUpdateVersion = it.updateInfo.latestVersion
@@ -287,7 +291,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _updateCheckState.value = UpdateCheckState.Idle
         _updateDownloadState.value = UpdateDownloadState.Idle
     }
-
     private companion object {
         const val LOCK_GRACE_MS = 30_000L
         const val UPDATE_INTERVAL_MS = 24L * 60 * 60 * 1000
@@ -372,10 +375,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* result read by the worker */ }
-
     /** Android 13+: asked once so the background update check can notify; everything works without it. */
     private fun requestNotificationPermissionOnce() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || prefs.notificationPermissionAsked) return
@@ -385,7 +386,6 @@ class MainActivity : AppCompatActivity() {
         prefs.notificationPermissionAsked = true
         runCatching { notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS) }
     }
-
     private fun parseIncoming(intent: android.content.Intent?): MainViewModel.IncomingImport? {
         if (intent == null) return null
         val action = intent.action ?: return null
@@ -411,21 +411,18 @@ class MainActivity : AppCompatActivity() {
             else -> null
         }
     }
-
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         mainViewModel.offerIncoming(parseIncoming(intent))
         if (intent.getBooleanExtra(UpdateCheckWorker.EXTRA_OPEN_UPDATE, false)) mainViewModel.checkForUpdates(manual = true)
     }
-
     /** PIN lock without a PIN could never be unlocked; it is treated as "no lock" (nothing to protect with). */
     private fun isLockEnabled(): Boolean = when (prefs.lockType) {
         LockType.NONE -> false
         LockType.PIN -> prefs.hasPin
         else -> true
     }
-
     @Composable
     private fun LockScreen(listViewModel: DocumentListViewModel) {
         var usePin by androidx.compose.runtime.remember { mutableStateOf(prefs.lockType == LockType.PIN) }
@@ -489,7 +486,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
     }
-
     /** API 28-29 do not support BIOMETRIC_STRONG | DEVICE_CREDENTIAL (the old combination made the lock open itself). */
     private fun authenticators(): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -497,17 +493,14 @@ class MainActivity : AppCompatActivity() {
         } else {
             BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
         }
-
     private fun canAuthenticate(): Boolean =
         BiometricManager.from(this).canAuthenticate(authenticators()) == BiometricManager.BIOMETRIC_SUCCESS
-
     override fun onStart() {
         super.onStart()
         mainViewModel.onAppForegrounded(isLockEnabled())
         // Hide document content in the Recents screen while a lock is enabled (API 33+).
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) setRecentsScreenshotEnabled(!isLockEnabled())
     }
-
     override fun onResume() {
         super.onResume()
         mainViewModel.onResumeCheckInstallPermission()
@@ -596,8 +589,7 @@ fun DocScanApp(
                 listViewModel = listViewModel,
                 onPagesCaptured = { pages -> cameraViewModel.setPagesPendingEdit(pages) },
                 onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
-                // Previously not wired: the PDF button on Home did nothing. PDF pages now enter the SAME
-                // session / review / save flow as camera and gallery pages.
+                // PDF pages enter the SAME session / review / save flow as camera and gallery pages.
                 onOpenPdfFile = { file ->
                     cameraViewModel.setImportedPdfPendingEdit(Uri.fromFile(file))
                     navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L))
@@ -616,7 +608,7 @@ fun DocScanApp(
                 }
             )
         }
-        // Camera Scan Screen
+        // Scan entry: Google Document Scanner first, built-in camera only as a real fallback.
         composable(
             route = Screen.CameraScan.route,
             arguments = listOf(
@@ -629,21 +621,20 @@ fun DocScanApp(
             val cameraMode = when (modeStr.uppercase()) {
                 "ID_CARD" -> ScanCameraMode.ID_CARD
                 "PASSPORT" -> ScanCameraMode.PASSPORT
-                // Previously missing: multi-page scanning could never be opened from navigation.
                 "BATCH", "MULTI", "MULTI_PAGE" -> ScanCameraMode.BATCH
                 else -> ScanCameraMode.DOCUMENT
             }
             val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
             val replacePageId = backStackEntry.arguments?.getLong("replacePageId") ?: 0L
+            val isArabicUi = context.resources.configuration.locales[0].language == "ar"
 
             /**
              * Single delivery point for captured pages, whatever the capture engine (Google scanner or
-             * built-in camera): retake / add page / replace saved page / new session. No duplicated flow.
+             * built-in camera): retake / add page / replace saved page / new session.
              */
             val deliverPages: (List<Pair<String, String>>, String) -> Unit = { pages, source ->
                 val target = cameraViewModel.consumeCaptureTarget()
                 when {
-                    // Camera opened from the review screen (Retake / Add page): return to it.
                     target is CaptureTarget.Replace -> {
                         pages.firstOrNull()?.let { cameraViewModel.replacePendingPage(target.index, it) }
                         if (pages.size > 1) cameraViewModel.appendPendingPages(pages.drop(1))
@@ -660,30 +651,39 @@ fun DocScanApp(
                     else -> {
                         cameraViewModel.setPagesPendingEdit(pages)
                         navController.navigate(Screen.EditSession.createRoute(source, docId)) {
-                            // Camera is removed from the back stack: Back from review never re-opens it.
+                            // The scan entry is removed from the back stack: Back from review never re-opens it.
                             popUpTo(Screen.CameraScan.route) { inclusive = true }
                         }
                     }
                 }
             }
 
-            // ---- Capture engine: Google ML Kit Document Scanner first, built-in camera as fallback ----
+            // ---- Engine selection (decided ONCE per entry, before anything is shown) ----
+            // Every mode uses Google when the device supports it (ID card / passport included: pages are
+            // limited to 2). The previous code sent ID card / passport to the built-in camera always, so
+            // the engine depended on the document type.
             val appPrefs = remember { AppPreferences(context) }
             val googleEligible = remember(backStackEntry.id) {
-                (cameraMode == ScanCameraMode.DOCUMENT || cameraMode == ScanCameraMode.BATCH) &&
-                    appPrefs.scanEngine == AppPreferences.SCAN_ENGINE_GOOGLE &&
-                    com.example.engine.scanner.GoogleDocumentScanner.isSupported(context)
+                appPrefs.scanEngine == AppPreferences.SCAN_ENGINE_GOOGLE && GoogleDocumentScanner.isSupported(context)
             }
-            // NOT_STARTED -> WAITING (Google screen open) -> PROCESSING -> delivered;  CAMERA = built-in camera.
+            val pageLimit: Int? = remember(backStackEntry.id) {
+                when {
+                    replacePageId > 0L || cameraViewModel.peekCaptureTarget() is CaptureTarget.Replace -> 1
+                    cameraMode == ScanCameraMode.ID_CARD || cameraMode == ScanCameraMode.PASSPORT -> 2
+                    else -> null
+                }
+            }
+            // PREPARING (availability check / module download) -> WAITING (Google UI open) -> PROCESSING -> delivered.
+            // CAMERA = built-in camera (setting, unsupported device, or a REAL failure of the Google scanner).
             var scannerStage by androidx.compose.runtime.saveable.rememberSaveable(backStackEntry.id) {
-                mutableStateOf(if (googleEligible) "NOT_STARTED" else "CAMERA")
+                mutableStateOf(if (googleEligible) "PREPARING" else "CAMERA")
             }
-            val singlePageScan = replacePageId > 0L || cameraViewModel.peekCaptureTarget() is CaptureTarget.Replace
-            val isArabicUi = context.resources.configuration.locales[0].language == "ar"
+            var preparingProgress by remember { mutableStateOf<Int?>(null) }
             val scannerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
                 ActivityResultContracts.StartIntentSenderForResult()
             ) { result ->
-                val uris = com.example.engine.scanner.GoogleDocumentScanner.pageUris(result.resultCode, result.data)
+                mainViewModel.endExternalFlow()
+                val uris = GoogleDocumentScanner.pageUris(result.resultCode, result.data)
                 if (uris.isEmpty()) {
                     // Cancelled in the Google screen: back to where the user came from, nothing changed.
                     cameraViewModel.consumeCaptureTarget()
@@ -693,22 +693,25 @@ fun DocScanApp(
                     cameraViewModel.processScannerResult(uris)
                 }
             }
-            androidx.compose.runtime.LaunchedEffect(scannerStage) {
-                if (scannerStage != "NOT_STARTED") return@LaunchedEffect
+            androidx.compose.runtime.LaunchedEffect(backStackEntry.id) {
+                if (scannerStage != "PREPARING") return@LaunchedEffect
                 cameraViewModel.discardStaleScannerPages()
                 val activity = context.findActivity()
                 if (activity == null) {
                     scannerStage = "CAMERA"
                     return@LaunchedEffect
                 }
-                scannerStage = "WAITING"
-                com.example.engine.scanner.GoogleDocumentScanner.start(
+                GoogleDocumentScanner.start(
                     activity = activity,
-                    singlePage = singlePageScan,
+                    pageLimit = pageLimit,
+                    onPreparing = { preparingProgress = it },
                     onIntent = { sender ->
                         try {
+                            mainViewModel.beginExternalFlow()
+                            scannerStage = "WAITING"
                             scannerLauncher.launch(androidx.activity.result.IntentSenderRequest.Builder(sender).build())
                         } catch (e: Exception) {
+                            mainViewModel.endExternalFlow()
                             scannerStage = "CAMERA"
                         }
                     },
@@ -716,7 +719,8 @@ fun DocScanApp(
                         e.printStackTrace()
                         android.widget.Toast.makeText(
                             context,
-                            if (isArabicUi) "ماسح Google غير متاح الآن — تم فتح الكاميرا المدمجة" else "Google scanner unavailable — using the built-in camera",
+                            (if (isArabicUi) e.userMessageAr else e.userMessageEn) +
+                                (if (isArabicUi) " — تم فتح الكاميرا المدمجة" else " — using the built-in camera"),
                             android.widget.Toast.LENGTH_LONG
                         ).show()
                         scannerStage = "CAMERA"
@@ -741,7 +745,7 @@ fun DocScanApp(
             }
 
             if (scannerStage != "CAMERA") {
-                // Behind the Google screen / while its pages are copied into the app (a few hundred ms per page).
+                // The built-in camera is NEVER composed before the Google scanner: only this neutral screen.
                 androidx.activity.compose.BackHandler(enabled = scannerStage == "PROCESSING") { }
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -751,20 +755,27 @@ fun DocScanApp(
                         horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
                     ) {
                         androidx.compose.material3.CircularProgressIndicator()
-                        if (scannerStage == "PROCESSING") {
+                        val label = when (scannerStage) {
+                            "PROCESSING" -> if (isArabicUi) "جاري تجهيز الصفحات…" else "Preparing pages…"
+                            "PREPARING" -> preparingProgress?.let { p ->
+                                if (isArabicUi) "جاري تنزيل ماسح Google… $p%" else "Downloading the Google scanner… $p%"
+                            }
+                            else -> null
+                        }
+                        if (label != null) {
                             androidx.compose.foundation.layout.Spacer(Modifier.size(12.dp))
-                            androidx.compose.material3.Text(if (isArabicUi) "جاري تجهيز الصفحات…" else "Preparing pages…")
+                            androidx.compose.material3.Text(label)
                         }
                     }
                 }
                 return@composable
             }
 
+            // ---- Built-in camera (fallback) ----
             // Normal "Scan" entry opens in the mode the user chose last time; explicit modes
             // (retake / add page / replace / ID / passport shortcuts) are kept as requested.
             val useSavedMode = remember(backStackEntry.id) {
-                modeStr.equals("DOCUMENT", ignoreCase = true) && replacePageId == 0L && cameraViewModel.peekCaptureTarget() == null &&
-                    !googleEligible
+                modeStr.equals("DOCUMENT", ignoreCase = true) && replacePageId == 0L && cameraViewModel.peekCaptureTarget() == null
             }
             CameraScanScreen(
                 initialMode = cameraMode,
