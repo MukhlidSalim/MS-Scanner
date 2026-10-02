@@ -1,6 +1,7 @@
 package com.example.ui.screens.settings
 
 import android.graphics.Bitmap
+import android.os.SystemClock
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -32,6 +33,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -44,6 +46,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.SignatureEntity
 import com.example.data.repository.DocumentRepository
+import com.example.engine.annotation.SignatureCorrection
 import com.example.engine.annotation.SignatureStore
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.GoldBase
@@ -51,24 +54,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-private data class StrokePt(val x: Float, val y: Float)
+/** One recorded touch sample with its capture time (needed for speed-based pressure simulation). */
+private data class StrokePt(val x: Float, val y: Float, val tMs: Long = SystemClock.elapsedRealtime())
 private data class DrawnStroke(val points: List<StrokePt>, val color: Int)
 
 /**
  * Reusable signature vault (Settings -> Signatures).
  *
- * FIX (issue 3 — buttons clipped / partially hidden at the bottom): this screen is a full-screen
- * Compose Dialog, not the Activity's own window. `Dialog(... usePlatformDefaultWidth = false)` alone
- * does NOT make the dialog's window extend under the system navigation bar the way the Activity does
- * (enableEdgeToEdge() in MainActivity only affects the Activity window, not dialog windows). Without
- * `decorFitsSystemWindows = false`, the dialog's own window still reserves/mis-reports the navigation-bar
- * inset to its content, so Scaffold's bottom padding is computed incorrectly and the
- * ExtendedFloatingActionButton ends up positioned partly or fully behind the system navigation bar on
- * many devices — this is the actual root cause of the clipped "New signature" button, not a sizing issue
- * on the button itself. Adding `decorFitsSystemWindows = false` here (matching the flag already used
- * correctly in PdfViewerOverlay) lets this dialog's window extend edge-to-edge like the main Activity, so
- * `navigationBarsPadding()` / `Scaffold` insets are computed correctly and every control becomes fully
- * visible and tappable. Applied to BOTH dialogs in this file (the vault screen and the drawing workspace).
+ * Dialog windows use `decorFitsSystemWindows = false` so they extend edge-to-edge like the main Activity
+ * (enableEdgeToEdge()); without it, the system navigation-bar inset is computed incorrectly inside a
+ * Dialog's own window and bottom controls (e.g. the "New signature" FAB) can end up clipped by the
+ * navigation bar. Applied to BOTH dialogs in this file.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -260,9 +256,18 @@ private fun SignatureCard(
 }
 
 /**
- * Full-screen, dedicated drawing workspace (issue "Full-Screen Signature Workspace"): the entire screen,
- * minus a compact top bar and a slim colour/action bar, is the drawing surface — no small fixed-height
- * box. The canvas keeps a true transparent background (no card, no white box) — only strokes are stored.
+ * Full-screen, dedicated drawing workspace: the entire screen, minus a compact top bar and a slim
+ * colour/action bar, is the drawing surface — no small fixed-height box. The canvas keeps a true
+ * transparent background (no card, no white box) — only strokes are stored.
+ *
+ * ADVANCED SIGNATURE AUTO-CORRECTION: every recorded touch point keeps a timestamp
+ * (`SystemClock.elapsedRealtime()`), and the final bitmap is NOT a 1:1 capture of the raw touch path.
+ * Instead [SignatureCorrection.render] runs a three-stage pipeline (denoise jitter -> fit a Catmull-Rom
+ * spline through the cleaned points -> render with a variable stroke width that simulates real pen
+ * pressure from drawing speed, tapering to a point at every stroke's start/end). See
+ * engine/annotation/SignatureCorrection.kt for the full algorithm. The live on-screen preview still
+ * draws the simple raw path while the user is actively drawing (so input feels instant / zero-latency);
+ * the correction is applied once, at Save time, to the saved/placed bitmap.
  */
 @Composable
 fun FullScreenSignatureWorkspace(
@@ -277,49 +282,26 @@ fun FullScreenSignatureWorkspace(
     var selectedColor by remember { mutableStateOf(SignatureStore.DEFAULT_COLORS.first()) }
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var showDiscardConfirm by remember { mutableStateOf(false) }
+    var isProcessing by remember { mutableStateOf(false) }
+    val coroutineScope = rememberCoroutineScope()
 
-    /**
-     * Signature Cleanup (issue 9 — "Ink Signature" look): builds the saved bitmap from vector strokes at
-     * a fixed virtual resolution (2x the on-screen canvas, capped) rather than a raw 1:1 pixel capture of
-     * the touch canvas. This removes the jagged / "screenshot" look a direct capture produces at low
-     * canvas DPI, and keeps the stroke perfectly smooth (quadratic-bezier through recorded points, round
-     * caps/joins) regardless of final placement size — "Resize" later only scales this already-clean
-     * vector-rendered bitmap, so it never re-introduces jagginess. Background stays fully transparent
-     * (Bitmap.Config.ARGB_8888 is transparent by default; nothing is ever drawn behind the strokes).
-     */
-    fun buildBitmap(): Bitmap? {
+    fun requestSave() {
         val size = canvasSize
-        if (size.width <= 0 || size.height <= 0 || strokes.isEmpty()) return null
-        val scaleFactor = (2f).coerceAtMost(2000f / maxOf(size.width, size.height))
-        val outW = (size.width * scaleFactor).toInt().coerceAtLeast(1)
-        val outH = (size.height * scaleFactor).toInt().coerceAtLeast(1)
-        val bmp = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888) // transparent by default
-        val canvas = android.graphics.Canvas(bmp)
-        canvas.scale(scaleFactor, scaleFactor)
-        val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-            style = android.graphics.Paint.Style.STROKE
-            strokeWidth = 9f
-            strokeCap = android.graphics.Paint.Cap.ROUND
-            strokeJoin = android.graphics.Paint.Join.ROUND
-        }
-        for (s in strokes) {
-            if (s.points.size < 2) continue
-            paint.color = s.color
-            val path = android.graphics.Path()
-            path.moveTo(s.points[0].x, s.points[0].y)
-            // Smooth the stroke through quadratic Bezier midpoints instead of straight segments: this is
-            // the "cleanup" that makes a finger-drawn signature read as a natural, continuous pen stroke.
-            for (i in 1 until s.points.size - 1) {
-                val cur = s.points[i]
-                val next = s.points[i + 1]
-                val midX = (cur.x + next.x) / 2f
-                val midY = (cur.y + next.y) / 2f
-                path.quadTo(cur.x, cur.y, midX, midY)
+        if (size.width <= 0 || size.height <= 0 || strokes.isEmpty()) return
+        isProcessing = true
+        coroutineScope.launch {
+            val corrected = withContext(Dispatchers.Default) {
+                val input = strokes.map { s ->
+                    SignatureCorrection.CorrectedStroke(
+                        points = s.points.map { SignatureCorrection.TimedPoint(it.x, it.y, it.tMs) },
+                        colorArgb = s.color
+                    )
+                }
+                SignatureCorrection.render(input, size.width, size.height)
             }
-            path.lineTo(s.points.last().x, s.points.last().y)
-            canvas.drawPath(path, paint)
+            isProcessing = false
+            if (corrected != null) onSave(corrected)
         }
-        return bmp
     }
 
     Dialog(
@@ -339,10 +321,10 @@ fun FullScreenSignatureWorkspace(
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = t("Cancel", "إلغاء"))
                     }
                     Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { if (strokes.isNotEmpty()) strokes.removeAt(strokes.lastIndex) }, enabled = strokes.isNotEmpty()) {
+                    TextButton(onClick = { if (strokes.isNotEmpty()) strokes.removeAt(strokes.lastIndex) }, enabled = strokes.isNotEmpty() && !isProcessing) {
                         Icon(Icons.AutoMirrored.Filled.Undo, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text(t("Undo", "تراجع"))
                     }
-                    TextButton(onClick = { strokes.clear() }, enabled = strokes.isNotEmpty()) {
+                    TextButton(onClick = { strokes.clear() }, enabled = strokes.isNotEmpty() && !isProcessing) {
                         Icon(Icons.Default.RestartAlt, null, Modifier.size(18.dp)); Spacer(Modifier.width(4.dp)); Text(t("Clear", "مسح"))
                     }
                 }
@@ -361,10 +343,17 @@ fun FullScreenSignatureWorkspace(
                         .background(Color.White)
                         .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(20.dp))
                         .onGloballyPositioned { canvasSize = IntSize(it.size.width, it.size.height) }
-                        .pointerInput(selectedColor) {
+                        .pointerInput(selectedColor, isProcessing) {
+                            if (isProcessing) return@pointerInput
                             detectDragGestures(
-                                onDragStart = { currentPoints.clear(); currentPoints.add(StrokePt(it.x, it.y)) },
-                                onDrag = { change, _ -> change.consume(); currentPoints.add(StrokePt(change.position.x, change.position.y)) },
+                                onDragStart = {
+                                    currentPoints.clear()
+                                    currentPoints.add(StrokePt(it.x, it.y))
+                                },
+                                onDrag = { change, _ ->
+                                    change.consume()
+                                    currentPoints.add(StrokePt(change.position.x, change.position.y))
+                                },
                                 onDragEnd = {
                                     if (currentPoints.size > 1) strokes.add(DrawnStroke(currentPoints.toList(), selectedColor))
                                     currentPoints.clear()
@@ -372,6 +361,10 @@ fun FullScreenSignatureWorkspace(
                             )
                         }
                 ) {
+                    // Live preview only: a simple, zero-latency raw polyline while actively drawing.
+                    // The actual saved bitmap is produced by SignatureCorrection.render() in requestSave(),
+                    // which applies denoise + spline smoothing + pressure-simulated variable width — the
+                    // preview here is intentionally NOT what gets saved.
                     Canvas(Modifier.fillMaxSize()) {
                         drawLine(
                             color = Color(0xFFE0E0E0),
@@ -385,17 +378,26 @@ fun FullScreenSignatureWorkspace(
                                 moveTo(pts[0].x, pts[0].y)
                                 pts.drop(1).forEach { lineTo(it.x, it.y) }
                             }
-                            drawPath(path, Color(color), style = Stroke(width = 9f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+                            drawPath(path, Color(color), style = Stroke(width = 5f, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
                         }
                         strokes.forEach { strokeOf(it.points, it.color) }
                         strokeOf(currentPoints, selectedColor)
                     }
-                    if (strokes.isEmpty() && currentPoints.isEmpty()) {
+                    if (strokes.isEmpty() && currentPoints.isEmpty() && !isProcessing) {
                         Text(
                             t("Sign here", "وقّع هنا"),
                             color = MaterialTheme.colorScheme.outline,
                             modifier = Modifier.align(Alignment.Center)
                         )
+                    }
+                    if (isProcessing) {
+                        Box(Modifier.fillMaxSize().background(Color.White.copy(alpha = 0.6f)), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                CircularProgressIndicator(color = GoldBase, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+                                Spacer(Modifier.height(8.dp))
+                                Text(t("Refining your signature…", "جاري تحسين التوقيع…"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
                     }
                 }
                 Row(
@@ -417,13 +419,13 @@ fun FullScreenSignatureWorkspace(
                                         color = if (selectedColor == c) GoldBase else MaterialTheme.colorScheme.outlineVariant,
                                         shape = CircleShape
                                     )
-                                    .clickable { selectedColor = c }
+                                    .clickable(enabled = !isProcessing) { selectedColor = c }
                             )
                         }
                     }
                     Button(
-                        onClick = { buildBitmap()?.let(onSave) },
-                        enabled = strokes.isNotEmpty(),
+                        onClick = { requestSave() },
+                        enabled = strokes.isNotEmpty() && !isProcessing,
                         shape = RoundedCornerShape(12.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = GoldBase, contentColor = Color.Black)
                     ) {
