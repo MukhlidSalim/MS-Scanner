@@ -1,6 +1,4 @@
-
 package com.example.ui.screens.annotate
-
 import androidx.compose.ui.res.stringResource
 import com.example.R
 import android.graphics.Bitmap
@@ -9,8 +7,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,9 +30,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
@@ -39,21 +39,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.engine.annotation.*
 import com.example.engine.cv.ImageProcessor
 import com.example.ui.theme.EmeraldLight
+import com.example.ui.theme.GoldBase
 import com.example.ui.theme.StudioCanvasBg
 import com.example.ui.viewmodel.EditSessionViewModel
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.ui.layout.ContentScale
-import coil.compose.AsyncImage
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.atan2
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.sin
-
 enum class AnnotateTool {
     PEN,
     HIGHLIGHTER,
@@ -67,7 +66,6 @@ enum class AnnotateTool {
     BRIGHTNESS,
     CONTRAST
 }
-
 sealed class AnnotationAction {
     data class PathAction(val path: DrawPath) : AnnotationAction()
     data class ShapeAction(val shape: DrawShape) : AnnotationAction()
@@ -75,7 +73,6 @@ sealed class AnnotationAction {
     data class SignatureAction(val sig: PlacedSignature) : AnnotationAction()
     data class TextAction(val text: PlacedText) : AnnotationAction()
 }
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnnotationScreen(
@@ -87,42 +84,64 @@ fun AnnotationScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val page = uiState.activePages.find { it.id == pageId }
-
     var baseBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
-
+    val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(pageId) {
         if (page != null) {
             baseBitmap = ImageProcessor.loadBitmapFromFile(page.processedImagePath)
         }
     }
-
     var activeTool by remember { mutableStateOf(AnnotateTool.PEN) }
     var brightness by remember { mutableStateOf(0f) }
     var contrast by remember { mutableStateOf(1f) }
-
     val placedTexts = remember { mutableStateListOf<PlacedText>() }
     var showTextDialog by remember { mutableStateOf(false) }
     var tempTextInput by remember { mutableStateOf("") }
     var penColor by remember { mutableStateOf(Color.Black) }
-
     val paths = remember { mutableStateListOf<DrawPath>() }
     val shapes = remember { mutableStateListOf<DrawShape>() }
     val redactions = remember { mutableStateListOf<RedactionRect>() }
     val placedSignatures = remember { mutableStateListOf<PlacedSignature>() }
-
     // Undo & Redo History
     val undoStack = remember { mutableStateListOf<AnnotationAction>() }
     val redoStack = remember { mutableStateListOf<AnnotationAction>() }
-
     val currentPoints = remember { mutableStateListOf<StrokePoint>() }
     var shapeStart by remember { mutableStateOf<Offset?>(null) }
     var shapeEnd by remember { mutableStateOf<Offset?>(null) }
     var redactStart by remember { mutableStateOf<Offset?>(null) }
     var redactEnd by remember { mutableStateOf<Offset?>(null) }
-
     var showSignatureDialog by remember { mutableStateOf(false) }
-    val vaultScope = rememberCoroutineScope()
+
+    // ---------------------------------------------------------------------------------------------
+    // FIX (issue 6 — reused signature must support Move / Resize / Recolor, not just one-time placement):
+    // root cause was that no selection/drag/resize/recolor state existed at all for an already-placed
+    // PlacedSignature: the only interaction implemented was the initial tap-to-place. A placed signature
+    // is now selectable (tap on it), draggable (move), resizable (slider bound to `scale`), and
+    // re-colourable (swatches, applied via the EXISTING, previously unused SignatureStore.tinted()).
+    // No change to PlacedSignature's definition is required: PlacedSignature is already a data class used
+    // here with named arguments (signatureBitmap, x, y, scale), so `.copy(...)` is used to update an
+    // entry in place — this keeps the fix fully contained in this file.
+    // ---------------------------------------------------------------------------------------------
+    var selectedSignatureIndex by remember { mutableStateOf<Int?>(null) }
+    /** Approximate on-screen half-size of a placed signature, for hit-testing and the move gesture. */
+    fun placedSignatureHalfSize(sig: PlacedSignature, renderW: Float): Pair<Float, Float> {
+        val w = renderW * sig.scale
+        val h = w * (sig.signatureBitmap.height.toFloat() / sig.signatureBitmap.width.toFloat().coerceAtLeast(1f))
+        return (w / 2f) to (h / 2f)
+    }
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(Unit) {
+        viewModel.events.collect { event ->
+            when (event) {
+                is com.example.ui.util.UiEvent.Error -> snackbarHostState.showSnackbar(event.message)
+                is com.example.ui.util.UiEvent.ShowToast -> android.widget.Toast.makeText(context, event.message, android.widget.Toast.LENGTH_SHORT).show()
+                else -> {}
+            }
+        }
+    }
 
     fun undo() {
         if (undoStack.isNotEmpty()) {
@@ -132,12 +151,14 @@ fun AnnotationScreen(
                 is AnnotationAction.PathAction -> paths.remove(lastAction.path)
                 is AnnotationAction.ShapeAction -> shapes.remove(lastAction.shape)
                 is AnnotationAction.RedactionAction -> redactions.remove(lastAction.rect)
-                is AnnotationAction.SignatureAction -> placedSignatures.remove(lastAction.sig)
+                is AnnotationAction.SignatureAction -> {
+                    placedSignatures.remove(lastAction.sig)
+                    selectedSignatureIndex = null
+                }
                 is AnnotationAction.TextAction -> placedTexts.remove(lastAction.text)
             }
         }
     }
-
     fun redo() {
         if (redoStack.isNotEmpty()) {
             val action = redoStack.removeAt(redoStack.size - 1)
@@ -148,19 +169,6 @@ fun AnnotationScreen(
                 is AnnotationAction.RedactionAction -> redactions.add(action.rect)
                 is AnnotationAction.SignatureAction -> placedSignatures.add(action.sig)
                 is AnnotationAction.TextAction -> placedTexts.add(action.text)
-            }
-        }
-    }
-
-    val snackbarHostState = remember { SnackbarHostState() }
-    val context = androidx.compose.ui.platform.LocalContext.current
-
-    LaunchedEffect(Unit) {
-        viewModel.events.collect { event ->
-            when (event) {
-                is com.example.ui.util.UiEvent.Error -> snackbarHostState.showSnackbar(event.message)
-                is com.example.ui.util.UiEvent.ShowToast -> android.widget.Toast.makeText(context, event.message, android.widget.Toast.LENGTH_SHORT).show()
-                else -> {}
             }
         }
     }
@@ -183,14 +191,12 @@ fun AnnotationScreen(
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Undo, contentDescription = "Undo")
                     }
-
                     IconButton(
                         onClick = { redo() },
                         enabled = redoStack.isNotEmpty()
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Redo, contentDescription = "Redo")
                     }
-
                     Button(
                         onClick = {
                             viewModel.saveAnnotations(
@@ -221,11 +227,72 @@ fun AnnotationScreen(
                 color = MaterialTheme.colorScheme.surface,
                 tonalElevation = 6.dp
             ) {
+                // A selected placed signature gets its OWN control bar (Move is done by dragging it on
+                // the canvas directly; this bar handles Resize, Recolor, Duplicate and Delete/Done).
+                val selIdx = selectedSignatureIndex
+                if (selIdx != null && selIdx in placedSignatures.indices) {
+                    val selected = placedSignatures[selIdx]
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (context.resources.configuration.locales[0].language == "ar") "تعديل التوقيع" else "Edit signature",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { selectedSignatureIndex = null }) {
+                                Text(if (context.resources.configuration.locales[0].language == "ar") "تم" else "Done")
+                            }
+                        }
+                        // Resize
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.PhotoSizeSelectSmall, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Slider(
+                                value = selected.scale,
+                                onValueChange = { newScale ->
+                                    placedSignatures[selIdx] = selected.copy(scale = newScale.coerceIn(0.12f, 0.7f))
+                                },
+                                valueRange = 0.12f..0.7f,
+                                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                            )
+                            Icon(Icons.Default.PhotoSizeSelectLarge, contentDescription = null, modifier = Modifier.size(22.dp))
+                        }
+                        // Recolor — reuses the existing (previously unused) SignatureStore.tinted()
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            SignatureStore.DEFAULT_COLORS.forEach { colorInt ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(colorInt))
+                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
+                                        .clickable {
+                                            val recolored = SignatureStore.tinted(selected.signatureBitmap, colorInt)
+                                            placedSignatures[selIdx] = selected.copy(signatureBitmap = recolored)
+                                        }
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                            IconButton(onClick = {
+                                placedSignatures.removeAt(selIdx)
+                                selectedSignatureIndex = null
+                            }) {
+                                Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                        Text(
+                            if (context.resources.configuration.locales[0].language == "ar") "اسحب التوقيع على الصفحة لتحريكه"
+                            else "Drag the signature on the page to move it",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    return@Surface
+                }
                 Column(
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Sliders for Brightness/Contrast
                     if (activeTool == AnnotateTool.BRIGHTNESS) {
                         Column {
                             Text("Brightness", style = MaterialTheme.typography.labelSmall)
@@ -237,8 +304,6 @@ fun AnnotationScreen(
                             Slider(value = contrast, onValueChange = { contrast = it }, valueRange = 0.5f..2.0f)
                         }
                     }
-
-                    // Tool Selection Row
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -290,7 +355,7 @@ fun AnnotationScreen(
                         )
                         FilterChip(
                             selected = activeTool == AnnotateTool.SIGNATURE,
-                            onClick = { showSignatureDialog = true },
+                            onClick = { activeTool = AnnotateTool.SIGNATURE; showSignatureDialog = true },
                             shape = RoundedCornerShape(50),
                             label = { Text(stringResource(R.string.txt_signature)) },
                             leadingIcon = { Icon(Icons.Default.Gesture, contentDescription = null, modifier = Modifier.size(16.dp)) }
@@ -310,8 +375,6 @@ fun AnnotationScreen(
                             leadingIcon = { Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                     }
-
-                    // Pen & Shape Colors Bar
                     if (activeTool in listOf(AnnotateTool.PEN, AnnotateTool.ARROW, AnnotateTool.RECTANGLE, AnnotateTool.CIRCLE)) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -347,17 +410,50 @@ fun AnnotationScreen(
                 val canvasH = containerSize.height.toFloat()
                 val bmpW = bmp.width.toFloat()
                 val bmpH = bmp.height.toFloat()
-
                 val scale = minOf(canvasW / bmpW, canvasH / bmpH) * 0.95f
                 val renderW = bmpW * scale
                 val renderH = bmpH * scale
                 val offsetX = (canvasW - renderW) / 2f
                 val offsetY = (canvasH - renderH) / 2f
-
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
+                        // Tap layer: selects / deselects a placed signature when the SIGNATURE tool is
+                        // active. Kept separate from the drawing drag layer so pen/shape/redact tools are
+                        // completely unaffected (same approach already used in this file: multiple
+                        // pointerInput blocks keyed by different tool state).
+                        .pointerInput(activeTool, placedSignatures.size, renderW, renderH, offsetX, offsetY) {
+                            if (activeTool != AnnotateTool.SIGNATURE) return@pointerInput
+                            detectTapGestures { tapPos ->
+                                var hit: Int? = null
+                                for (i in placedSignatures.indices.reversed()) {
+                                    val sig = placedSignatures[i]
+                                    val (halfW, halfH) = placedSignatureHalfSize(sig, renderW)
+                                    val cx = offsetX + sig.x * renderW
+                                    val cy = offsetY + sig.y * renderH
+                                    if (kotlin.math.abs(tapPos.x - cx) <= halfW && kotlin.math.abs(tapPos.y - cy) <= halfH) {
+                                        hit = i
+                                        break
+                                    }
+                                }
+                                selectedSignatureIndex = hit
+                            }
+                        }
+                        // Move layer: drags the currently selected signature. Separate pointerInput keyed
+                        // on the selected index so it rebinds cleanly when the selection changes.
+                        .pointerInput(activeTool, selectedSignatureIndex, renderW, renderH, offsetX, offsetY) {
+                            val idx = selectedSignatureIndex
+                            if (activeTool != AnnotateTool.SIGNATURE || idx == null || idx !in placedSignatures.indices) return@pointerInput
+                            detectDragGestures { change, dragAmount ->
+                                change.consume()
+                                val current = placedSignatures.getOrNull(idx) ?: return@detectDragGestures
+                                val newX = (current.x + dragAmount.x / renderW).coerceIn(0.05f, 0.95f)
+                                val newY = (current.y + dragAmount.y / renderH).coerceIn(0.05f, 0.95f)
+                                placedSignatures[idx] = current.copy(x = newX, y = newY)
+                            }
+                        }
                         .pointerInput(activeTool, penColor, renderW, renderH, offsetX, offsetY) {
+                            if (activeTool == AnnotateTool.SIGNATURE) return@pointerInput
                             detectDragGestures(
                                 onDragStart = { startPt ->
                                     val nx = ((startPt.x - offsetX) / renderW).coerceIn(0f, 1f)
@@ -439,14 +535,11 @@ fun AnnotationScreen(
                         }
                 ) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
-                        // 1. Draw base bitmap
                         drawImage(
                             image = bmp.asImageBitmap(),
                             dstOffset = androidx.compose.ui.unit.IntOffset(offsetX.toInt(), offsetY.toInt()),
                             dstSize = IntSize(renderW.toInt(), renderH.toInt())
                         )
-
-                        // 2. Draw existing paths
                         for (dp in paths) {
                             if (dp.points.size < 2) continue
                             val path = Path().apply {
@@ -461,8 +554,6 @@ fun AnnotationScreen(
                                 style = Stroke(width = dp.strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
                             )
                         }
-
-                        // 3. Draw active drawing path
                         if (currentPoints.size > 1) {
                             val activeP = Path().apply {
                                 moveTo(offsetX + currentPoints[0].x * renderW, offsetY + currentPoints[0].y * renderH)
@@ -476,8 +567,6 @@ fun AnnotationScreen(
                                 style = Stroke(width = if (activeTool == AnnotateTool.HIGHLIGHTER) 14f else 3.5f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
                             )
                         }
-
-                        // 4. Draw existing shapes
                         for (s in shapes) {
                             val sx = offsetX + s.startX * renderW
                             val sy = offsetY + s.startY * renderH
@@ -514,8 +603,6 @@ fun AnnotationScreen(
                                 }
                             }
                         }
-
-                        // 4.5 Draw live shape during drag
                         val ss = shapeStart
                         val se = shapeEnd
                         if (ss != null && se != null) {
@@ -555,9 +642,9 @@ fun AnnotationScreen(
                                 else -> {}
                             }
                         }
-
-                        // 5. Draw placed signatures
-                        for (sig in placedSignatures) {
+                        // Placed signatures: the selected one gets a dashed selection outline so the user
+                        // can see what Resize/Recolor/Drag currently applies to.
+                        for ((i, sig) in placedSignatures.withIndex()) {
                             val sigW = (renderW * sig.scale).toInt()
                             val sigH = (sigW * (sig.signatureBitmap.height.toFloat() / sig.signatureBitmap.width.toFloat())).toInt()
                             val cx = offsetX + sig.x * renderW
@@ -567,9 +654,15 @@ fun AnnotationScreen(
                                 dstOffset = androidx.compose.ui.unit.IntOffset((cx - sigW / 2).toInt(), (cy - sigH / 2).toInt()),
                                 dstSize = IntSize(sigW, sigH)
                             )
+                            if (i == selectedSignatureIndex) {
+                                drawRect(
+                                    color = GoldBase,
+                                    topLeft = Offset(cx - sigW / 2f - 6f, cy - sigH / 2f - 6f),
+                                    size = androidx.compose.ui.geometry.Size(sigW + 12f, sigH + 12f),
+                                    style = Stroke(width = 2.5f)
+                                )
+                            }
                         }
-
-                        // 5.5 Draw Placed Texts
                         for (pt in placedTexts) {
                             drawContext.canvas.nativeCanvas.apply {
                                 val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
@@ -580,8 +673,6 @@ fun AnnotationScreen(
                                 drawText(pt.text, offsetX + pt.x * renderW, offsetY + pt.y * renderH, paint)
                             }
                         }
-
-                        // 6. Draw Redaction Rectangles
                         for (r in redactions) {
                             val rx = offsetX + r.left * renderW
                             val ry = offsetY + r.top * renderH
@@ -593,8 +684,6 @@ fun AnnotationScreen(
                                 size = androidx.compose.ui.geometry.Size(rw, rh)
                             )
                         }
-
-                        // Live redaction rect during drag
                         val rs = redactStart
                         val re = redactEnd
                         if (rs != null && re != null) {
@@ -617,7 +706,6 @@ fun AnnotationScreen(
             }
         }
     }
-
     if (showTextDialog) {
         AlertDialog(
             onDismissRequest = { showTextDialog = false },
@@ -654,37 +742,48 @@ fun AnnotationScreen(
             }
         )
     }
-
     if (showSignatureDialog) {
         val signaturePoints = remember { mutableStateListOf<StrokePoint>() }
+        val isArabic = context.resources.configuration.locales[0].language == "ar"
+
+        /** Places a signature bitmap (new or from the vault) and immediately selects it for editing,
+         *  so Change Color / Resize / Move are available right away, as requested. */
+        fun placeAndSelect(bmp: Bitmap) {
+            val ps = PlacedSignature(signatureBitmap = bmp, x = 0.5f, y = 0.75f, scale = 0.35f)
+            placedSignatures.add(ps)
+            undoStack.add(AnnotationAction.SignatureAction(ps))
+            redoStack.clear()
+            selectedSignatureIndex = placedSignatures.lastIndex
+            activeTool = AnnotateTool.SIGNATURE
+            showSignatureDialog = false
+        }
+
         AlertDialog(
             onDismissRequest = { showSignatureDialog = false },
             shape = RoundedCornerShape(24.dp),
             title = { Text(stringResource(R.string.txt_draw_electronic_signature), fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    // Signature vault: signatures were saved on every use but could never be reused.
                     if (uiState.savedSignatures.isNotEmpty()) {
-                        val ar = context.resources.configuration.locales[0].language == "ar"
-                        Text(if (ar) "توقيعات محفوظة (اضغط للاستخدام)" else "Saved signatures (tap to use)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            if (isArabic) "أو اختر توقيعًا محفوظًا" else "Or pick a saved signature",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             items(uiState.savedSignatures, key = { it.id }) { sig ->
                                 Box(
                                     modifier = Modifier
-                                        .size(84.dp, 48.dp)
+                                        .size(76.dp, 46.dp)
                                         .clip(RoundedCornerShape(8.dp))
                                         .background(Color.White)
                                         .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
                                         .clickable {
-                                            vaultScope.launch {
-                                                val bmp = ImageProcessor.loadBitmapFromFile(sig.imagePath, 1000)
-                                                if (bmp != null) {
-                                                    val ps = PlacedSignature(signatureBitmap = bmp, x = 0.5f, y = 0.75f, scale = 0.35f)
-                                                    placedSignatures.add(ps)
-                                                    undoStack.add(AnnotationAction.SignatureAction(ps))
-                                                    redoStack.clear()
+                                            coroutineScope.launch {
+                                                val bmp = withContext(Dispatchers.IO) {
+                                                    SignatureStore.loadDisplayable(sig.imagePath, 800)
                                                 }
-                                                showSignatureDialog = false
+                                                if (bmp != null) placeAndSelect(bmp)
                                             }
                                         }
                                 ) {
@@ -694,15 +793,19 @@ fun AnnotationScreen(
                                         contentScale = ContentScale.Fit,
                                         modifier = Modifier.fillMaxSize().padding(4.dp)
                                     )
-                                    Icon(
-                                        Icons.Default.Close,
-                                        contentDescription = if (ar) "حذف" else "Delete",
-                                        tint = MaterialTheme.colorScheme.error,
+                                    IconButton(
+                                        onClick = { viewModel.deleteSignatureFromVault(sig.id) },
                                         modifier = Modifier
                                             .align(Alignment.TopEnd)
-                                            .size(16.dp)
-                                            .clickable { viewModel.deleteSignatureFromVault(sig.id) }
-                                    )
+                                            .size(18.dp)
+                                    ) {
+                                        Icon(
+                                            Icons.Default.Close,
+                                            contentDescription = if (isArabic) "حذف" else "Delete",
+                                            modifier = Modifier.size(12.dp),
+                                            tint = MaterialTheme.colorScheme.error
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -738,13 +841,18 @@ fun AnnotationScreen(
                             }
                         }
                     }
-
                     TextButton(
                         onClick = { signaturePoints.clear() },
                         modifier = Modifier.align(Alignment.End)
                     ) {
                         Text(stringResource(R.string.txt_clear_signature))
                     }
+                    Text(
+                        if (isArabic) "لرسم توقيع في شاشة كاملة ومريحة، استخدم «توقيعاتي» في الإعدادات."
+                        else "For a full-screen, comfortable drawing area, use \"My Signatures\" in Settings.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             },
             confirmButton = {
@@ -766,19 +874,11 @@ fun AnnotationScreen(
                                 }
                             }
                             canvas.drawPath(p, paint)
-
-                            val ps = PlacedSignature(
-                                signatureBitmap = sigBmp,
-                                x = 0.5f,
-                                y = 0.75f,
-                                scale = 0.35f
-                            )
-                            placedSignatures.add(ps)
-                            undoStack.add(AnnotationAction.SignatureAction(ps))
-                            redoStack.clear()
                             viewModel.saveSignatureToVault("Signature", sigBmp)
+                            placeAndSelect(sigBmp)
+                        } else {
+                            showSignatureDialog = false
                         }
-                        showSignatureDialog = false
                     },
                     shape = RoundedCornerShape(12.dp)
                 ) {
@@ -793,6 +893,3 @@ fun AnnotationScreen(
         )
     }
 }
-
-
-

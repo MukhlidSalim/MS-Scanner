@@ -1,5 +1,4 @@
 package com.example.ui.screens.camera
-
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
@@ -70,14 +69,12 @@ import java.io.File
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
-
 enum class ScanCameraMode(val titleEn: String, val titleAr: String) {
     DOCUMENT("Document", "مستند"),
     BATCH("Batch", "متعدد"),
     ID_CARD("ID Card", "بطاقة"),
     PASSPORT("Passport", "جواز")
 }
-
 /**
  * Camera scanning screen.
  *
@@ -94,6 +91,11 @@ enum class ScanCameraMode(val titleEn: String, val titleAr: String) {
  *
  * Multi-page (BATCH): capture is continuous (Page 1 -> Page 2 -> ... -> Finish); the editor is never
  * opened between pages. Auto-capture re-arms only when the page changes (no duplicate shots).
+ *
+ * FIX (issue 5 — default orientation must reach the real capture): the screen now locks the actual
+ * device/sensor orientation to match the mode (Normal Document / Multi-Capture = Portrait; ID Card /
+ * Passport = Landscape) via LockOrientationForScanMode(scanMode), instead of only drawing a guide
+ * rectangle. See DocumentScanController.kt for that composable and its root-cause explanation.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -113,7 +115,6 @@ fun CameraScanScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val coroutineScope = rememberCoroutineScope()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
-
     // Persisted camera settings (Auto/Manual, flash, torch, grid, camera, last mode).
     val cameraPrefs = remember { AppPreferences(context) }
     val savedMode = remember {
@@ -124,14 +125,16 @@ fun CameraScanScreen(
     val startMode = if (replacePageId > 0L && requestedMode == ScanCameraMode.BATCH) ScanCameraMode.DOCUMENT else requestedMode
     var scanMode by remember { mutableStateOf(startMode) }
     val isMultiPage = scanMode == ScanCameraMode.BATCH
-
+    // FIX (issue 5): locks the real screen/sensor orientation to the active capture mode (Portrait for
+    // Normal Document / Multi-Capture, Landscape for ID Card / Passport), and restores the previous
+    // orientation automatically when this screen is left. See DocumentScanController.kt.
+    LockOrientationForScanMode(scanMode)
     // Camera runtime permission state
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         )
     }
-
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
@@ -144,15 +147,12 @@ fun CameraScanScreen(
             ).show()
         }
     }
-
     LaunchedEffect(Unit) {
         if (!hasCameraPermission) {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
-
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
-
     // Rebind camera on resume (prevents frozen preview after returning from system camera / picker).
     var resumedCount by remember { mutableStateOf(0) }
     DisposableEffect(lifecycleOwner) {
@@ -162,7 +162,6 @@ fun CameraScanScreen(
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-
     // Dedicated analysis executor; camera is unbound before the executor is shut down.
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     DisposableEffect(analysisExecutor) {
@@ -171,25 +170,20 @@ fun CameraScanScreen(
             analysisExecutor.shutdown()
         }
     }
-
     var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
     var imageCapture by remember { mutableStateOf<ImageCapture?>(null) }
     var cameraControl by remember { mutableStateOf<CameraControl?>(null) }
     var cameraInfo by remember { mutableStateOf<CameraInfo?>(null) }
-
     var cameraSelector by remember {
         mutableStateOf(if (cameraPrefs.cameraFrontFacing) CameraSelector.DEFAULT_FRONT_CAMERA else CameraSelector.DEFAULT_BACK_CAMERA)
     }
     var flashMode by remember { mutableStateOf(cameraPrefs.cameraFlashMode) }
     var isTorchActive by remember { mutableStateOf(cameraPrefs.cameraTorch) }
-
     var zoomRatio by remember { mutableStateOf(1f) }
     var minZoomRatio by remember { mutableStateOf(1f) }
     var maxZoomRatio by remember { mutableStateOf(4f) }
-
     var showGridLines by remember { mutableStateOf(cameraPrefs.cameraGrid) }
     var isPhoneFlat by remember { mutableStateOf(false) }
-
     var isAutoCaptureEnabled by remember { mutableStateOf(cameraPrefs.cameraAutoCapture) }
     // Save every change immediately, so the next camera session starts with the same settings.
     LaunchedEffect(isAutoCaptureEnabled) { cameraPrefs.cameraAutoCapture = isAutoCaptureEnabled }
@@ -199,18 +193,15 @@ fun CameraScanScreen(
     }
     LaunchedEffect(showGridLines) { cameraPrefs.cameraGrid = showGridLines }
     LaunchedEffect(cameraSelector) { cameraPrefs.cameraFrontFacing = cameraSelector == CameraSelector.DEFAULT_FRONT_CAMERA }
-
     // ---- Single owner of live detection / stability / auto-capture state ----
     val scanController = rememberDocumentScanController(context)
     val liveState = scanController.state
     val isDocumentStable = liveState.phase == LiveDetectionPhase.STABLE
     val isDocumentTracked = liveState.quad != null
     val autoCaptureProgress = liveState.stableProgress
-
     var isAutoCancelled by remember { mutableStateOf(false) }
     var isCapturing by remember { mutableStateOf(false) }
     var captureCooldown by remember { mutableStateOf(false) }
-
     LaunchedEffect(scanMode) {
         scanController.setMode(scanMode)
         isAutoCancelled = false
@@ -219,21 +210,16 @@ fun CameraScanScreen(
     LaunchedEffect(liveState.phase) {
         if (liveState.phase == LiveDetectionPhase.SEARCHING) isAutoCancelled = false
     }
-
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
-
     // Multi-page batch, ID card and passport accumulation (raw + processed are always kept together).
     val batchPages = remember { mutableStateListOf<Pair<String, String>>() }
     var frontPage by remember { mutableStateOf<Pair<String, String>?>(null) }
     val isIdCardFrontDone = scanMode == ScanCameraMode.ID_CARD && frontPage != null
     val isPassportFrontDone = scanMode == ScanCameraMode.PASSPORT && frontPage != null
-
     // Switching mode discards a half-finished 2-sided capture (it belonged to the previous mode).
     LaunchedEffect(scanMode) { frontPage = null }
-
     var showFlashEffect by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
-
     fun deletePageFiles(page: Pair<String, String>) {
         runCatching {
             if (page.first.isNotBlank()) {
@@ -243,7 +229,6 @@ fun CameraScanScreen(
             if (page.second.isNotBlank() && page.second != page.first) File(page.second).delete()
         }
     }
-
     fun discardAndExit() {
         batchPages.forEach { deletePageFiles(it) }
         batchPages.clear()
@@ -251,10 +236,8 @@ fun CameraScanScreen(
         frontPage = null
         onNavigateBack()
     }
-
     val hasUnsavedCaptures = batchPages.isNotEmpty() || frontPage != null
     BackHandler(enabled = hasUnsavedCaptures) { showDiscardDialog = true }
-
     // Accelerometer listener for level indicator
     DisposableEffect(Unit) {
         val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
@@ -275,7 +258,6 @@ fun CameraScanScreen(
         }
         onDispose { sensorManager?.unregisterListener(listener) }
     }
-
     /**
      * Routes processed pages to the current mode. Shared by camera, gallery and system camera so
      * every source behaves identically.
@@ -301,7 +283,6 @@ fun CameraScanScreen(
             }
         }
     }
-
     // Gallery import: same pipeline as the camera (EXIF, bounded decode, detection, warp, filter), off main.
     val multipleGalleryPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 30)
@@ -338,11 +319,9 @@ fun CameraScanScreen(
             }
         }
     }
-
     val launchGalleryImport = {
         multipleGalleryPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
-
     // System camera fallback (devices where CameraX cannot bind).
     var tempCameraFile by remember { mutableStateOf<File?>(null) }
     val systemCameraLauncher = rememberLauncherForActivityResult(
@@ -379,7 +358,6 @@ fun CameraScanScreen(
             }
         }
     }
-
     val launchSystemCamera: () -> Unit = {
         try {
             val dir = File(context.cacheDir, "camera_scans").apply { if (!exists()) mkdirs() }
@@ -392,7 +370,6 @@ fun CameraScanScreen(
             launchGalleryImport()
         }
     }
-
     // CameraX binding: Preview + ImageCapture + ImageAnalysis in one UseCaseGroup with a ViewPort
     // (built only after layout), so overlay, analysis and photo share the same field of view.
     LaunchedEffect(hasCameraPermission, cameraSelector, previewViewRef, resumedCount) {
@@ -436,7 +413,6 @@ fun CameraScanScreen(
             scanController.reset()
         }
     }
-
     fun capturePhoto() {
         val cap = imageCapture
         if (cap == null) {
@@ -446,16 +422,13 @@ fun CameraScanScreen(
         if (isCapturing || captureCooldown) return
         isCapturing = true
         showFlashEffect = true
-
         // Snapshot at shutter time, read from the controller (never a stale composition value).
         val priorQuad = scanController.captureQuadForShutter()
         val modeAtShutter = scanMode
         scanController.onCaptureStarted()
-
         val cacheDir = File(context.cacheDir, "camera_scans").apply { if (!exists()) mkdirs() }
         val photoFile = File(cacheDir, "scan_${System.currentTimeMillis()}.jpg")
         val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
-
         cap.takePicture(
             outputOptions,
             ContextCompat.getMainExecutor(context),
@@ -504,7 +477,6 @@ fun CameraScanScreen(
                         }
                     }
                 }
-
                 override fun onError(exception: ImageCaptureException) {
                     exception.printStackTrace()
                     photoFile.delete()
@@ -520,7 +492,6 @@ fun CameraScanScreen(
             }
         )
     }
-
     // One time source: the stabilizer hold time IS the countdown (ring on the overlay).
     AutoCaptureEffect(
         controller = scanController,
@@ -529,7 +500,6 @@ fun CameraScanScreen(
     ) {
         capturePhoto()
     }
-
     if (showDiscardDialog) {
         AlertDialog(
             onDismissRequest = { showDiscardDialog = false },
@@ -550,7 +520,6 @@ fun CameraScanScreen(
             }
         )
     }
-
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -591,7 +560,6 @@ fun CameraScanScreen(
                         }
                     }
             )
-
             if (showGridLines) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
                     val lineCol = Color.White.copy(alpha = 0.25f)
@@ -602,7 +570,6 @@ fun CameraScanScreen(
                     drawLine(lineCol, Offset(0f, size.height * 2f / 3f), Offset(size.width, size.height * 2f / 3f), w)
                 }
             }
-
             // ID card / passport alignment guides (visual help only, never used as the crop).
             if (scanMode == ScanCameraMode.ID_CARD || scanMode == ScanCameraMode.PASSPORT) {
                 Canvas(modifier = Modifier.fillMaxSize()) {
@@ -621,14 +588,12 @@ fun CameraScanScreen(
                     )
                 }
             }
-
             // Live detected document (edges + corners + hold-progress ring), same bounds as PreviewView.
             DocumentDetectionOverlay(
                 state = liveState,
                 isFrontCamera = scanController.isFrontCamera,
                 modifier = Modifier.fillMaxSize()
             )
-
             focusPoint?.let { pt ->
                 val (dx, dy) = with(density) { (pt.x.toDp() - 32.dp) to (pt.y.toDp() - 32.dp) }
                 Box(
@@ -645,7 +610,6 @@ fun CameraScanScreen(
                     focusPoint = null
                 }
             }
-
             AnimatedVisibility(
                 visible = showFlashEffect,
                 enter = fadeIn(animationSpec = tween(60)),
@@ -653,7 +617,6 @@ fun CameraScanScreen(
             ) {
                 Box(modifier = Modifier.fillMaxSize().background(Color.White))
             }
-
             // Processing indicator (capture/import runs in background; UI stays responsive).
             if (isCapturing && !showFlashEffect) {
                 Box(
@@ -668,7 +631,6 @@ fun CameraScanScreen(
                     }
                 }
             }
-
             // Top Controls Bar
             Row(
                 modifier = Modifier
@@ -684,7 +646,6 @@ fun CameraScanScreen(
                 ) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
                 }
-
                 Surface(
                     shape = RoundedCornerShape(20.dp),
                     color = if (isAutoCaptureEnabled) GoldBase else Color.Black.copy(alpha = 0.55f),
@@ -712,7 +673,6 @@ fun CameraScanScreen(
                         )
                     }
                 }
-
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     IconButton(
                         onClick = {
@@ -764,14 +724,12 @@ fun CameraScanScreen(
                             tint = if (isTorchActive || flashMode != ImageCapture.FLASH_MODE_OFF) Color.Yellow else Color.White
                         )
                     }
-
                     IconButton(
                         onClick = { showGridLines = !showGridLines },
                         modifier = Modifier.background(Color.Black.copy(alpha = 0.45f), CircleShape)
                     ) {
                         Icon(Icons.Default.GridOn, contentDescription = "Grid", tint = if (showGridLines) Emerald400 else Color.White)
                     }
-
                     IconButton(
                         onClick = {
                             cameraSelector = if (cameraSelector == CameraSelector.DEFAULT_BACK_CAMERA) {
@@ -786,7 +744,6 @@ fun CameraScanScreen(
                     }
                 }
             }
-
             // Guidance banner
             Box(
                 modifier = Modifier
@@ -848,7 +805,6 @@ fun CameraScanScreen(
                     }
                 }
             }
-
             // Bottom Controls
             Column(
                 modifier = Modifier
@@ -902,7 +858,6 @@ fun CameraScanScreen(
                         }
                     }
                 }
-
                 // Zoom presets
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -913,7 +868,6 @@ fun CameraScanScreen(
                     val zoomPresets = mutableListOf(1f to "1x")
                     if (maxZoomRatio >= 2f) zoomPresets.add(2f to "2x")
                     if (maxZoomRatio >= 3f) zoomPresets.add(3f to "3x")
-
                     zoomPresets.forEach { (z, label) ->
                         Box(
                             modifier = Modifier
@@ -934,7 +888,6 @@ fun CameraScanScreen(
                         }
                     }
                 }
-
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -950,7 +903,6 @@ fun CameraScanScreen(
                     ) {
                         Icon(Icons.Default.PhotoLibrary, contentDescription = if (isArabic) "المعرض" else "Gallery", tint = Color.White)
                     }
-
                     // Shutter
                     Box(
                         modifier = Modifier
@@ -981,7 +933,6 @@ fun CameraScanScreen(
                                 .background(if (isCapturing) Color.Gray else if (isDocumentStable) Emerald400 else Color.White)
                         )
                     }
-
                     when {
                         isMultiPage && batchPages.isNotEmpty() -> {
                             Button(
@@ -1034,7 +985,6 @@ fun CameraScanScreen(
                         }
                     }
                 }
-
                 // Mode selector (locked while pages of the current mode are pending or replacing a page)
                 val modeLocked = hasUnsavedCaptures || replacePageId > 0L
                 Surface(

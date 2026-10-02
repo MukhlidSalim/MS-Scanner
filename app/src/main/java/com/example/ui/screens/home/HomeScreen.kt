@@ -102,7 +102,6 @@ fun HomeScreen(
     var tempCameraFile by remember { mutableStateOf<File?>(null) }
     var isProcessingCapture by remember { mutableStateOf(false) }
     var showMoveDialog by remember { mutableStateOf(false) }
-    // Targets of the single-document menu or of the selection (Export / Move use their own lists).
     var exportDocIds by remember { mutableStateOf(listOf<Long>()) }
     var moveDocIds by remember { mutableStateOf(listOf<Long>()) }
     var showImportMenu by remember { mutableStateOf(false) }
@@ -110,7 +109,6 @@ fun HomeScreen(
     var confirmEmptyTrash by remember { mutableStateOf(false) }
     fun exitSelection() { selectionMode = false; selectedDocIds = emptySet() }
     var folderToDelete by remember { mutableStateOf<String?>(null) }
-    // System File Picker for importing / opening PDF files
     val pdfPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -131,7 +129,6 @@ fun HomeScreen(
             }
         }
     }
-    // SAF Create Document launcher for PDF export
     val createPdfDocumentLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/pdf")
     ) { uri: Uri? ->
@@ -164,7 +161,6 @@ fun HomeScreen(
             onNavigateToEditSession("IMPORT", 0L)
         }
     }
-    // "Files" import: images and PDF from any storage provider (Drive, Downloads, SD card…).
     val filesPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris: List<Uri> ->
@@ -191,9 +187,6 @@ fun HomeScreen(
     val launchGalleryImport = {
         photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
-    // System camera result: same unified pipeline as the in-app camera and the gallery
-    // (EXIF, bounded decode, detection chain, perspective, default filter). The previous code
-    // detected a quad, ignored it, applied MAGIC to the full photo and decoded it at full size.
     val takePictureLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.TakePicture()
     ) { success ->
@@ -206,8 +199,6 @@ fun HomeScreen(
         coroutineScope.launch {
             isProcessingCapture = true
             try {
-                // Original filter by default for a plain document capture (filter = null): the user applies
-                // a filter afterwards from the editor if they want one.
                 val page = DocumentPipeline.processFile(context, file.absolutePath, prefix = "scan", filter = null)
                 if (page != null) {
                     onPagesCaptured(listOf(Pair(page.rawPath, page.processedPath)))
@@ -394,13 +385,19 @@ fun HomeScreen(
         floatingActionButton = {
             if (!selectionMode) {
                 Column(horizontalAlignment = Alignment.End) {
-                    // Secondary entry: import + special scans, each explicitly labeled.
+                    // FIX (issue 2 — Scan Document is the single entry point): the "+" button is now
+                    // ONLY for importing existing files (Gallery / Files). Multi-page, ID card and
+                    // Passport are no longer reachable from here: they are selected INSIDE the capture
+                    // experience itself (the mode switcher already present in CameraScanScreen), which is
+                    // reached exclusively through the "Scan" action below. This matches the requested
+                    // architecture: Scan Document -> capture experience -> mode switcher (Normal / Multi /
+                    // ID Card / Passport), instead of two separate, disconnected entry points.
                     Box(modifier = Modifier.padding(bottom = 12.dp)) {
                         SmallFloatingActionButton(
                             onClick = { showImportMenu = true },
                             containerColor = MaterialTheme.colorScheme.secondaryContainer,
                             contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                        ) { Icon(Icons.Default.Add, contentDescription = if (isArabic) "استيراد أو مسح خاص" else "Import or special scan") }
+                        ) { Icon(Icons.Default.Add, contentDescription = if (isArabic) "استيراد" else "Import") }
                         DropdownMenu(expanded = showImportMenu, onDismissRequest = { showImportMenu = false }) {
                             Text(
                                 if (isArabic) "استيراد" else "Import",
@@ -421,34 +418,11 @@ fun HomeScreen(
                                     filesPickerLauncher.launch(arrayOf("image/*", "application/pdf"))
                                 }
                             )
-                            HorizontalDivider()
-                            Text(
-                                if (isArabic) "أوضاع المسح" else "Scan modes",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
-                            )
-                            // RESTORED: Multi-page / Multi-Capture was reachable from the camera screen's own
-                            // mode switcher but had no explicit entry point here, which made it easy to miss.
-                            // It now sits alongside the other scan modes, same as ID card / Passport below.
-                            DropdownMenuItem(
-                                text = { Text(if (isArabic) "تصوير متعدد الصفحات" else "Multi-page scan") },
-                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.InsertDriveFile, null) },
-                                onClick = { showImportMenu = false; onNavigateToScan("BATCH") }
-                            )
-                            // ID card / passport keep the built-in camera (front/back steps + framing guides).
-                            DropdownMenuItem(
-                                text = { Text(if (isArabic) "بطاقة هوية (وجهان)" else "ID card (front & back)") },
-                                leadingIcon = { Icon(Icons.Default.Badge, null) },
-                                onClick = { showImportMenu = false; onNavigateToScan("ID_CARD") }
-                            )
-                            DropdownMenuItem(
-                                text = { Text(if (isArabic) "جواز سفر" else "Passport") },
-                                leadingIcon = { Icon(Icons.Default.MenuBook, null) },
-                                onClick = { showImportMenu = false; onNavigateToScan("PASSPORT") }
-                            )
                         }
                     }
+                    // SINGLE, unified entry point for every capture mode (Normal / Multi-Capture / ID Card /
+                    // Passport). Always navigates with mode = "DOCUMENT"; the mode switcher inside
+                    // CameraScanScreen lets the user move to any other mode from there, as requested.
                     ExtendedFloatingActionButton(
                         onClick = { onNavigateToScan("DOCUMENT") },
                         containerColor = Emerald400,
@@ -476,14 +450,12 @@ fun HomeScreen(
                 )
             }
             val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
-            // Folder and Category Strips
             if (!selectionMode && uiState.searchQuery.isEmpty()) {
                 FolderChipsRow(
                     folders = folders,
                     selectedFolder = uiState.selectedFolder,
                     onFolderSelected = { listViewModel.filterByFolder(it) },
                     onCreateFolderClick = { showNewFolderDialog = true },
-                    // Previously not connected: the chip menu's Rename / Delete did nothing.
                     onRenameFolder = { old, new -> listViewModel.renameFolder(old, new) },
                     onDeleteFolder = { folderToDelete = it }
                 )
@@ -562,7 +534,6 @@ fun HomeScreen(
         }
         }
     }
-    // Dialogs
     if (showNewFolderDialog) {
         NewFolderDialog(
             show = showNewFolderDialog,
@@ -658,7 +629,6 @@ fun HomeScreen(
             isExporting = uiState.isLoading,
             onDismiss = { showExportPdfDialog = false },
             onExportAction = { config, action, format ->
-                // Each format has its own export path (previously JPG/PNG/DOCX/TXT silently produced a PDF).
                 when (format) {
                     ExportFormat.PDF -> {
                         pendingExportConfig = config
@@ -731,7 +701,6 @@ fun HomeScreen(
             }
         }
     }
-    // Trash: restore or delete for good (previously there was no way to see or restore trashed documents).
     if (showTrashSheet) {
         ModalBottomSheet(onDismissRequest = { showTrashSheet = false }) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(bottom = 28.dp)) {

@@ -41,7 +41,6 @@ import com.example.data.model.CompressionPreset
 import com.example.data.model.PageSizePreset
 import com.example.BuildConfig
 import com.example.engine.updater.UpdateCheckState
-
 /**
  * Settings, reorganized into clearly labelled sections (same visual language as the rest of the app:
  * rounded 16dp cards, outlineVariant border, titleMedium bold section headers) instead of one long
@@ -62,7 +61,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val stats = uiState.storageStats
-    val isArabic = context.resources.configuration.locales[0].language == "ar"
+    val isArabic = context.resources.configuration.locales\[0\].language == "ar"
     fun t(en: String, ar: String) = if (isArabic) ar else en
     LaunchedEffect(Unit) { viewModel.refreshStorageStats() }
     var showPinDialog by remember { mutableStateOf(false) }
@@ -78,14 +77,12 @@ fun SettingsScreen(
             }
         }
     }
-
     // ---------------------------------------------------------------- Signatures (new, reusable vault)
     var showSignatureStudio by remember { mutableStateOf(false) }
     val signatureRepository = remember {
         com.example.data.repository.DocumentRepository(context, com.example.data.db.DocScanDatabase.getInstance(context).documentDao())
     }
     val savedSignatures by signatureRepository.getAllSignatures().collectAsState(initial = emptyList())
-
     Scaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -136,7 +133,6 @@ fun SettingsScreen(
                     }
                 }
             }
-
             // ======================================================================= Appearance (language + theme)
             SectionHeader(stringResource(R.string.txt_appearance))
             SectionCard {
@@ -174,7 +170,6 @@ fun SettingsScreen(
                     }
                 }
             }
-
             // ======================================================================= Scanning engine
             SectionHeader(t("Scanning", "المسح الضوئي"))
             SectionCard {
@@ -227,7 +222,6 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-
             // ======================================================================= Signatures (NEW)
             SectionHeader(t("Signatures", "التوقيعات"))
             SectionCard {
@@ -253,12 +247,16 @@ fun SettingsScreen(
                     Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-
             // ======================================================================= Documents & PDF defaults
             SectionHeader(stringResource(R.string.txt_default_pdf_settings))
             SectionCard {
                 Text(text = stringResource(R.string.txt_page_size), fontWeight = FontWeight.SemiBold)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     PageSizePreset.values().forEach { size ->
                         val sizeName = when (size) {
                             PageSizePreset.A4 -> stringResource(R.string.page_size_a4)
@@ -276,7 +274,12 @@ fun SettingsScreen(
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                 Text(text = stringResource(R.string.txt_compression_quality), fontWeight = FontWeight.SemiBold)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     CompressionPreset.values().forEach { comp ->
                         val compName = when (comp) {
                             CompressionPreset.MAXIMUM -> stringResource(R.string.compression_max)
@@ -293,7 +296,6 @@ fun SettingsScreen(
                     }
                 }
             }
-
             // ======================================================================= OCR
             SectionHeader(t("OCR Settings", "إعدادات استخراج النص (OCR)"))
             SectionCard {
@@ -340,7 +342,6 @@ fun SettingsScreen(
                     }
                 }
             }
-
             // ======================================================================= Security & App Lock
             SectionHeader(t("Security & App Lock", "الأمان وقفل التطبيق"))
             SectionCard {
@@ -362,7 +363,6 @@ fun SettingsScreen(
                     }
                 }
             }
-
             // ======================================================================= App Updates
             SectionHeader(t("App Updates", "تحديثات التطبيق"))
             SectionCard {
@@ -408,7 +408,6 @@ fun SettingsScreen(
                     else -> Unit
                 }
             }
-
             // ======================================================================= Backup & Restore
             SectionHeader(stringResource(R.string.txt_backup_restore))
             SectionCard {
@@ -439,7 +438,6 @@ fun SettingsScreen(
                     ) { Text(t("Restore", "استعادة")) }
                 }
             }
-
             // ======================================================================= Storage
             SectionHeader(stringResource(R.string.txt_storage_management))
             SectionCard {
@@ -477,7 +475,6 @@ fun SettingsScreen(
                     Text(stringResource(R.string.txt_clear_cache))
                 }
             }
-
             // ======================================================================= Legal & About
             SectionHeader(stringResource(R.string.txt_legal))
             SectionCard {
@@ -501,11 +498,9 @@ fun SettingsScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-
             Spacer(Modifier.height(8.dp))
         }
     }
-
     if (showPinDialog) {
         AlertDialog(
             onDismissRequest = { showPinDialog = false; pinInput = "" },
@@ -554,7 +549,6 @@ fun SettingsScreen(
             }
         )
     }
-
     if (showSignatureStudio) {
         SignatureStudioScreen(
             repository = signatureRepository,
@@ -562,12 +556,10 @@ fun SettingsScreen(
         )
     }
 }
-
 @Composable
 private fun SectionHeader(title: String) {
     Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
 }
-
 @Composable
 private fun SectionCard(content: @Composable ColumnScope.() -> Unit) {
     Card(
@@ -578,7 +570,6 @@ private fun SectionCard(content: @Composable ColumnScope.() -> Unit) {
         Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
     }
 }
-
 @Composable
 private fun IconBadge(icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color) {
     Box(

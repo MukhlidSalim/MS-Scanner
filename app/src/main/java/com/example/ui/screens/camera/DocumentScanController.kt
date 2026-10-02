@@ -1,5 +1,6 @@
 package com.example.ui.screens.camera
 import android.content.Context
+import android.content.pm.ActivityInfo
 import android.util.Rational
 import android.util.Size
 import android.view.Surface
@@ -29,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
@@ -40,6 +42,7 @@ import com.example.engine.cv.LiveDocumentAnalyzer
 import com.example.engine.cv.ProcessedPage
 import com.example.engine.cv.QuadCoordinateMapper
 import com.example.engine.cv.ScanAspect
+import com.example.engine.scanner.findActivity
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.filter
 import java.io.File
@@ -89,12 +92,10 @@ class DocumentScanController(context: Context) {
     /**
      * Processes a saved CameraX photo through the unified pipeline, using the live quad as prior.
      *
-     * Default filter is now mode-dependent (fixes "Original filter should be the default for a plain
-     * document capture"): DOCUMENT and BATCH captures default to null (Original / true colors) so the
-     * user applies a filter afterwards only if they want one; ID_CARD and PASSPORT keep the pipeline's
-     * own default (DocumentPipeline.DEFAULT_FILTER) unchanged, since that behaviour was not reported as
-     * broken and these captures are not plain "documents". An explicit [filter] argument from the caller
-     * always wins over this default.
+     * Default filter is mode-dependent: DOCUMENT and BATCH captures default to null (Original / true
+     * colors) so the user applies a filter afterwards only if they want one; ID_CARD and PASSPORT keep
+     * the pipeline's own default (DocumentPipeline.DEFAULT_FILTER) unchanged. An explicit [filter]
+     * argument from the caller always wins over this default.
      */
     suspend fun processCapture(
         context: Context,
@@ -128,6 +129,38 @@ fun rememberDocumentScanController(context: Context): DocumentScanController {
     DisposableEffect(controller) { onDispose { controller.analyzer.enabled = false } }
     return controller
 }
+
+/**
+ * FIX (issue 5 — default orientation must reach the real capture, not just a Settings label):
+ * locks the Activity's screen orientation to match the actual shape of what is being captured, so the
+ * camera sensor/preview truly rotates, not only a drawn guide overlay. Call once near the top of
+ * CameraScanScreen's composable body: `LockOrientationForScanMode(scanMode)`.
+ *
+ * - DOCUMENT / BATCH (a normal page or a multi-page stack): SCREEN_ORIENTATION_PORTRAIT.
+ * - ID_CARD / PASSPORT (wide documents): SCREEN_ORIENTATION_LANDSCAPE.
+ *
+ * The orientation lock is scoped to [mode] (re-applied whenever the user switches mode inside the SAME
+ * capture session) and is released automatically when the camera screen is left (onDispose), restoring
+ * whatever orientation setting the Activity had before — so this never leaks into Home, the viewer, or
+ * any other screen, and never overrides the user's later MANUAL rotation of a captured page (that is a
+ * separate, existing per-page edit step and is untouched by this lock).
+ */
+@Composable
+fun LockOrientationForScanMode(mode: ScanCameraMode) {
+    val context = LocalContext.current
+    DisposableEffect(mode) {
+        val activity = context.findActivity()
+        val previous = activity?.requestedOrientation
+        activity?.requestedOrientation = when (mode) {
+            ScanCameraMode.DOCUMENT, ScanCameraMode.BATCH -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            ScanCameraMode.ID_CARD, ScanCameraMode.PASSPORT -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        }
+        onDispose {
+            activity?.requestedOrientation = previous ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
+    }
+}
+
 /** Suspends until the CameraX provider is ready (no extra futures library needed). */
 suspend fun awaitCameraProvider(context: Context): ProcessCameraProvider = suspendCancellableCoroutine { cont ->
     val future = ProcessCameraProvider.getInstance(context)
@@ -155,10 +188,9 @@ class BoundScanner(val camera: Camera, val imageCapture: ImageCapture)
  *  2. Otherwise / on failure, the three use cases are bound WITHOUT ViewPort.
  *  3. Only as a last resort Preview + Capture are bound (manual capture still works).
  *
- * Analysis resolution: CameraX's default analysis stream is 640x480. After the ViewPort crop to a tall
- * phone screen only ~288x640 sensor pixels remained, i.e. a page ~115 px wide in the detector: one pixel of
- * detection noise was ~1 % of the screen, visible as a shaking overlay. The analysis stream now requests
- * 1280x960 (the detector still works on a <= 400 px copy, so the CPU cost stays bounded).
+ * Analysis resolution requests 1280x960 so the detector keeps enough sensor pixels after the ViewPort
+ * crop to a tall phone screen; the detector itself still works on a <= 400 px downsampled copy, so the
+ * CPU cost stays bounded.
  */
 fun bindScannerCamera(
     provider: ProcessCameraProvider,
@@ -182,7 +214,6 @@ fun bindScannerCamera(
     @Suppress("DEPRECATION")
     fun newAnalysis() = ImageAnalysis.Builder()
         .setTargetRotation(rotation)
-        // Expressed in the target-rotation frame; CameraX picks the closest supported size.
         .setTargetResolution(if (portrait) Size(960, 1280) else Size(1280, 960))
         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
         .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_YUV_420_888)

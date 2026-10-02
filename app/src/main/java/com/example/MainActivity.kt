@@ -537,12 +537,10 @@ fun DocScanApp(
     val isArabicApp = context.resources.configuration.locales[0].language == "ar"
     fun tApp(en: String, ar: String) = if (isArabicApp) ar else en
 
-    // ---------------------------------------------------------------- opened PDF (external app or picker)
     val fileSaver = androidx.compose.runtime.saveable.Saver<File?, String>(
         save = { it?.absolutePath ?: "" },
         restore = { p -> p.takeIf { it.isNotBlank() }?.let { File(it) }?.takeIf { it.exists() } }
     )
-    var rawIncomingPdf by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = fileSaver) { mutableStateOf<File?>(null) }
     var pdfToChoose by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = fileSaver) { mutableStateOf<File?>(null) }
     var pdfReading by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = fileSaver) { mutableStateOf<File?>(null) }
     var showReaderTools by remember { mutableStateOf(false) }
@@ -551,12 +549,6 @@ fun DocScanApp(
     var passwordPromptFor by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = fileSaver) { mutableStateOf<File?>(null) }
     var wrongPassword by remember { mutableStateOf(false) }
 
-    /**
-     * Makes [source] openable before anything else happens (fixes "Cannot read PDF" and "the app opens
-     * but the file itself never shows", both reported for scanned / protected PDFs): every PDF, whatever
-     * its origin, is first normalised through PdfCompat so the SAME reader/editor path always receives a
-     * file PdfRenderer can actually open.
-     */
     fun preparePdf(source: File, password: String? = null) {
         preparingPdf = true
         coroutineScope.launch {
@@ -817,9 +809,12 @@ fun DocScanApp(
                 }
                 return@composable
             }
-            val useSavedMode = remember(backStackEntry.id) {
-                modeStr.equals("DOCUMENT", ignoreCase = true) && replacePageId == 0L && cameraViewModel.peekCaptureTarget() == null
-            }
+            // FIX (issue 1 — Normal Document must be the actual default): previously `useSavedMode` reopened
+            // whichever ScanCameraMode (DOCUMENT/BATCH/ID_CARD/PASSPORT) the user used last, even when the
+            // entry point was the main "Scan Document" action. The entry mode (`cameraMode`, derived from the
+            // nav route argument) is now ALWAYS honoured, so "Scan Document" always starts on Normal Document
+            // as requested, regardless of what mode was used previously in the same app session.
+            val useSavedMode = false
             CameraScanScreen(
                 initialMode = cameraMode,
                 docId = docId,
@@ -985,7 +980,6 @@ fun DocScanApp(
         }
     }
 
-    // ---------------------------------------------------------------- PDF preparing / password / choice / reader
     if (preparingPdf) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
             Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp), tonalElevation = 4.dp) {

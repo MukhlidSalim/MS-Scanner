@@ -55,9 +55,20 @@ private data class StrokePt(val x: Float, val y: Float)
 private data class DrawnStroke(val points: List<StrokePt>, val color: Int)
 
 /**
- * Reusable signature vault (Settings -> Signatures). "New signature" / "Redraw" open
- * [FullScreenSignatureWorkspace] instead of a small AlertDialog box (see that composable for the root
- * cause fix: a small fixed-height box made natural handwriting impossible; drawing now has the full screen).
+ * Reusable signature vault (Settings -> Signatures).
+ *
+ * FIX (issue 3 — buttons clipped / partially hidden at the bottom): this screen is a full-screen
+ * Compose Dialog, not the Activity's own window. `Dialog(... usePlatformDefaultWidth = false)` alone
+ * does NOT make the dialog's window extend under the system navigation bar the way the Activity does
+ * (enableEdgeToEdge() in MainActivity only affects the Activity window, not dialog windows). Without
+ * `decorFitsSystemWindows = false`, the dialog's own window still reserves/mis-reports the navigation-bar
+ * inset to its content, so Scaffold's bottom padding is computed incorrectly and the
+ * ExtendedFloatingActionButton ends up positioned partly or fully behind the system navigation bar on
+ * many devices — this is the actual root cause of the clipped "New signature" button, not a sizing issue
+ * on the button itself. Adding `decorFitsSystemWindows = false` here (matching the flag already used
+ * correctly in PdfViewerOverlay) lets this dialog's window extend edge-to-edge like the main Activity, so
+ * `navigationBarsPadding()` / `Scaffold` insets are computed correctly and every control becomes fully
+ * visible and tappable. Applied to BOTH dialogs in this file (the vault screen and the drawing workspace).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -75,7 +86,10 @@ fun SignatureStudioScreen(
     var replacing by remember { mutableStateOf<SignatureEntity?>(null) }
     var pendingDelete by remember { mutableStateOf<SignatureEntity?>(null) }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+    ) {
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Scaffold(
                 topBar = {
@@ -92,6 +106,7 @@ fun SignatureStudioScreen(
                         onClick = { replacing = null; showWorkspace = true },
                         containerColor = GoldBase,
                         contentColor = Color.Black,
+                        modifier = Modifier.navigationBarsPadding(),
                         icon = { Icon(Icons.Default.Add, null) },
                         text = { Text(t("New signature", "توقيع جديد"), fontWeight = FontWeight.Bold) }
                     )
@@ -117,10 +132,13 @@ fun SignatureStudioScreen(
                 } else {
                     LazyVerticalGrid(
                         columns = GridCells.Fixed(2),
-                        contentPadding = PaddingValues(16.dp, 16.dp, 16.dp, 96.dp),
+                        contentPadding = PaddingValues(
+                            start = 16.dp, end = 16.dp, top = 16.dp,
+                            bottom = padding.calculateBottomPadding() + 96.dp
+                        ),
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                         verticalArrangement = Arrangement.spacedBy(12.dp),
-                        modifier = Modifier.padding(padding)
+                        modifier = Modifier.padding(top = padding.calculateTopPadding())
                     ) {
                         items(signatures, key = { it.id }) { sig ->
                             SignatureCard(
@@ -199,8 +217,6 @@ private fun SignatureCard(
                 Modifier
                     .fillMaxWidth()
                     .height(110.dp)
-                    // Neutral (non-white) card so a REAL transparent signature is visibly obvious here,
-                    // unlike the white-box bug this feature fixes.
                     .background(Color(0xFFEDEDF2)),
                 contentAlignment = Alignment.Center
             ) {
@@ -244,12 +260,9 @@ private fun SignatureCard(
 }
 
 /**
- * ROOT CAUSE fixed: the previous signing workspace was a fixed ~170dp-tall box inside an AlertDialog —
- * a small, cramped rectangle in which a natural signature is physically impossible to draw (not enough
- * room for the hand motion of a real signature). This replaces it with a dedicated FULL-SCREEN Dialog
- * (same "overlay screen" pattern as PdfViewerOverlay / SignatureStudioScreen): the entire screen, minus a
- * compact top bar and a slim colour/action bar, is the drawing surface. The canvas keeps a true
- * transparent background (no box, no card) — only strokes are stored.
+ * Full-screen, dedicated drawing workspace (issue "Full-Screen Signature Workspace"): the entire screen,
+ * minus a compact top bar and a slim colour/action bar, is the drawing surface — no small fixed-height
+ * box. The canvas keeps a true transparent background (no card, no white box) — only strokes are stored.
  */
 @Composable
 fun FullScreenSignatureWorkspace(
@@ -265,11 +278,24 @@ fun FullScreenSignatureWorkspace(
     var canvasSize by remember { mutableStateOf(IntSize.Zero) }
     var showDiscardConfirm by remember { mutableStateOf(false) }
 
+    /**
+     * Signature Cleanup (issue 9 — "Ink Signature" look): builds the saved bitmap from vector strokes at
+     * a fixed virtual resolution (2x the on-screen canvas, capped) rather than a raw 1:1 pixel capture of
+     * the touch canvas. This removes the jagged / "screenshot" look a direct capture produces at low
+     * canvas DPI, and keeps the stroke perfectly smooth (quadratic-bezier through recorded points, round
+     * caps/joins) regardless of final placement size — "Resize" later only scales this already-clean
+     * vector-rendered bitmap, so it never re-introduces jagginess. Background stays fully transparent
+     * (Bitmap.Config.ARGB_8888 is transparent by default; nothing is ever drawn behind the strokes).
+     */
     fun buildBitmap(): Bitmap? {
         val size = canvasSize
         if (size.width <= 0 || size.height <= 0 || strokes.isEmpty()) return null
-        val bmp = Bitmap.createBitmap(size.width, size.height, Bitmap.Config.ARGB_8888) // transparent by default
+        val scaleFactor = (2f).coerceAtMost(2000f / maxOf(size.width, size.height))
+        val outW = (size.width * scaleFactor).toInt().coerceAtLeast(1)
+        val outH = (size.height * scaleFactor).toInt().coerceAtLeast(1)
+        val bmp = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888) // transparent by default
         val canvas = android.graphics.Canvas(bmp)
+        canvas.scale(scaleFactor, scaleFactor)
         val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             style = android.graphics.Paint.Style.STROKE
             strokeWidth = 9f
@@ -281,7 +307,16 @@ fun FullScreenSignatureWorkspace(
             paint.color = s.color
             val path = android.graphics.Path()
             path.moveTo(s.points[0].x, s.points[0].y)
-            for (p in s.points.drop(1)) path.lineTo(p.x, p.y)
+            // Smooth the stroke through quadratic Bezier midpoints instead of straight segments: this is
+            // the "cleanup" that makes a finger-drawn signature read as a natural, continuous pen stroke.
+            for (i in 1 until s.points.size - 1) {
+                val cur = s.points[i]
+                val next = s.points[i + 1]
+                val midX = (cur.x + next.x) / 2f
+                val midY = (cur.y + next.y) / 2f
+                path.quadTo(cur.x, cur.y, midX, midY)
+            }
+            path.lineTo(s.points.last().x, s.points.last().y)
             canvas.drawPath(path, paint)
         }
         return bmp
@@ -289,11 +324,10 @@ fun FullScreenSignatureWorkspace(
 
     Dialog(
         onDismissRequest = { if (strokes.isEmpty()) onCancel() else showDiscardConfirm = true },
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
         Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFFF4F4F7)) {
             Column(Modifier.fillMaxSize()) {
-                // Compact top bar: title + cancel + clear, leaving maximum room to draw.
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -318,7 +352,6 @@ fun FullScreenSignatureWorkspace(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp)
                 )
-                // THE drawing surface: fills essentially the whole remaining screen (full-screen workspace).
                 Box(
                     modifier = Modifier
                         .weight(1f)
@@ -339,7 +372,6 @@ fun FullScreenSignatureWorkspace(
                             )
                         }
                 ) {
-                    // A faint baseline guide (visual aid only, never part of the saved bitmap).
                     Canvas(Modifier.fillMaxSize()) {
                         drawLine(
                             color = Color(0xFFE0E0E0),
@@ -366,7 +398,6 @@ fun FullScreenSignatureWorkspace(
                         )
                     }
                 }
-                // Colour + Save bar
                 Row(
                     Modifier
                         .fillMaxWidth()
