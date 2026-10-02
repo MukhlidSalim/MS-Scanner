@@ -1,6 +1,4 @@
-
 package com.example.ui.viewmodel
-
 import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,6 +6,7 @@ import com.example.data.model.*
 import com.example.data.repository.AppPreferences
 import com.example.data.repository.DocumentRepository
 import com.example.engine.annotation.AnnotationEngine
+import com.example.engine.annotation.SignatureStore
 import com.example.engine.cv.DocumentPipeline
 import com.example.engine.cv.DocumentQuad
 import com.example.engine.cv.ImageProcessor
@@ -33,7 +32,6 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
-
 data class EditSessionUiState(
     val activeDocument: DocumentEntity? = null,
     val activePages: List<PageEntity> = emptyList(),
@@ -54,7 +52,6 @@ data class EditSessionUiState(
     /** True while an editing session is being committed; blocks duplicate saves. */
     val isSaving: Boolean = false,
 )
-
 class EditSessionViewModel(
     context: Context,
     private val repository: DocumentRepository
@@ -74,14 +71,11 @@ class EditSessionViewModel(
     private val qualityCache = mutableMapOf<Long, QualityReport>()
     private val sessionMutex = Mutex()
     private var loadJob: Job? = null
-
     /** Per-session brightness/contrast (not stored in DB) keyed by raw path. */
     private val sessionAdjust = mutableMapOf<String, Pair<Float, Float>>()
-
     init {
         loadSignatures()
     }
-
     private fun loadSignatures() {
         viewModelScope.launch {
             repository.getAllSignatures().collectLatest { sigs ->
@@ -89,23 +83,18 @@ class EditSessionViewModel(
             }
         }
     }
-
     /** Stored quad for a page: DB json -> sidecar -> full image. Never an arbitrary inset. */
     private fun quadFor(page: PageEntity): DocumentQuad =
         DocumentQuad.fromJsonOrNull(page.cropQuadJson) ?: QuadStore.load(page.rawImagePath) ?: DocumentQuad.fullQuad()
-
     private fun filterOf(page: PageEntity): FilterType? =
         runCatching { FilterType.valueOf(page.filterType) }.getOrNull()?.takeIf { it != FilterType.ORIGINAL }
-
     private fun rawOf(page: PageEntity): String = page.rawImagePath.ifBlank { page.processedImagePath }
-
     private suspend fun refreshThumbnail(docId: Long, firstPagePath: String?) {
         val doc = repository.getDocumentById(docId) ?: return
         doc.thumbnailPath?.let { runCatching { File(it).delete() } }
         val thumb = firstPagePath?.let { ImageProcessor.createThumbnail(context, it) }
         repository.updateDocument(doc.copy(thumbnailPath = thumb))
     }
-
     fun updateActivePageProcessedImage(newPath: String) {
         val pages = _uiState.value.activePages
         val idx = _uiState.value.selectedPageIndex
@@ -123,7 +112,6 @@ class EditSessionViewModel(
             DocumentAnalysisWorker.enqueue(context, page.documentId, generatedTitle = false)
         }
     }
-
     /** Crop editor result for a saved page: stores quad / rotation / filter with the page. */
     fun updateActivePageCrop(pageId: Long, result: CropEditorResult) {
         viewModelScope.launch {
@@ -144,7 +132,6 @@ class EditSessionViewModel(
             DocumentAnalysisWorker.enqueue(context, page.documentId, generatedTitle = false)
         }
     }
-
     fun replacePage(pageId: Long, newRawPath: String, newProcessedPath: String) {
         viewModelScope.launch {
             val page = repository.getPageById(pageId) ?: return@launch
@@ -177,7 +164,6 @@ class EditSessionViewModel(
             DocumentAnalysisWorker.enqueue(context, page.documentId, generatedTitle = false)
         }
     }
-
     fun loadDocument(docId: Long) {
         // One collector per document: previous calls created a new never-ending collector every time.
         loadJob?.cancel()
@@ -197,7 +183,6 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun selectPageIndex(index: Int) {
         val pages = _uiState.value.activePages
         if (index in pages.indices) {
@@ -205,7 +190,6 @@ class EditSessionViewModel(
             viewModelScope.launch { evaluateQuality(pages[index]) }
         }
     }
-
     private suspend fun evaluateQuality(page: PageEntity) {
         val cached = qualityCache[page.id]
         if (cached != null) {
@@ -223,17 +207,14 @@ class EditSessionViewModel(
             }
         }
     }
-
     // =========================================================================== editing session
     // The session is an in-memory copy of the document pages. Nothing is written to the database
     // until commitEditingSessionChanges(); cancel discards only the files created by the session.
-
     fun startEditingSession(pages: List<PageEntity>) {
         originalSessionPages = pages
         sessionAdjust.clear()
         _uiState.update { it.copy(editingSessionPages = pages, isEditingSession = true, isSaving = false) }
     }
-
     fun endEditingSession() {
         val originals = originalSessionPages
         val originalFiles = originals.flatMap { listOf(it.rawImagePath, it.processedImagePath) }.toSet()
@@ -245,7 +226,6 @@ class EditSessionViewModel(
         sessionAdjust.clear()
         _uiState.update { it.copy(editingSessionPages = emptyList(), isEditingSession = false) }
     }
-
     /**
      * Commits the editing session through the single save transaction (DocumentRepository.saveDocument):
      * deletions, updates, new pages (blank / merged) and the final order are written atomically.
@@ -301,7 +281,6 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun updateEditingSessionPageProcessedImage(index: Int, newPath: String) {
         _uiState.update { s ->
             val pages = s.editingSessionPages.toMutableList()
@@ -310,7 +289,6 @@ class EditSessionViewModel(
             s.copy(editingSessionPages = pages)
         }
     }
-
     fun updateEditingSessionPageCrop(index: Int, result: CropEditorResult) {
         _uiState.update { s ->
             val pages = s.editingSessionPages.toMutableList()
@@ -325,7 +303,6 @@ class EditSessionViewModel(
         }
         sessionAdjust.remove(result.rawPath)
     }
-
     /**
      * Re-renders session pages from RAW (warp -> rotate -> filter -> adjust). Session only: nothing is
      * written to the DB here. Pages are matched by raw path so a concurrent delete/reorder is safe.
@@ -370,18 +347,15 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun rotateEditingSessionPage(index: Int, clockwise: Boolean) {
         val delta = if (clockwise) 90 else 270
         renderSessionPages(listOf(index)) { rot, f, adj -> Triple((rot + delta) % 360, f, adj) }
     }
-
     fun applyEditsToSessionPages(indices: List<Int>, changeFilter: Boolean, filter: FilterType?, brightness: Float?, contrast: Float?) {
         renderSessionPages(indices) { rot, f, adj ->
             Triple(rot, if (changeFilter) filter else f, Pair(brightness ?: adj.first, contrast ?: adj.second))
         }
     }
-
     fun deleteSessionPage(index: Int) {
         _uiState.update { s ->
             val pages = s.editingSessionPages.toMutableList()
@@ -390,7 +364,6 @@ class EditSessionViewModel(
             s.copy(editingSessionPages = pages)
         }
     }
-
     fun moveSessionPage(from: Int, to: Int) {
         _uiState.update { s ->
             val pages = s.editingSessionPages.toMutableList()
@@ -399,9 +372,7 @@ class EditSessionViewModel(
             s.copy(editingSessionPages = pages)
         }
     }
-
     // =========================================================================== saved-page operations
-
     fun batchAutoCropAllSessionPages() {
         val inSession = _uiState.value.isEditingSession
         val pages = if (inSession) _uiState.value.editingSessionPages else _uiState.value.activePages
@@ -432,7 +403,6 @@ class EditSessionViewModel(
             }
         }
     }
-
     private suspend fun rerenderSavedPage(page: PageEntity, rotation: Int, filter: FilterType?, prefix: String): PageEntity? {
         val newPath = DocumentPipeline.render(context, rawOf(page), quadFor(page), rotation, filter, prefix = prefix) ?: return null
         val updated = page.copy(
@@ -456,7 +426,6 @@ class EditSessionViewModel(
         if (page.pageIndex == 0) refreshThumbnail(page.documentId, newPath)
         return updated
     }
-
     fun applyFilterToActivePage(filter: FilterType) {
         val page = _uiState.value.activePages.getOrNull(_uiState.value.selectedPageIndex) ?: return
         viewModelScope.launch {
@@ -474,12 +443,10 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun rotateActivePage() {
         val page = _uiState.value.activePages.getOrNull(_uiState.value.selectedPageIndex) ?: return
         rotatePage(page.id)
     }
-
     fun smartEnhanceActivePage() {
         val page = _uiState.value.activePages.getOrNull(_uiState.value.selectedPageIndex) ?: return
         viewModelScope.launch {
@@ -512,7 +479,6 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun rotatePage(pageId: Long) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
@@ -531,13 +497,11 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun deleteActivePage() {
         val pages = _uiState.value.activePages
         val page = pages.getOrNull(_uiState.value.selectedPageIndex) ?: return
         deletePageById(page.id)
     }
-
     /** Favorite / title / category / tags of the open document; the screen updates immediately. */
     fun updateDocumentMetadata(
         docId: Long,
@@ -559,7 +523,6 @@ class EditSessionViewModel(
             _uiState.update { s -> if (s.activeDocument?.id == docId) s.copy(activeDocument = updated) else s }
         }
     }
-
     fun renameDocument(docId: Long, newTitle: String) {
         viewModelScope.launch {
             val doc = repository.getDocumentById(docId) ?: return@launch
@@ -567,7 +530,6 @@ class EditSessionViewModel(
             _uiState.update { it.copy(activeDocument = doc.copy(title = newTitle)) }
         }
     }
-
     fun shareDocumentsAsPdf(context: Context, docIds: List<Long>) {
         if (docIds.isEmpty()) return
         viewModelScope.launch {
@@ -598,7 +560,6 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun addBlankSessionPage() {
         viewModelScope.launch {
             val path = withContext(Dispatchers.Default) {
@@ -622,7 +583,6 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun mergeSessionPages(indices: Set<Int>, onComplete: (String) -> Unit) {
         val pages = _uiState.value.editingSessionPages
         val sorted = indices.filter { it in pages.indices }.sorted()
@@ -664,7 +624,6 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun addBlankPage(docId: Long) {
         viewModelScope.launch {
             val path = withContext(Dispatchers.Default) {
@@ -679,7 +638,6 @@ class EditSessionViewModel(
             repository.addPageToDocument(docId, path, path)
         }
     }
-
     /** Explicit OCR for one page (OCR screen). Background analysis of whole documents uses the Worker. */
     fun runOcrInBackground(pageId: Long) {
         viewModelScope.launch(Dispatchers.Default) {
@@ -725,28 +683,23 @@ class EditSessionViewModel(
             }
         }
     }
-
     /** Prints the active page through the print framework (rendered off the main thread by the adapter). */
     fun printActivePage(context: Context) {
         val page = _uiState.value.activePages.getOrNull(_uiState.value.selectedPageIndex) ?: return
         val title = _uiState.value.activeDocument?.title ?: "Document"
         PdfEngine.printScannedDocuments(context, "${title}_p${_uiState.value.selectedPageIndex + 1}", listOf(page.processedImagePath))
     }
-
     // ---------------------------------------------------------------- post-save share sheet (one-shot)
     private var pendingShareSheetDocId: Long = 0L
-
     /** Called right after a NEW scan is saved: the document screen opens with Save & Share options. */
     fun requestShareSheet(docId: Long) {
         pendingShareSheetDocId = docId
     }
-
     fun consumeShareSheetRequest(docId: Long): Boolean {
         if (pendingShareSheetDocId != docId || docId <= 0L) return false
         pendingShareSheetDocId = 0L
         return true
     }
-
     /** Deleting the last page removes the document (to Trash) instead of leaving an empty document. */
     fun moveDocumentToTrash(docId: Long, onDone: () -> Unit = {}) {
         viewModelScope.launch {
@@ -755,7 +708,6 @@ class EditSessionViewModel(
             onDone()
         }
     }
-
     fun duplicatePage(pageId: Long) {
         val page = _uiState.value.activePages.find { it.id == pageId } ?: return
         viewModelScope.launch {
@@ -778,14 +730,12 @@ class EditSessionViewModel(
             repository.getDocumentById(page.documentId)?.let { repository.updateDocument(it.copy(pageCount = count + 1)) }
         }
     }
-
     fun updatePagesOrder(newOrder: List<PageEntity>) {
         viewModelScope.launch {
             val docId = newOrder.firstOrNull()?.documentId ?: return@launch
             repository.reorderPages(docId, newOrder)
         }
     }
-
     fun reorderPages(fromIndex: Int, toIndex: Int) {
         val pages = _uiState.value.activePages.toMutableList()
         if (fromIndex !in pages.indices || toIndex !in pages.indices) return
@@ -793,7 +743,6 @@ class EditSessionViewModel(
         _uiState.update { it.copy(activePages = pages) }
         updatePagesOrder(pages)
     }
-
     fun saveAnnotations(
         paths: List<com.example.engine.annotation.DrawPath>,
         redactions: List<com.example.engine.annotation.RedactionRect>,
@@ -837,19 +786,27 @@ class EditSessionViewModel(
             }
         }
     }
-
+    /**
+     * Saves a drawn signature to the reusable vault as a lossless, truly transparent PNG.
+     * ROOT CAUSE fixed here: this previously called ImageProcessor.saveBitmapToFile(), which always
+     * writes JPEG (no alpha channel), turning every transparent pixel opaque white on save — the
+     * signature was correct in memory but became a white rectangle the moment it was written to disk.
+     * SignatureStore.savePng keeps the alpha channel exactly as drawn.
+     */
     fun saveSignatureToVault(title: String, bitmap: android.graphics.Bitmap) {
         viewModelScope.launch {
-            val path = ImageProcessor.saveBitmapToFile(context, bitmap, "sig_vault_")
+            val path = SignatureStore.savePng(context, bitmap)
             repository.saveSignature(title, path)
         }
     }
-
-    /** Removes a signature from the vault (the vault had no delete action). */
+    /** Removes a saved signature from the vault (the vault had no delete action before). */
     fun deleteSignatureFromVault(id: Long) {
-        viewModelScope.launch { repository.deleteSignature(id) }
+        viewModelScope.launch {
+            val sig = _uiState.value.savedSignatures.find { it.id == id }
+            repository.deleteSignature(id)
+            sig?.let { SignatureStore.delete(it.imagePath) }
+        }
     }
-
     fun deletePageById(pageId: Long) {
         val page = _uiState.value.activePages.find { it.id == pageId } ?: return
         viewModelScope.launch {
@@ -863,7 +820,6 @@ class EditSessionViewModel(
             qualityCache.remove(pageId)
         }
     }
-
     fun applyFilterToAllPages(docId: Long, filter: FilterType) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
@@ -882,7 +838,6 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun exportDocumentToPdf(config: PdfExportConfig, pageIds: Set<Long>? = null, onComplete: (File) -> Unit) {
         if (_uiState.value.isExportingPdf) return
         viewModelScope.launch {
@@ -915,7 +870,6 @@ class EditSessionViewModel(
             }
         }
     }
-
     fun mergePagesIntoSinglePage(
         selectedPageIds: List<Long>,
         mergedImagePath: String,
@@ -942,19 +896,13 @@ class EditSessionViewModel(
             onComplete()
         }
     }
-
     fun setCompression(preset: CompressionPreset) {
         _uiState.update { it.copy(selectedCompression = preset) }
     }
-
     fun setOcrLanguage(language: com.example.engine.ocr.OcrLanguage) {
         _uiState.update { it.copy(ocrLanguage = language) }
     }
-
     fun setPdfPageSize(size: PageSizePreset) {
         _uiState.update { it.copy(defaultPdfPageSize = size) }
     }
 }
-
-
-

@@ -38,9 +38,17 @@ import com.example.data.repository.DocumentRepository
 import com.example.ui.components.PinLockScreen
 import com.example.ui.components.OpenPdfActionDialog
 import com.example.ui.components.PdfViewerOverlay
+import com.example.ui.components.DefaultPdfAppBanner
+import com.example.ui.components.PdfReaderToolsSheet
+import com.example.ui.components.PdfPasswordDialog
+import com.example.engine.pdf.DefaultPdfApp
+import com.example.engine.pdf.ExternalPdfImporter
+import com.example.engine.pdf.PdfCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import com.example.ui.navigation.Screen
 import com.example.ui.screens.annotate.AnnotationScreen
@@ -165,6 +173,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     sealed class IncomingImport {
         data class Pdf(val uri: Uri) : IncomingImport()
         data class Images(val uris: List<Uri>) : IncomingImport()
+        /** The "set as default PDF app" probe came back to MS Scanner (never imported). */
+        object DefaultAppCheck : IncomingImport()
     }
     private val _incomingImport = MutableStateFlow<IncomingImport?>(null)
     val incomingImport: StateFlow<IncomingImport?> = _incomingImport.asStateFlow()
@@ -401,9 +411,18 @@ class MainActivity : AppCompatActivity() {
             else -> emptyList()
         }
         if (uris.isEmpty()) return null
+        // The "set as default" probe PDF is a check, never a document to import.
+        if (uris.size == 1 && DefaultPdfApp.isProbeUri(this, uris[0])) return MainViewModel.IncomingImport.DefaultAppCheck
         val type = intent.type.orEmpty()
         fun typeOf(u: Uri) = runCatching { contentResolver.getType(u) }.getOrNull() ?: type
-        val pdf = uris.firstOrNull { typeOf(it) == "application/pdf" || it.toString().endsWith(".pdf", true) }
+        // application/pdf plus the legacy aliases some mail / messaging apps still send.
+        fun isPdf(u: Uri): Boolean {
+            val t = typeOf(u).lowercase()
+            return t == "application/pdf" || t == "application/x-pdf" || t == "application/acrobat" ||
+                u.toString().endsWith(".pdf", true) ||
+                (t == "application/octet-stream" && (u.lastPathSegment?.endsWith(".pdf", true) == true))
+        }
+        val pdf = uris.firstOrNull { isPdf(it) }
         val images = uris.filter { typeOf(it).startsWith("image/") }
         return when {
             images.isNotEmpty() -> MainViewModel.IncomingImport.Images(images)
@@ -560,21 +579,136 @@ fun DocScanApp(
     val context = androidx.compose.ui.platform.LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val incoming by mainViewModel.incomingImport.collectAsState()
+    val isArabicApp = context.resources.configuration.locales[0].language == "ar"
+    fun tApp(en: String, ar: String) = if (isArabicApp) ar else en
+
+    // ---------------------------------------------------------------- opened PDF (external app or picker)
+    // One flow for every PDF that reaches the app: PdfCompat first (root fix for "Cannot read PDF" / the
+    // app opening without showing the file on scanned or protected PDFs), THEN the existing Read only /
+    // Edit choice (OpenPdfActionDialog), Read only = existing PdfViewerOverlay + tools sheet (Sign / Edit),
+    // Edit = the existing import -> review -> save pipeline, now fed the ALREADY-READABLE file.
+    val fileSaver = androidx.compose.runtime.saveable.Saver<File?, String>(
+        save = { it?.absolutePath ?: "" },
+        restore = { p -> p.takeIf { it.isNotBlank() }?.let { File(it) }?.takeIf { it.exists() } }
+    )
+    var pdfToChoose by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = fileSaver) { mutableStateOf<File?>(null) }
+    var pdfReading by androidx.compose.runtime.saveable.rememberSaveable(stateSaver = fileSaver) { mutableStateOf<File?>(null) }
+    var showReaderTools by remember { mutableStateOf(false) }
+    var signBusy by remember { mutableStateOf(false) }
+    var pdfPreparing by remember { mutableStateOf(false) }
+    var pdfNeedsPassword by remember { mutableStateOf<File?>(null) }
+    var pdfWrongPassword by remember { mutableStateOf(false) }
+
+    fun preparePdf(file: File, password: String? = null) {
+        if (pdfPreparing) return
+        pdfPreparing = true
+        coroutineScope.launch {
+            try {
+                when (val r = PdfCompat.prepare(context, file, password)) {
+                    is PdfCompat.Result.Ready -> {
+                        pdfNeedsPassword = null
+                        pdfReading = null
+                        pdfToChoose = r.file
+                    }
+                    is PdfCompat.Result.NeedsPassword -> {
+                        pdfWrongPassword = r.wrongPassword
+                        pdfNeedsPassword = file
+                    }
+                    is PdfCompat.Result.Unreadable -> {
+                        pdfNeedsPassword = null
+                        android.widget.Toast.makeText(
+                            context,
+                            tApp("This file is not a valid PDF or is damaged", "هذا الملف ليس PDF صالحاً أو أنه تالف"),
+                            android.widget.Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                e.printStackTrace()
+                android.widget.Toast.makeText(context, tApp("Could not open the PDF", "تعذر فتح ملف PDF"), android.widget.Toast.LENGTH_SHORT).show()
+            } finally {
+                pdfPreparing = false
+            }
+        }
+    }
+
+    fun openPdfInEditor(file: File) {
+        pdfToChoose = null
+        pdfReading = null
+        showReaderTools = false
+        // file is already a PdfCompat-verified, PdfRenderer-readable copy: the existing import pipeline
+        // (CameraViewModel.setImportedPdfPendingEdit -> DocumentPipeline.importPdf) can read it directly.
+        cameraViewModel.setImportedPdfPendingEdit(Uri.fromFile(file))
+        navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L)) { launchSingleTop = true }
+    }
+
+    fun signPdfPage(file: File, pageIndex: Int) {
+        if (signBusy) return
+        signBusy = true
+        coroutineScope.launch {
+            try {
+                // A signed copy is created as a regular MS Scanner document (single save path); the original
+                // file is never modified. The existing annotation screen does the signing.
+                val docId = ExternalPdfImporter.importAsDocument(context, file)
+                if (docId == null) {
+                    android.widget.Toast.makeText(
+                        context,
+                        tApp("This PDF cannot be signed (protected or damaged)", "لا يمكن توقيع هذا الملف (محمي أو تالف)"),
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    return@launch
+                }
+                editViewModel.loadDocument(docId)
+                val loaded = withTimeoutOrNull(15_000L) {
+                    editViewModel.uiState.first { it.activeDocument?.id == docId && it.activePages.isNotEmpty() }
+                }
+                showReaderTools = false
+                pdfReading = null
+                navController.navigate(Screen.DocumentViewer.createRoute(docId)) { launchSingleTop = true }
+                if (loaded != null) {
+                    val idx = pageIndex.coerceIn(0, loaded.activePages.lastIndex)
+                    // The annotation screen saves on the selected page: select it before opening.
+                    editViewModel.selectPageIndex(idx)
+                    navController.navigate(Screen.Annotate.createRoute(docId, loaded.activePages[idx].id))
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.printStackTrace()
+                android.widget.Toast.makeText(context, tApp("Could not prepare the PDF", "تعذر تجهيز ملف PDF"), android.widget.Toast.LENGTH_SHORT).show()
+            } finally {
+                signBusy = false
+            }
+        }
+    }
+
     androidx.compose.runtime.LaunchedEffect(incoming) {
         when (val item = mainViewModel.consumeIncoming()) {
             is MainViewModel.IncomingImport.Pdf -> {
                 // Copied first: the grant of an opened/shared URI does not outlive the calling task.
                 val local = com.example.engine.pdf.PdfEngine.copyUriToLocalPdf(context, item.uri)
                 if (local != null) {
-                    cameraViewModel.setImportedPdfPendingEdit(Uri.fromFile(local))
-                    navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L)) { launchSingleTop = true }
+                    preparePdf(local)
                 } else {
-                    android.widget.Toast.makeText(context, "Could not open the PDF", android.widget.Toast.LENGTH_SHORT).show()
+                    android.widget.Toast.makeText(context, tApp("Could not open the PDF", "تعذر فتح ملف PDF"), android.widget.Toast.LENGTH_SHORT).show()
                 }
             }
             is MainViewModel.IncomingImport.Images -> {
                 cameraViewModel.setImportedUrisPendingEdit(item.uris)
                 navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L)) { launchSingleTop = true }
+            }
+            MainViewModel.IncomingImport.DefaultAppCheck -> {
+                val st = DefaultPdfApp.status(context)
+                android.widget.Toast.makeText(
+                    context,
+                    if (st == DefaultPdfApp.Status.ThisApp) tApp("MS Scanner is now your default PDF app ✓", "أصبح MS Scanner التطبيق الافتراضي لملفات PDF ✓")
+                    else tApp("Opened with MS Scanner. Choose \"Always\" to make it the default.", "تم الفتح بـ MS Scanner. اختر «دائماً» لجعله الافتراضي."),
+                    android.widget.Toast.LENGTH_LONG
+                ).show()
+                // The probe started a second MainActivity on top of Settings: return there.
+                context.findActivity()?.let { if (!it.isTaskRoot) it.finish() }
             }
             null -> Unit
         }
@@ -589,11 +723,8 @@ fun DocScanApp(
                 listViewModel = listViewModel,
                 onPagesCaptured = { pages -> cameraViewModel.setPagesPendingEdit(pages) },
                 onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
-                // PDF pages enter the SAME session / review / save flow as camera and gallery pages.
-                onOpenPdfFile = { file ->
-                    cameraViewModel.setImportedPdfPendingEdit(Uri.fromFile(file))
-                    navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L))
-                },
+                // A picked PDF gets the same PdfCompat + Read only / Edit choice as a PDF opened from another app.
+                onOpenPdfFile = { file -> preparePdf(file) },
                 onNavigateToSettings = {
                     navController.navigate(Screen.Settings.route)
                 },
@@ -627,7 +758,6 @@ fun DocScanApp(
             val docId = backStackEntry.arguments?.getLong("docId") ?: 0L
             val replacePageId = backStackEntry.arguments?.getLong("replacePageId") ?: 0L
             val isArabicUi = context.resources.configuration.locales[0].language == "ar"
-
             /**
              * Single delivery point for captured pages, whatever the capture engine (Google scanner or
              * built-in camera): retake / add page / replace saved page / new session.
@@ -657,7 +787,6 @@ fun DocScanApp(
                     }
                 }
             }
-
             // ---- Engine selection (decided ONCE per entry, before anything is shown) ----
             // Every mode uses Google when the device supports it (ID card / passport included: pages are
             // limited to 2). The previous code sent ID card / passport to the built-in camera always, so
@@ -743,7 +872,6 @@ fun DocScanApp(
                     deliverPages(pages, "SCANNER")
                 }
             }
-
             if (scannerStage != "CAMERA") {
                 // The built-in camera is NEVER composed before the Google scanner: only this neutral screen.
                 androidx.activity.compose.BackHandler(enabled = scannerStage == "PROCESSING") { }
@@ -770,7 +898,6 @@ fun DocScanApp(
                 }
                 return@composable
             }
-
             // ---- Built-in camera (fallback) ----
             // Normal "Scan" entry opens in the mode the user chose last time; explicit modes
             // (retake / add page / replace / ID / passport shortcuts) are kept as requested.
@@ -891,15 +1018,19 @@ fun DocScanApp(
                 onNavigateBack = { navController.popBackStack() }
             )
         }
-        // Settings Screen
+        // Settings Screen (+ "Default PDF app" status / action pinned at the bottom)
         composable(Screen.Settings.route) {
             val updateCheckState by mainViewModel.updateCheckState.collectAsState()
-            SettingsScreen(
-                viewModel = listViewModel,
-                onNavigateBack = { navController.popBackStack() },
-                updateCheckState = updateCheckState,
-                onCheckForUpdates = { mainViewModel.checkForUpdates(manual = true) }
-            )
+            androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
+                SettingsScreen(
+                    viewModel = listViewModel,
+                    onNavigateBack = { navController.popBackStack() },
+                    modifier = Modifier.weight(1f),
+                    updateCheckState = updateCheckState,
+                    onCheckForUpdates = { mainViewModel.checkForUpdates(manual = true) }
+                )
+                DefaultPdfAppBanner()
+            }
         }
         // Edit Session Screen (review -> save)
         composable(
@@ -970,6 +1101,62 @@ fun DocScanApp(
                 onAcceptPageAsIs = { idx -> cameraViewModel.acceptPageAsIs(idx) },
                 onPageReviewed = { idx -> cameraViewModel.markPageReviewed(idx) },
                 onSplitPendingPage = { idx, rightFirst -> cameraViewModel.splitPendingPage(idx, rightFirst) }
+            )
+        }
+    }
+
+    // ---------------------------------------------------------------- PDF preparing / password / choice / reader
+    if (pdfPreparing) {
+        androidx.compose.ui.window.Dialog(onDismissRequest = {}) {
+            androidx.compose.material3.Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)) {
+                androidx.compose.foundation.layout.Row(
+                    Modifier.padding(20.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp)
+                    androidx.compose.foundation.layout.Spacer(Modifier.size(14.dp))
+                    androidx.compose.material3.Text(tApp("Opening PDF…", "جاري فتح ملف PDF…"))
+                }
+            }
+        }
+    }
+    pdfNeedsPassword?.let { file ->
+        PdfPasswordDialog(
+            fileName = ExternalPdfImporter.titleOf(file),
+            wrongPassword = pdfWrongPassword,
+            onDismiss = { pdfNeedsPassword = null },
+            onSubmit = { pwd -> preparePdf(file, pwd) }
+        )
+    }
+    pdfToChoose?.let { file ->
+        OpenPdfActionDialog(
+            pdfFile = file,
+            onDismiss = { pdfToChoose = null },
+            onBrowseOnly = {
+                pdfToChoose = null
+                pdfReading = file
+            },
+            onEditInStudio = { openPdfInEditor(file) }
+        )
+    }
+    pdfReading?.let { file ->
+        // Existing reader: page navigation, pinch zoom, share, save a copy. The gold tools button opens
+        // Sign / Edit (sheet below, drawn above the reader).
+        PdfViewerOverlay(
+            pdfFile = file,
+            onDismiss = {
+                pdfReading = null
+                showReaderTools = false
+            },
+            onEditClick = { showReaderTools = true }
+        )
+        if (showReaderTools) {
+            PdfReaderToolsSheet(
+                pdfFile = file,
+                isBusy = signBusy,
+                onDismiss = { showReaderTools = false },
+                onSign = { pageIndex -> signPdfPage(file, pageIndex) },
+                onEdit = { openPdfInEditor(file) }
             )
         }
     }

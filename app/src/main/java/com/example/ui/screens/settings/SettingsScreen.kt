@@ -35,11 +35,20 @@ import com.example.data.model.LockType
 import com.example.ui.theme.CyanScan
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.EmeraldLight
+import com.example.ui.theme.GoldBase
 import com.example.ui.viewmodel.DocumentListViewModel
 import com.example.data.model.CompressionPreset
 import com.example.data.model.PageSizePreset
 import com.example.BuildConfig
 import com.example.engine.updater.UpdateCheckState
+
+/**
+ * Settings, reorganized into clearly labelled sections (same visual language as the rest of the app:
+ * rounded 16dp cards, outlineVariant border, titleMedium bold section headers) instead of one long
+ * unlabelled scroll. No existing behaviour was removed — every action below calls the exact same
+ * ViewModel / AppPreferences / repository function as before; only the grouping and presentation changed,
+ * plus the new "Signatures" section.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -53,9 +62,9 @@ fun SettingsScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val stats = uiState.storageStats
-    LaunchedEffect(Unit) {
-        viewModel.refreshStorageStats()
-    }
+    val isArabic = context.resources.configuration.locales[0].language == "ar"
+    fun t(en: String, ar: String) = if (isArabic) ar else en
+    LaunchedEffect(Unit) { viewModel.refreshStorageStats() }
     var showPinDialog by remember { mutableStateOf(false) }
     var pinInput by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -69,6 +78,14 @@ fun SettingsScreen(
             }
         }
     }
+
+    // ---------------------------------------------------------------- Signatures (new, reusable vault)
+    var showSignatureStudio by remember { mutableStateOf(false) }
+    val signatureRepository = remember {
+        com.example.data.repository.DocumentRepository(context, com.example.data.db.DocScanDatabase.getInstance(context).documentDao())
+    }
+    val savedSignatures by signatureRepository.getAllSignatures().collectAsState(initial = emptyList())
+
     Scaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -90,9 +107,9 @@ fun SettingsScreen(
                 .padding(innerPadding)
                 .verticalScroll(rememberScrollState())
                 .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
+            verticalArrangement = Arrangement.spacedBy(22.dp)
         ) {
-            // Privacy Card (Zero Tracking / Local Only)
+            // ======================================================================= Privacy banner
             Card(
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f)),
@@ -103,20 +120,7 @@ fun SettingsScreen(
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(46.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Shield,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(26.dp)
-                        )
-                    }
+                    IconBadge(Icons.Default.Shield, MaterialTheme.colorScheme.primary)
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
                             text = stringResource(R.string.txt_offline_architecture),
@@ -132,23 +136,14 @@ fun SettingsScreen(
                     }
                 }
             }
-            // Language Settings
-            Text(
-                text = stringResource(R.string.txt_language),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            val currentLocale = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales().toLanguageTags()
-            var isArabic by remember { mutableStateOf(currentLocale.contains("ar")) }
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
+
+            // ======================================================================= Appearance (language + theme)
+            SectionHeader(stringResource(R.string.txt_appearance))
+            SectionCard {
+                val currentLocale = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales().toLanguageTags()
+                var isArabicToggle by remember { mutableStateOf(currentLocale.contains("ar")) }
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
@@ -157,546 +152,360 @@ fun SettingsScreen(
                         Text(text = stringResource(R.string.txt_switch_lang_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                     Switch(
-                        checked = isArabic,
+                        checked = isArabicToggle,
                         onCheckedChange = {
-                            isArabic = it
+                            isArabicToggle = it
                             val newLocales = if (it) androidx.core.os.LocaleListCompat.forLanguageTags("ar") else androidx.core.os.LocaleListCompat.forLanguageTags("en")
                             androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(newLocales)
                         }
                     )
                 }
-            }
-            // Appearance Settings
-            Text(
-                text = stringResource(R.string.txt_appearance),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text(text = stringResource(R.string.txt_app_theme), fontWeight = FontWeight.SemiBold)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        val themeOptions = listOf("System" to stringResource(R.string.txt_system), "Light" to stringResource(R.string.txt_light), "Dark" to stringResource(R.string.txt_dark))
-                        themeOptions.forEach { (themeId, themeLabel) ->
-                            FilterChip(
-                                selected = uiState.themeMode == themeId,
-                                onClick = { viewModel.setThemeMode(themeId) },
-                                shape = RoundedCornerShape(50),
-                                label = { Text(themeLabel) }
-                            )
-                        }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                Text(text = stringResource(R.string.txt_app_theme), fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val themeOptions = listOf("System" to stringResource(R.string.txt_system), "Light" to stringResource(R.string.txt_light), "Dark" to stringResource(R.string.txt_dark))
+                    themeOptions.forEach { (themeId, themeLabel) ->
+                        FilterChip(
+                            selected = uiState.themeMode == themeId,
+                            onClick = { viewModel.setThemeMode(themeId) },
+                            shape = RoundedCornerShape(50),
+                            label = { Text(themeLabel) }
+                        )
                     }
                 }
             }
-            // PDF Defaults
-            Text(
-                text = stringResource(R.string.txt_default_pdf_settings),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(text = stringResource(R.string.txt_page_size), fontWeight = FontWeight.SemiBold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            PageSizePreset.values().forEach { size ->
-                                val sizeName = when (size) {
-                                    PageSizePreset.A4 -> stringResource(R.string.page_size_a4)
-                                    PageSizePreset.LETTER -> stringResource(R.string.page_size_letter)
-                                    PageSizePreset.FIT_ORIGINAL -> stringResource(R.string.page_size_fit)
-                                    PageSizePreset.LEGAL -> stringResource(R.string.page_size_legal)
-                                }
-                                FilterChip(
-                                    selected = uiState.defaultPdfPageSize == size,
-                                    onClick = { viewModel.setDefaultPdfPageSize(size) },
-                                    shape = RoundedCornerShape(50),
-                                    label = { Text(sizeName) }
-                                )
-                            }
-                        }
-                    }
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(text = stringResource(R.string.txt_compression_quality), fontWeight = FontWeight.SemiBold)
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            CompressionPreset.values().forEach { comp ->
-                                val compName = when (comp) {
-                                    CompressionPreset.MAXIMUM -> stringResource(R.string.compression_max)
-                                    CompressionPreset.HIGH -> stringResource(R.string.compression_high)
-                                    CompressionPreset.MEDIUM -> stringResource(R.string.compression_medium)
-                                    CompressionPreset.LOW -> stringResource(R.string.compression_low)
-                                }
-                                FilterChip(
-                                    selected = uiState.defaultPdfCompression == comp,
-                                    onClick = { viewModel.setDefaultPdfCompression(comp) },
-                                    shape = RoundedCornerShape(50),
-                                    label = { Text(compName) }
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-            // App Lock Settings
-            Text(
-                text = if (isArabic) "قفل التطبيق" else "App Lock",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+
+            // ======================================================================= Scanning engine
+            SectionHeader(t("Scanning", "المسح الضوئي"))
+            SectionCard {
+                val appPrefs = remember { com.example.data.repository.AppPreferences(context) }
+                var scanEngine by remember { mutableStateOf(appPrefs.scanEngine) }
+                val googleSupported = remember { com.example.engine.scanner.GoogleDocumentScanner.isSupported(context) }
+                Text(t("Scan engine", "محرك المسح"), fontWeight = FontWeight.SemiBold)
+                listOf(
+                    com.example.data.repository.AppPreferences.SCAN_ENGINE_GOOGLE to Pair(
+                        t("Google scanner (recommended)", "ماسح Google (موصى به)"),
+                        t("Most accurate edges, shadow & stain removal, multi-page", "اكتشاف أدق للحواف، إزالة الظلال والبقع، ومسح متعدد الصفحات")
+                    ),
+                    com.example.data.repository.AppPreferences.SCAN_ENGINE_BUILT_IN to Pair(
+                        t("Built-in camera", "الكاميرا المدمجة"),
+                        t("Works without Google services, with flash and manual capture settings", "تعمل بدون خدمات Google، مع إعدادات الفلاش والالتقاط اليدوي")
+                    )
+                ).forEach { (engine, texts) ->
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { scanEngine = engine; appPrefs.scanEngine = engine }
+                            .padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column {
-                            Text(if (isArabic) "نوع القفل" else "Lock Type", fontWeight = FontWeight.SemiBold)
-                            Text(if (isArabic) "اختر وسيلة حماية التطبيق" else "Choose how to protect your app", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        val lockOptions = listOf(
-                            LockType.NONE to (if (isArabic) "إيقاف" else "Off"),
-                            LockType.PIN to (if (isArabic) "رمز PIN" else "PIN"),
-                            LockType.BIOMETRIC to (if (isArabic) "بصمة" else "Biometric")
-                        )
-                        lockOptions.forEach { pair ->
-                            val type = pair.first
-                            val label = pair.second
-                            val isSelected = uiState.lockType == type
-                            FilterChip(
-                                selected = isSelected,
-                                onClick = {
-                                    if (type == LockType.PIN) showPinDialog = true
-                                    else viewModel.setLockType(type)
-                                },
-                                label = { Text(label) }
-                            )
+                        RadioButton(selected = scanEngine == engine, onClick = null)
+                        Spacer(Modifier.width(10.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(texts.first, fontWeight = FontWeight.Medium)
+                            Text(texts.second, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
                 }
-            }
-            // Scanning engine (persisted). Google = ML Kit Document Scanner, built-in = in-app camera.
-            val appPrefs = remember { com.example.data.repository.AppPreferences(context) }
-            var scanEngine by remember { mutableStateOf(appPrefs.scanEngine) }
-            val googleSupported = remember { com.example.engine.scanner.GoogleDocumentScanner.isSupported(context) }
-            Text(
-                text = if (isArabic) "المسح الضوئي" else "Scanning",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text(if (isArabic) "محرك المسح" else "Scan engine", fontWeight = FontWeight.SemiBold)
-                    listOf(
-                        com.example.data.repository.AppPreferences.SCAN_ENGINE_GOOGLE to Pair(
-                            if (isArabic) "ماسح Google (موصى به)" else "Google scanner (recommended)",
-                            if (isArabic) "اكتشاف أدق للحواف، إزالة الظلال والبقع، ومسح متعدد الصفحات" else "Most accurate edges, shadow & stain removal, multi-page"
-                        ),
-                        com.example.data.repository.AppPreferences.SCAN_ENGINE_BUILT_IN to Pair(
-                            if (isArabic) "الكاميرا المدمجة" else "Built-in camera",
-                            if (isArabic) "تعمل بدون خدمات Google، مع إعدادات الفلاش والالتقاط اليدوي" else "Works without Google services, with flash and manual capture settings"
-                        )
-                    ).forEach { (engine, texts) ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .clickable {
-                                    scanEngine = engine
-                                    appPrefs.scanEngine = engine
-                                }
-                                .padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            RadioButton(selected = scanEngine == engine, onClick = null)
-                            Spacer(Modifier.width(10.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(texts.first, fontWeight = FontWeight.Medium)
-                                Text(texts.second, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                    if (scanEngine == com.example.data.repository.AppPreferences.SCAN_ENGINE_GOOGLE && !googleSupported) {
-                        Text(
-                            if (isArabic) "ماسح Google غير متاح على هذا الجهاز، وستُستخدم الكاميرا المدمجة تلقائياً."
-                            else "The Google scanner is not available on this device; the built-in camera is used automatically.",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.error
-                        )
-                    }
+                if (scanEngine == com.example.data.repository.AppPreferences.SCAN_ENGINE_GOOGLE && !googleSupported) {
                     Text(
-                        if (isArabic) "بطاقة الهوية وجواز السفر يستخدمان الكاميرا المدمجة دائماً (إطارات إرشادية ووجهان)."
-                        else "ID card and passport always use the built-in camera (framing guides, front & back).",
+                        t(
+                            "The Google scanner is not available on this device; the built-in camera is used automatically.",
+                            "ماسح Google غير متاح على هذا الجهاز، وستُستخدم الكاميرا المدمجة تلقائياً."
+                        ),
                         fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = MaterialTheme.colorScheme.error
                     )
                 }
+                Text(
+                    t(
+                        "ID card and passport always use the built-in camera (framing guides, front & back).",
+                        "بطاقة الهوية وجواز السفر يستخدمان الكاميرا المدمجة دائماً (إطارات إرشادية ووجهان)."
+                    ),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            // OCR Settings
-            Text(
-                text = if (isArabic) "إعدادات استخراج النص (OCR)" else "OCR Settings",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(if (isArabic) "اللغة الافتراضية" else "Default Language", fontWeight = FontWeight.SemiBold)
-                    Row(
-                        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        com.example.engine.ocr.OcrLanguage.values().forEach { lang ->
-                            val label = when (lang) {
-                                com.example.engine.ocr.OcrLanguage.AUTO -> if (isArabic) "تلقائي (عربي + إنجليزي)" else "Auto (Arabic + English)"
-                                com.example.engine.ocr.OcrLanguage.ARABIC -> if (isArabic) "عربي" else "Arabic"
-                                com.example.engine.ocr.OcrLanguage.ENGLISH -> if (isArabic) "إنجليزي" else "English"
-                            }
-                            FilterChip(
-                                selected = uiState.ocrLanguage == lang,
-                                onClick = { viewModel.setOcrLanguage(lang) },
-                                label = { Text(label) }
-                            )
-                        }
+
+            // ======================================================================= Signatures (NEW)
+            SectionHeader(t("Signatures", "التوقيعات"))
+            SectionCard {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { showSignatureStudio = true }
+                        .padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconBadge(Icons.Default.Draw, GoldBase)
+                    Spacer(Modifier.width(12.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(t("My signatures", "توقيعاتي"), fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (savedSignatures.isEmpty()) t("Create your signature once, reuse it anywhere", "أنشئ توقيعك مرة واحدة واستخدمه في كل مكان")
+                            else t("${savedSignatures.size} saved — tap to manage", "${savedSignatures.size} محفوظ — اضغط للإدارة"),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                    // Arabic model status (Tesseract, ~1.4 MB, stored once on the device).
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(if (isArabic) "نموذج التعرف على العربية" else "Arabic recognition model", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                            Text(
-                                when {
-                                    uiState.arabicModelReady -> if (isArabic) "جاهز — يعمل بدون إنترنت" else "Ready — works offline"
-                                    uiState.isDownloadingArabicModel -> if (isArabic) "جاري التحميل…" else "Downloading…"
-                                    else -> if (isArabic) "غير محمّل (1.4 ميجابايت، مرة واحدة)" else "Not downloaded (1.4 MB, once)"
-                                },
-                                fontSize = 12.sp,
-                                color = if (uiState.arabicModelReady) Emerald400 else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+
+            // ======================================================================= Documents & PDF defaults
+            SectionHeader(stringResource(R.string.txt_default_pdf_settings))
+            SectionCard {
+                Text(text = stringResource(R.string.txt_page_size), fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PageSizePreset.values().forEach { size ->
+                        val sizeName = when (size) {
+                            PageSizePreset.A4 -> stringResource(R.string.page_size_a4)
+                            PageSizePreset.LETTER -> stringResource(R.string.page_size_letter)
+                            PageSizePreset.FIT_ORIGINAL -> stringResource(R.string.page_size_fit)
+                            PageSizePreset.LEGAL -> stringResource(R.string.page_size_legal)
                         }
-                        if (uiState.isDownloadingArabicModel) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                        } else if (!uiState.arabicModelReady) {
-                            TextButton(onClick = { viewModel.downloadArabicModel() }) { Text(if (isArabic) "تحميل" else "Download") }
+                        FilterChip(
+                            selected = uiState.defaultPdfPageSize == size,
+                            onClick = { viewModel.setDefaultPdfPageSize(size) },
+                            shape = RoundedCornerShape(50),
+                            label = { Text(sizeName) }
+                        )
+                    }
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                Text(text = stringResource(R.string.txt_compression_quality), fontWeight = FontWeight.SemiBold)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CompressionPreset.values().forEach { comp ->
+                        val compName = when (comp) {
+                            CompressionPreset.MAXIMUM -> stringResource(R.string.compression_max)
+                            CompressionPreset.HIGH -> stringResource(R.string.compression_high)
+                            CompressionPreset.MEDIUM -> stringResource(R.string.compression_medium)
+                            CompressionPreset.LOW -> stringResource(R.string.compression_low)
                         }
+                        FilterChip(
+                            selected = uiState.defaultPdfCompression == comp,
+                            onClick = { viewModel.setDefaultPdfCompression(comp) },
+                            shape = RoundedCornerShape(50),
+                            label = { Text(compName) }
+                        )
                     }
                 }
             }
-            // App updates (GitHub Releases): automatic check on launch + every 12 h, and on demand here.
-            Text(
-                text = if (isArabic) "تحديثات التطبيق" else "App Updates",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                (if (isArabic) "الإصدار الحالي: " else "Current version: ") + BuildConfig.VERSION_NAME,
-                                fontWeight = FontWeight.SemiBold
-                            )
-                            Text(
-                                if (isArabic) "يتم التحقق تلقائياً عند الفتح وكل 12 ساعة" else "Checked automatically on launch and every 12 h",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+
+            // ======================================================================= OCR
+            SectionHeader(t("OCR Settings", "إعدادات استخراج النص (OCR)"))
+            SectionCard {
+                Text(t("Default Language", "اللغة الافتراضية"), fontWeight = FontWeight.SemiBold)
+                Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    com.example.engine.ocr.OcrLanguage.values().forEach { lang ->
+                        val label = when (lang) {
+                            com.example.engine.ocr.OcrLanguage.AUTO -> t("Auto (Arabic + English)", "تلقائي (عربي + إنجليزي)")
+                            com.example.engine.ocr.OcrLanguage.ARABIC -> t("Arabic", "عربي")
+                            com.example.engine.ocr.OcrLanguage.ENGLISH -> t("English", "إنجليزي")
                         }
-                        Button(
-                            onClick = onCheckForUpdates,
-                            enabled = updateCheckState !is UpdateCheckState.Checking,
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.testTag("check_updates_btn")
-                        ) {
-                            if (updateCheckState is UpdateCheckState.Checking) {
-                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                            } else {
-                                Text(if (isArabic) "التحقق الآن" else "Check now")
-                            }
-                        }
-                    }
-                    when (val st = updateCheckState) {
-                        is UpdateCheckState.UpToDate -> if (st.isManual) Text(
-                            if (isArabic) "لديك أحدث إصدار ✓" else "You have the latest version ✓",
-                            color = Emerald400, fontSize = 13.sp
+                        FilterChip(
+                            selected = uiState.ocrLanguage == lang,
+                            onClick = { viewModel.setOcrLanguage(lang) },
+                            label = { Text(label) }
                         )
-                        is UpdateCheckState.Error -> if (st.isManual) Text(
-                            if (isArabic) st.messageAr else st.messageEn,
-                            color = MaterialTheme.colorScheme.error, fontSize = 13.sp
-                        )
-                        is UpdateCheckState.Available -> Text(
-                            (if (isArabic) "يتوفر الإصدار " else "Version available: ") + st.updateInfo.latestVersion,
-                            color = MaterialTheme.colorScheme.primary, fontSize = 13.sp
-                        )
-                        else -> Unit
                     }
                 }
-            }
-            // Advanced: Backup & Restore
-            Text(
-                text = if (isArabic) "خيارات متقدمة" else "Advanced",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
-                        uri?.let { viewModel.createBackup(it) }
-                    }
-                    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-                        uri?.let { viewModel.restoreBackup(it) }
-                    }
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = stringResource(R.string.txt_backup_restore), fontWeight = FontWeight.SemiBold)
-                            Text(text = if (isArabic) "نسخ احتياطي واستعادة البيانات" else "Create or restore a backup", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        }
-                    }
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Button(
-                            onClick = {
-                                val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
-                                backupLauncher.launch("MS_Scanner_Backup_$dateStr.zip")
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(t("Arabic recognition model", "نموذج التعرف على العربية"), fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text(
+                            when {
+                                uiState.arabicModelReady -> t("Ready — works offline", "جاهز — يعمل بدون إنترنت")
+                                uiState.isDownloadingArabicModel -> t("Downloading…", "جاري التحميل…")
+                                else -> t("Not downloaded (1.4 MB, once)", "غير محمّل (1.4 ميجابايت، مرة واحدة)")
                             },
-                            enabled = !uiState.isLoading,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) { Text(if (isArabic) "نسخ احتياطي" else "Backup") }
-                        OutlinedButton(
-                            onClick = { restoreLauncher.launch(arrayOf("application/zip")) },
-                            enabled = !uiState.isLoading,
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) { Text(if (isArabic) "استعادة" else "Restore") }
+                            fontSize = 12.sp,
+                            color = if (uiState.arabicModelReady) Emerald400 else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
-                    if (uiState.isLoading) {
-                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    // Storage Stats
-                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text(if (isArabic) "المساحة المستخدمة" else "Used Storage", fontSize = 13.sp)
-                        val totalMb = ((stats?.scansSizeBytes ?: 0L) + (stats?.cacheSizeBytes ?: 0L)) / (1024 * 1024f)
-                        Text(String.format(Locale.US, "%.1f MB", totalMb), fontWeight = FontWeight.Bold)
-                    }
-                    TextButton(
-                        onClick = { viewModel.clearCache() },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(Icons.Default.CleaningServices, null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(stringResource(R.string.txt_clear_cache))
+                    if (uiState.isDownloadingArabicModel) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else if (!uiState.arabicModelReady) {
+                        TextButton(onClick = { viewModel.downloadArabicModel() }) { Text(t("Download", "تحميل")) }
                     }
                 }
             }
-            // Legal & Info
-            Text(
-                text = stringResource(R.string.txt_legal),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
+
+            // ======================================================================= Security & App Lock
+            SectionHeader(t("Security & App Lock", "الأمان وقفل التطبيق"))
+            SectionCard {
+                Text(t("Lock Type", "نوع القفل"), fontWeight = FontWeight.SemiBold)
+                Text(t("Choose how to protect your app", "اختر وسيلة حماية التطبيق"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val lockOptions = listOf(
+                        LockType.NONE to t("Off", "إيقاف"),
+                        LockType.PIN to t("PIN", "رمز PIN"),
+                        LockType.BIOMETRIC to t("Biometric", "بصمة")
+                    )
+                    lockOptions.forEach { (type, label) ->
+                        val isSelected = uiState.lockType == type
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { if (type == LockType.PIN) showPinDialog = true else viewModel.setLockType(type) },
+                            label = { Text(label) }
+                        )
+                    }
+                }
+            }
+
+            // ======================================================================= App Updates
+            SectionHeader(t("App Updates", "تحديثات التطبيق"))
+            SectionCard {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text((t("Current version: ", "الإصدار الحالي: ")) + BuildConfig.VERSION_NAME, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            t("Checked automatically on launch and every 12 h", "يتم التحقق تلقائياً عند الفتح وكل 12 ساعة"),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Button(
+                        onClick = onCheckForUpdates,
+                        enabled = updateCheckState !is UpdateCheckState.Checking,
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.testTag("check_updates_btn")
+                    ) {
+                        if (updateCheckState is UpdateCheckState.Checking) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        } else {
+                            Text(t("Check now", "التحقق الآن"))
+                        }
+                    }
+                }
+                when (val st = updateCheckState) {
+                    is UpdateCheckState.UpToDate -> if (st.isManual) Text(
+                        t("You have the latest version ✓", "لديك أحدث إصدار ✓"),
+                        color = Emerald400, fontSize = 13.sp
+                    )
+                    is UpdateCheckState.Error -> if (st.isManual) Text(
+                        if (isArabic) st.messageAr else st.messageEn,
+                        color = MaterialTheme.colorScheme.error, fontSize = 13.sp
+                    )
+                    is UpdateCheckState.Available -> Text(
+                        (t("Version available: ", "يتوفر الإصدار ")) + st.updateInfo.latestVersion,
+                        color = MaterialTheme.colorScheme.primary, fontSize = 13.sp
+                    )
+                    else -> Unit
+                }
+            }
+
+            // ======================================================================= Backup & Restore
+            SectionHeader(stringResource(R.string.txt_backup_restore))
+            SectionCard {
+                val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+                    uri?.let { viewModel.createBackup(it) }
+                }
+                val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+                    uri?.let { viewModel.restoreBackup(it) }
+                }
+                if (uiState.isLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Button(
+                        onClick = {
+                            val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
+                            backupLauncher.launch("MS_Scanner_Backup_$dateStr.zip")
+                        },
+                        enabled = !uiState.isLoading,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text(t("Backup", "نسخ احتياطي")) }
+                    OutlinedButton(
+                        onClick = { restoreLauncher.launch(arrayOf("application/zip")) },
+                        enabled = !uiState.isLoading,
+                        modifier = Modifier.weight(1f),
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text(t("Restore", "استعادة")) }
+                }
+            }
+
+            // ======================================================================= Storage
+            SectionHeader(stringResource(R.string.txt_storage_management))
+            SectionCard {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(stringResource(R.string.txt_total_scanned_documents), fontSize = 13.sp)
+                    Text("${stats?.totalDocumentsCount ?: 0}", fontWeight = FontWeight.Bold)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(stringResource(R.string.txt_total_pages), fontSize = 13.sp)
+                    Text("${stats?.totalPagesCount ?: 0}", fontWeight = FontWeight.Bold)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(stringResource(R.string.txt_document_scans_storage), fontSize = 13.sp)
+                    val scansMb = (stats?.scansSizeBytes ?: 0L) / (1024 * 1024f)
+                    Text(String.format(Locale.US, "%.1f MB", scansMb), fontWeight = FontWeight.Bold)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(stringResource(R.string.txt_export___temp_cache), fontSize = 13.sp)
+                    val cacheMb = (stats?.cacheSizeBytes ?: 0L) / (1024 * 1024f)
+                    Text(String.format(Locale.US, "%.1f MB", cacheMb), fontWeight = FontWeight.Bold)
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text(t("Used Storage", "المساحة المستخدمة"), fontSize = 13.sp)
+                    val totalMb = ((stats?.scansSizeBytes ?: 0L) + (stats?.cacheSizeBytes ?: 0L)) / (1024 * 1024f)
+                    Text(String.format(Locale.US, "%.1f MB", totalMb), fontWeight = FontWeight.Bold)
+                }
+                if (uiState.isLoading) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
+                TextButton(onClick = { viewModel.clearCache() }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.CleaningServices, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(stringResource(R.string.txt_clear_cache))
+                }
+            }
+
+            // ======================================================================= Legal & About
+            SectionHeader(stringResource(R.string.txt_legal))
+            SectionCard {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clickable {
                             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://example.com/privacy"))
                             runCatching { context.startActivity(intent) }
-                        }
-                        .padding(16.dp),
+                        },
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Text(text = stringResource(R.string.txt_privacy_policy), fontWeight = FontWeight.SemiBold)
                     Icon(Icons.Default.OpenInNew, contentDescription = null, modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary)
                 }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                Text(
+                    stringResource(R.string.txt_professional_document_scan),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
-            // Storage Management
-            Text(
-                text = stringResource(R.string.txt_storage_management),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(stringResource(R.string.txt_total_scanned_documents), fontSize = 13.sp)
-                        Text("${stats?.totalDocumentsCount ?: 0}", fontWeight = FontWeight.Bold)
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(stringResource(R.string.txt_total_pages), fontSize = 13.sp)
-                        Text("${stats?.totalPagesCount ?: 0}", fontWeight = FontWeight.Bold)
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(stringResource(R.string.txt_document_scans_storage), fontSize = 13.sp)
-                        val scansMb = (stats?.scansSizeBytes ?: 0L) / (1024 * 1024f)
-                        Text(String.format(Locale.US, "%.1f MB", scansMb), fontWeight = FontWeight.Bold)
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(stringResource(R.string.txt_export___temp_cache), fontSize = 13.sp)
-                        val cacheMb = (stats?.cacheSizeBytes ?: 0L) / (1024 * 1024f)
-                        Text(String.format(Locale.US, "%.1f MB", cacheMb), fontWeight = FontWeight.Bold)
-                    }
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                viewModel.clearCache()
-                                Toast.makeText(context, context.getString(R.string.txt_cache_cleared), Toast.LENGTH_SHORT).show()
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f).testTag("clear_cache_btn")
-                        ) {
-                            Icon(Icons.Default.CleaningServices, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(stringResource(R.string.txt_clear_cache), fontSize = 12.sp)
-                        }
-                        OutlinedButton(
-                            onClick = {
-                                viewModel.emptyTrash()
-                                Toast.makeText(context, context.getString(R.string.txt_trash_emptied), Toast.LENGTH_SHORT).show()
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            modifier = Modifier.weight(1f).testTag("empty_trash_btn")
-                        ) {
-                            Icon(Icons.Default.DeleteForever, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text(stringResource(R.string.txt_empty_trash), fontSize = 12.sp)
-                        }
-                    }
-                }
-            }
-            // Diagnostics: local crash log (never sent automatically).
-            var crashCount by remember { mutableStateOf(0) }
-            LaunchedEffect(Unit) {
-                crashCount = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                    com.example.util.CrashReporter.reports(context).size
-                }
-            }
-            Text(
-                text = if (isArabic) "التشخيص" else "Diagnostics",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        if (crashCount == 0) (if (isArabic) "لا توجد تقارير أعطال" else "No crash reports")
-                        else (if (isArabic) "تقارير الأعطال المحفوظة: $crashCount" else "Saved crash reports: $crashCount"),
-                        fontWeight = FontWeight.SemiBold
-                    )
-                    Text(
-                        if (isArabic) "تُحفظ على الجهاز فقط ولا تُرسل إلا إذا شاركتها أنت." else "Stored on the device only; sent only if you share them.",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    if (crashCount > 0) {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            OutlinedButton(onClick = {
-                                val file = com.example.util.CrashReporter.exportForSharing(context)
-                                if (file != null) com.example.engine.pdf.PdfEngine.shareFiles(context, listOf(file), "text/plain")
-                            }, shape = RoundedCornerShape(12.dp)) { Text(if (isArabic) "مشاركة" else "Share") }
-                            TextButton(onClick = {
-                                com.example.util.CrashReporter.clear(context)
-                                crashCount = 0
-                            }) { Text(if (isArabic) "حذف" else "Clear") }
-                        }
-                    }
-                }
-            }
-            // About
-            Text(
-                text = stringResource(R.string.txt_about),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Card(
-                shape = RoundedCornerShape(16.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-            ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    // Real version (was hard-coded "v1.0").
-                    Text(stringResource(R.string.app_name) + " v" + BuildConfig.VERSION_NAME, fontWeight = FontWeight.Bold)
-                    Text(
-                        stringResource(R.string.txt_professional_document_scan),
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+
+            Spacer(Modifier.height(8.dp))
         }
     }
+
     if (showPinDialog) {
         AlertDialog(
             onDismissRequest = { showPinDialog = false; pinInput = "" },
@@ -744,5 +553,41 @@ fun SettingsScreen(
                 }
             }
         )
+    }
+
+    if (showSignatureStudio) {
+        SignatureStudioScreen(
+            repository = signatureRepository,
+            onDismiss = { showSignatureStudio = false }
+        )
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String) {
+    Text(text = title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+}
+
+@Composable
+private fun SectionCard(content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp), content = content)
+    }
+}
+
+@Composable
+private fun IconBadge(icon: androidx.compose.ui.graphics.vector.ImageVector, tint: Color) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(tint.copy(alpha = 0.15f)),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
     }
 }

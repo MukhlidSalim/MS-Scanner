@@ -1,5 +1,4 @@
 package com.example.ui.viewmodel
-
 import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
@@ -31,25 +30,33 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
-
 /**
  * Per-page edit parameters of a page that is not saved yet. Everything is re-rendered from the RAW
  * image with DocumentPipeline (warp(quad) -> rotate -> filter -> brightness/contrast), so edits never
  * stack on an already-processed image and the crop is never lost.
+ *
+ * Default filter changed from DocumentPipeline.DEFAULT_FILTER to null (Original): requested behaviour is
+ * that a freshly captured/imported document page keeps its true colours by default, and the user applies
+ * a filter afterwards if they want one. This affects the EDIT/BOOKKEEPING state shown in the review screen
+ * (rotate/filter panel) and every path that falls back to "no edit recorded yet" for a page -
+ * most importantly the initial entry created the first time a page is touched by renderPages()/editFor().
+ * NOTE: the actual pixels of a brand-new capture are produced by DocumentPipeline's own default filter
+ * argument at capture time (DocumentScanController.processCapture / ImageCapture callback), which is a
+ * separate code path not included in this file; that default must also be set to null/ORIGINAL there for
+ * the very first preview of a freshly captured page to show no filter. See the delivery report for the
+ * exact file/line needed to complete that part.
  */
 data class PendingPageEdit(
     val rotation: Int = 0,
-    val filter: FilterType? = DocumentPipeline.DEFAULT_FILTER,
+    val filter: FilterType? = null,
     val brightness: Float = 0f,
     val contrast: Float = 1f
 )
-
 /** Where the next camera result goes when the camera is opened from the review screen. */
 sealed class CaptureTarget {
     object Append : CaptureTarget()
     data class Replace(val index: Int) : CaptureTarget()
 }
-
 data class CameraUiState(
     val pendingPages: List<Pair<String, String>> = emptyList(),
     val pagesPendingEdit: List<Pair<String, String>> = emptyList(),
@@ -74,68 +81,52 @@ data class CameraUiState(
     val pagesNeedingReview: Int get() = pagesPendingEdit.count { statusOf(it.first).needsAttention }
     val anyPageProcessing: Boolean get() = pagesPendingEdit.any { statusOf(it.first) == PageStatus.PROCESSING }
 }
-
 /**
  * Pages that were already processed outside the detector (Google document scanner, PDF pages) must
  * keep their pixels: no default AUTO filter on later rotate / re-render.
  */
 internal fun isPreprocessedPage(rawPath: String): Boolean = QuadStore.loadStatus(rawPath) == DetectionStatus.SKIPPED
-
 internal fun preprocessedEdits(pages: List<Pair<String, String>>, existing: Map<String, PendingPageEdit>): Map<String, PendingPageEdit> =
     pages.filter { it.first !in existing && isPreprocessedPage(it.first) }.associate { it.first to PendingPageEdit(filter = null) }
-
 /** Initial status of a freshly processed page, from the pipeline's persisted detection result. */
 internal fun initialStatusFor(rawPath: String): PageStatus = when (QuadStore.loadStatus(rawPath)) {
     DetectionStatus.NOT_FOUND -> PageStatus.NEEDS_REVIEW
     DetectionStatus.MANUAL -> PageStatus.EDITED
     else -> PageStatus.PROCESSED
 }
-
 class CameraViewModel(
     context: Context,
     private val repository: DocumentRepository
 ) : ViewModel() {
-
     // Application context only: never hold an Activity in a ViewModel.
     private val context: Context = context.applicationContext
-
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
-
     // Buffered + trySend: a missing collector can never suspend (hang) an import or a save.
     private val _events = Channel<UiEvent>(Channel.BUFFERED)
     val events = _events.receiveAsFlow()
-
     private var importJob: Job? = null
     private val editMutex = Mutex()
-
     // Result of the Google document scanner, processed in viewModelScope (survives rotation / recreation).
     private val _scannerPages = MutableStateFlow<List<Pair<String, String>>?>(null)
     val scannerPages: StateFlow<List<Pair<String, String>>?> = _scannerPages.asStateFlow()
     private val _isProcessingScan = MutableStateFlow(false)
     val isProcessingScan: StateFlow<Boolean> = _isProcessingScan.asStateFlow()
-
     @Volatile
     private var captureTarget: CaptureTarget? = null
-
     // ------------------------------------------------------------------ capture target
-
     fun setCaptureTarget(target: CaptureTarget?) {
         captureTarget = target
     }
-
     /** Pending target without consuming it (camera opened from the review screen?). */
     fun peekCaptureTarget(): CaptureTarget? = captureTarget
-
     /** Returns and clears the pending target (one-shot). */
     fun consumeCaptureTarget(): CaptureTarget? {
         val t = captureTarget
         captureTarget = null
         return t
     }
-
     // ------------------------------------------------------------------ session setup
-
     private fun setPages(pages: List<Pair<String, String>>) {
         _uiState.update { s ->
             val keys = pages.map { it.first }.toSet()
@@ -145,27 +136,23 @@ class CameraViewModel(
             s.copy(pagesPendingEdit = pages, pendingPages = pages, pageEdits = edits, pageStatuses = statuses)
         }
     }
-
     private fun setStatus(rawPath: String, status: PageStatus) {
         _uiState.update { s ->
             if (s.pagesPendingEdit.none { it.first == rawPath }) s
             else s.copy(pageStatuses = s.pageStatuses + (rawPath to status))
         }
     }
-
     /** "Save & Next": the user reviewed this page. A page whose edges were not found stays flagged. */
     fun markPageReviewed(index: Int) {
         val raw = _uiState.value.pagesPendingEdit.getOrNull(index)?.first ?: return
         val current = _uiState.value.statusOf(raw)
         if (current == PageStatus.PROCESSED || current == PageStatus.EDITED) setStatus(raw, PageStatus.READY_TO_SAVE)
     }
-
     /** "Continue": the user accepts the full image although no edges were detected. */
     fun acceptPageAsIs(index: Int) {
         val raw = _uiState.value.pagesPendingEdit.getOrNull(index)?.first ?: return
         if (_uiState.value.statusOf(raw).needsAttention) setStatus(raw, PageStatus.EDITED)
     }
-
     /** "Retry detection" for one page: full detection chain again on the untouched original. */
     fun retryDetection(index: Int) {
         val page = _uiState.value.pagesPendingEdit.getOrNull(index) ?: return
@@ -217,7 +204,6 @@ class CameraViewModel(
             }
         }
     }
-
     fun setPagesPendingEdit(pages: List<Pair<String, String>>) {
         importJob?.cancel()
         _uiState.update {
@@ -235,12 +221,10 @@ class CameraViewModel(
             )
         }
     }
-
     fun appendPendingPages(pages: List<Pair<String, String>>) {
         if (pages.isEmpty()) return
         setPages(_uiState.value.pagesPendingEdit + pages)
     }
-
     fun replacePendingPage(index: Int, page: Pair<String, String>) {
         val pages = _uiState.value.pagesPendingEdit.toMutableList()
         if (index !in pages.indices) {
@@ -252,7 +236,6 @@ class CameraViewModel(
         setPages(pages)
         deletePageFiles(old)
     }
-
     fun deletePendingPage(index: Int) {
         val pages = _uiState.value.pagesPendingEdit.toMutableList()
         if (index !in pages.indices) return
@@ -260,14 +243,12 @@ class CameraViewModel(
         setPages(pages)
         deletePageFiles(removed)
     }
-
     fun movePendingPage(from: Int, to: Int) {
         val pages = _uiState.value.pagesPendingEdit.toMutableList()
         if (from !in pages.indices || to !in pages.indices || from == to) return
         pages.add(to, pages.removeAt(from))
         setPages(pages)
     }
-
     /** Gallery import through the same pipeline as the camera. First page is usable immediately. */
     fun setImportedUrisPendingEdit(uris: List<Uri>, autoCrop: Boolean = true) {
         if (uris.isEmpty()) return
@@ -315,7 +296,6 @@ class CameraViewModel(
             }
         }
     }
-
     /** PDF import through the same pipeline (pages rasterized; no border detection on flat pages). */
     fun setImportedPdfPendingEdit(uri: Uri) {
         importJob?.cancel()
@@ -350,14 +330,10 @@ class CameraViewModel(
             }
         }
     }
-
     // ------------------------------------------------------------------ page edits
-
     private fun editFor(rawPath: String): PendingPageEdit =
         _uiState.value.pageEdits[rawPath] ?: PendingPageEdit()
-
     private fun quadFor(rawPath: String): DocumentQuad = QuadStore.load(rawPath) ?: DocumentQuad.fullQuad()
-
     /**
      * Re-renders the given pages from RAW with an updated edit. Pages are matched by RAW path, so a
      * delete / reorder performed while rendering can never write a result onto the wrong page.
@@ -412,12 +388,10 @@ class CameraViewModel(
             }
         }
     }
-
     fun rotatePendingPage(index: Int, clockwise: Boolean) {
         val delta = if (clockwise) 90 else 270
         renderPages(listOf(index)) { it.copy(rotation = (it.rotation + delta) % 360) }
     }
-
     /**
      * Applies a filter and/or brightness/contrast to one or several pages ("Apply to all").
      * [filter] is applied only when [changeFilter] is true (null filter = Original colors).
@@ -437,7 +411,6 @@ class CameraViewModel(
             )
         }
     }
-
     /** Result of the crop editor (quad already persisted in QuadStore by DocumentPipeline.render). */
     fun updatePendingPageCrop(index: Int, result: CropEditorResult) {
         val pages = _uiState.value.pagesPendingEdit
@@ -457,7 +430,6 @@ class CameraViewModel(
         }
         if (page.second != result.processedPath) deleteIfUnreferenced(page.second, rawPath)
     }
-
     /** Legacy entry point (crop editor without result object). */
     fun updatePendingPageProcessedImage(index: Int, newPath: String) {
         val pages = _uiState.value.pagesPendingEdit.toMutableList()
@@ -467,7 +439,6 @@ class CameraViewModel(
         setPages(pages)
         if (old.second != newPath) deleteIfUnreferenced(old.second, old.first)
     }
-
     fun autoCropAllPendingPages() {
         val currentPages = _uiState.value.pagesPendingEdit
         if (currentPages.isEmpty()) return
@@ -502,7 +473,6 @@ class CameraViewModel(
             }
         }
     }
-
     /**
      * Book mode: replaces one pending page by its two halves (left / right of the spine).
      * [rightPageFirst] = Arabic books (the right-hand page is read first).
@@ -545,9 +515,7 @@ class CameraViewModel(
             }
         }
     }
-
     // ------------------------------------------------------------------ Google document scanner
-
     /**
      * Pages returned by the Google scanner are already detected, cropped, perspective-corrected and
      * cleaned: they enter the SAME pipeline without a second detection or filter (status SKIPPED), and
@@ -581,15 +549,12 @@ class CameraViewModel(
             }
         }
     }
-
     /** One-shot delivery of the processed scanner pages. */
     fun consumeScannerPages(): List<Pair<String, String>>? = _scannerPages.value.also { _scannerPages.value = null }
-
     /** Result nobody collected (screen left while processing): its files are removed. */
     fun discardStaleScannerPages() {
         consumeScannerPages()?.forEach { deletePageFiles(it) }
     }
-
     private fun deleteScannerTemp(uri: Uri) {
         if (uri.scheme != "file") return
         val path = uri.path ?: return
@@ -599,14 +564,10 @@ class CameraViewModel(
             if (f.path.startsWith(context.cacheDir.canonicalPath + File.separator)) f.delete()
         }
     }
-
     /** Kept for API compatibility. Analysis now runs in the background AFTER save, never before. */
     fun analyzePendingFirstPage() = Unit
-
     // ------------------------------------------------------------------ save
-
     private fun filterNameFor(edit: PendingPageEdit): String = (edit.filter ?: FilterType.ORIGINAL).name
-
     /** Pending pages -> PageEntity rows with their final crop / rotation / filter (id = 0: new rows). */
     private fun pendingAsEntities(): List<PageEntity> {
         val state = _uiState.value
@@ -625,7 +586,6 @@ class CameraViewModel(
             )
         }
     }
-
     /** Guards shared by every save entry point. Returns an error message, or null when saving is allowed. */
     private fun saveBlockedReason(): String? {
         val state = _uiState.value
@@ -637,7 +597,6 @@ class CameraViewModel(
             else -> null
         }
     }
-
     /**
      * New document from the scan session (camera, gallery, PDF, multi-page). One Room transaction via
      * DocumentRepository.saveDocument: document + all pages + metadata + thumbnail, or nothing.
@@ -669,7 +628,6 @@ class CameraViewModel(
             }
         }
     }
-
     /** Adds the session pages to an existing document, through the same transaction. */
     fun commitPendingPagesToDocument(docId: Long, onComplete: () -> Unit) {
         saveBlockedReason()?.let { reason ->
@@ -707,12 +665,10 @@ class CameraViewModel(
             }
         }
     }
-
     private fun markSavedAndClear() {
         _uiState.update { s -> s.copy(pageStatuses = s.pageStatuses.mapValues { PageStatus.SAVED }) }
         clearPendingPages(deleteFiles = false)
     }
-
     /**
      * OCR + classification + suggested title run strictly AFTER save through WorkManager
      * (DocumentAnalysisWorker): survives navigation / process death and never blocks the scan flow.
@@ -720,9 +676,7 @@ class CameraViewModel(
     private fun analyzeDocumentInBackground(docId: Long, generatedTitle: Boolean) {
         DocumentAnalysisWorker.enqueue(context, docId, generatedTitle)
     }
-
     // ------------------------------------------------------------------ cleanup
-
     fun clearPendingPages(deleteFiles: Boolean = false) {
         importJob?.cancel()
         if (deleteFiles) {
@@ -737,7 +691,6 @@ class CameraViewModel(
             )
         }
     }
-
     private fun deletePageFiles(page: Pair<String, String>) {
         runCatching {
             if (page.first.isNotBlank()) {
@@ -747,7 +700,6 @@ class CameraViewModel(
             if (page.second.isNotBlank() && page.second != page.first) File(page.second).delete()
         }
     }
-
     /** Deletes an obsolete processed file unless it is the raw image or still used by a page. */
     private fun deleteIfUnreferenced(path: String, rawPath: String) {
         if (path.isBlank() || path == rawPath) return
