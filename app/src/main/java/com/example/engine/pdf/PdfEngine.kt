@@ -1,3 +1,4 @@
+
 package com.example.engine.pdf
 
 import android.content.ClipData
@@ -69,10 +70,11 @@ object PdfEngine {
      */
     fun estimatePdfSizeBytes(pageCount: Int, preset: CompressionPreset): Long {
         val perPageBytes = when (preset) {
-            CompressionPreset.LOW -> 120_000L
-            CompressionPreset.MEDIUM -> 350_000L
-            CompressionPreset.HIGH -> 800_000L
-            CompressionPreset.MAXIMUM -> 2_200_000L
+            // Approximate JPEG page sizes for a text document at maxSideFor(preset) (heuristic, not measured).
+            CompressionPreset.LOW -> 110_000L
+            CompressionPreset.MEDIUM -> 200_000L
+            CompressionPreset.HIGH -> 380_000L
+            CompressionPreset.MAXIMUM -> 1_100_000L
         }
         return perPageBytes * pageCount.coerceAtLeast(1)
     }
@@ -125,12 +127,7 @@ object PdfEngine {
 
         // The pixel size stored in the PDF is what drives file size, so the preset controls it directly.
         // (The previous JPEG encode/decode round-trip only doubled memory: PdfDocument re-encodes pixels.)
-        val maxDimension = when (config.compression) {
-            CompressionPreset.LOW -> 1000
-            CompressionPreset.MEDIUM -> 1400
-            CompressionPreset.HIGH -> 2000
-            CompressionPreset.MAXIMUM -> 3000
-        }
+        val maxDimension = maxSideFor(config.compression)
         var renderedPageCount = 0
         try {
             for (i in pagePathsAndOcr.indices) {
@@ -217,6 +214,13 @@ object PdfEngine {
         } finally {
             pdfDocument.close()
         }
+        // Image re-encoding (JPEG). Android's PdfDocument stores page bitmaps losslessly (Flate), which made
+        // scanned PDFs several MB per page. Best effort: when it fails, the valid (larger) PDF is kept.
+        try {
+            optimizeImagesInPlace(context, outputFile, jpegQualityFor(config.compression))
+        } catch (e: Throwable) {
+            e.printStackTrace()
+        }
         val pwd = config.password?.takeIf { it.isNotBlank() }
         if (pwd != null) {
             try {
@@ -228,6 +232,63 @@ object PdfEngine {
             }
         }
         outputFile
+    }
+
+    /**
+     * Longest pixel side of a page image per preset, expressed as print resolution on A4 (297 mm):
+     * LOW ~120 dpi, MEDIUM ~150 dpi, HIGH ~200 dpi, MAXIMUM ~300 dpi. 150-200 dpi is the usual range of
+     * professional mobile scanners for text documents; images are never upscaled beyond their source.
+     */
+    fun maxSideFor(preset: CompressionPreset): Int = when (preset) {
+        CompressionPreset.LOW -> 1404
+        CompressionPreset.MEDIUM -> 1754
+        CompressionPreset.HIGH -> 2339
+        CompressionPreset.MAXIMUM -> 3508
+    }
+
+    /** JPEG quality used when the page images are re-encoded inside the PDF. */
+    fun jpegQualityFor(preset: CompressionPreset): Float = when (preset) {
+        CompressionPreset.LOW -> 0.55f
+        CompressionPreset.MEDIUM -> 0.68f
+        CompressionPreset.HIGH -> 0.80f
+        CompressionPreset.MAXIMUM -> 0.92f
+    }
+
+    /**
+     * Re-encodes every non-JPEG image XObject of [file] as JPEG at [quality] (text layer, watermark and page
+     * numbers are vector content and are not touched). Images with a soft mask (transparency) are skipped.
+     * The file is replaced only when the result is smaller.
+     */
+    private fun optimizeImagesInPlace(context: Context, file: File, quality: Float) {
+        com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context.applicationContext)
+        val tmp = File(file.parentFile, file.name + ".opt")
+        try {
+            var replaced = 0
+            com.tom_roush.pdfbox.pdmodel.PDDocument.load(file).use { doc ->
+                for (page in doc.pages) {
+                    val res = page.resources ?: continue
+                    for (name in res.xObjectNames.toList()) {
+                        val xo = res.getXObject(name)
+                        if (xo !is com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject) continue
+                        if (xo.suffix == "jpg" || xo.softMask != null) continue
+                        val bmp = xo.image ?: continue
+                        try {
+                            val jpeg = com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory.createFromImage(doc, bmp, quality)
+                            res.put(name, jpeg)
+                            replaced++
+                        } finally {
+                            bmp.recycle()
+                        }
+                    }
+                }
+                if (replaced > 0) doc.save(tmp)
+            }
+            if (replaced > 0 && tmp.length() in 1 until file.length()) {
+                if (!file.delete() || !tmp.renameTo(file)) throw java.io.IOException("Could not replace the PDF")
+            }
+        } finally {
+            tmp.delete()
+        }
     }
 
     /**
@@ -483,6 +544,83 @@ object PdfEngine {
             saved
         }
 
+    /** Distinctly named PNG copies of several pages (exportPng alone reuses one name). */
+    suspend fun exportPngs(context: Context, imagePaths: List<String>, baseTitle: String): List<File> =
+        withContext(Dispatchers.IO) {
+            val base = safeFileName(baseTitle)
+            val digits = imagePaths.size.toString().length.coerceAtLeast(2)
+            imagePaths.mapIndexedNotNull { i, path ->
+                val bmp = ImageProcessor.loadBitmapFromFile(path, 4096) ?: return@mapIndexedNotNull null
+                try {
+                    val out = File(exportDir(context), "${base}_p${(i + 1).toString().padStart(digits, '0')}.png")
+                    FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    out
+                } finally {
+                    bmp.recycle()
+                }
+            }
+        }
+
+    /** Real Word document (.docx, OOXML). Previously an HTML file with a .doc extension. */
+    suspend fun exportDocx(context: Context, title: String, body: String): File = withContext(Dispatchers.IO) {
+        val out = File(exportDir(context), "${safeFileName(title)}.docx")
+        WordDocumentWriter.write(out, title, body)
+        out
+    }
+
+    /** Android 10+: copies ready files (any MIME) to Pictures/MS Scanner. -1 on older versions. */
+    suspend fun saveFilesToGallery(context: Context, files: List<File>, mimeType: String): Int =
+        saveFilesToMediaStore(context, files, mimeType, pictures = true)
+
+    /** Android 10+: copies ready files (any MIME) to Downloads/MS Scanner. -1 on older versions. */
+    suspend fun saveFilesToDownloads(context: Context, files: List<File>, mimeType: String): Int =
+        saveFilesToMediaStore(context, files, mimeType, pictures = false)
+
+    private suspend fun saveFilesToMediaStore(context: Context, files: List<File>, mimeType: String, pictures: Boolean): Int =
+        withContext(Dispatchers.IO) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@withContext -1
+            val resolver = context.contentResolver
+            val collection = if (pictures) MediaStore.Images.Media.EXTERNAL_CONTENT_URI else MediaStore.Downloads.EXTERNAL_CONTENT_URI
+            val dir = if (pictures) Environment.DIRECTORY_PICTURES else Environment.DIRECTORY_DOWNLOADS
+            var saved = 0
+            files.forEach { src ->
+                if (!src.exists()) return@forEach
+                val values = ContentValues().apply {
+                    put(MediaStore.MediaColumns.DISPLAY_NAME, src.name)
+                    put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                    put(MediaStore.MediaColumns.RELATIVE_PATH, "$dir/$PUBLIC_FOLDER")
+                    put(MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = runCatching { resolver.insert(collection, values) }.getOrNull() ?: return@forEach
+                try {
+                    resolver.openOutputStream(uri)?.use { out -> src.inputStream().use { it.copyTo(out) } }
+                        ?: throw IllegalStateException("Cannot open output stream")
+                    resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+                    saved++
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    runCatching { resolver.delete(uri, null, null) }
+                }
+            }
+            saved
+        }
+
+    /** Prints an already generated PDF (the viewer's Print button used to open an external app instead). */
+    fun printPdfFile(context: Context, pdfFile: File, documentTitle: String? = null) {
+        if (!pdfFile.exists() || pdfFile.length() == 0L) return
+        val printManager = context.getSystemService(Context.PRINT_SERVICE) as? android.print.PrintManager ?: return
+        val title = safeFileName(documentTitle ?: pdfFile.nameWithoutExtension, "Document")
+        val attrs = android.print.PrintAttributes.Builder()
+            .setMediaSize(android.print.PrintAttributes.MediaSize.ISO_A4)
+            .setColorMode(android.print.PrintAttributes.COLOR_MODE_COLOR)
+            .build()
+        try {
+            printManager.print(title, PdfFilePrintAdapter(context.applicationContext, title, pdfFile), attrs)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     /**
      * Open and view a PDF file in an external viewer using ACTION_VIEW with FileProvider
      */
@@ -623,3 +761,6 @@ object PdfEngine {
         result
     }
 }
+
+
+

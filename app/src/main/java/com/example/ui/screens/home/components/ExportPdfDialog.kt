@@ -1,3 +1,4 @@
+
 package com.example.ui.screens.home.components
 
 import androidx.compose.animation.AnimatedVisibility
@@ -45,7 +46,8 @@ fun ExportPdfDialog(
     totalPageCount: Int,
     isExporting: Boolean,
     onDismiss: () -> Unit,
-    onExportAction: (config: PdfExportConfig, action: ExportPdfAction) -> Unit
+    /** [format] is the format actually selected (previously ignored: every format produced a PDF). */
+    onExportAction: (config: PdfExportConfig, action: ExportPdfAction, format: ExportFormat) -> Unit
 ) {
     if (!show) return
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -223,7 +225,7 @@ fun ExportPdfDialog(
                                 Text(
                                     text = when(selectedFormat) {
                                         ExportFormat.JPG, ExportFormat.PNG -> if (isArabic) "سيتم تصدير كل صفحة كصورة منفصلة." else "Each page will be exported as a separate image."
-                                        ExportFormat.DOCX -> if (isArabic) "تصدير النص المستخرج إلى ملف Word." else "Export extracted text to Word document."
+                                        ExportFormat.DOCX -> if (isArabic) "تصدير النص المستخرج إلى ملف Word (.docx)." else "Export extracted text to a Word (.docx) document."
                                         ExportFormat.TXT -> if (isArabic) "تصدير النص المستخرج إلى ملف نصي." else "Export extracted text to plain text file."
                                         else -> ""
                                     },
@@ -247,16 +249,7 @@ fun ExportPdfDialog(
                     }
 
                     Button(
-                        onClick = { 
-                            // In a real app, we'd handle different formats here. 
-                            // For now, we reuse the PDF action or show a message.
-                            if (selectedFormat == ExportFormat.PDF) {
-                                onExportAction(buildConfig(), ExportPdfAction.SHARE)
-                            } else {
-                                // Placeholder for other formats
-                                onExportAction(buildConfig(), ExportPdfAction.SHARE)
-                            }
-                        },
+                        onClick = { onExportAction(buildConfig(), ExportPdfAction.SHARE, selectedFormat) },
                         modifier = Modifier.fillMaxWidth().height(50.dp),
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = GoldBase, contentColor = InkBase)
@@ -273,18 +266,20 @@ fun ExportPdfDialog(
 
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(
-                            onClick = { onExportAction(buildConfig(), ExportPdfAction.SAVE_TO_DOWNLOADS) },
+                            onClick = { onExportAction(buildConfig(), ExportPdfAction.SAVE_TO_DOWNLOADS, selectedFormat) },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Text(if (isArabic) "حفظ" else "Save")
                         }
+                        if (selectedFormat == ExportFormat.PDF) {
                         OutlinedButton(
-                            onClick = { onExportAction(buildConfig(), ExportPdfAction.PREVIEW) },
+                            onClick = { onExportAction(buildConfig(), ExportPdfAction.PREVIEW, selectedFormat) },
                             modifier = Modifier.weight(1f),
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Text(if (isArabic) "معاينة" else "Preview")
+                        }
                         }
                     }
                 }
@@ -298,3 +293,6 @@ fun ExportPdfDialog(
         }
     }
 }
+
+
+

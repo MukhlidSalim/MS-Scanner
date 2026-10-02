@@ -1,3 +1,4 @@
+
 package com.example.ui.screens.home
 import android.net.Uri
 import android.widget.Toast
@@ -54,6 +55,7 @@ import com.example.data.repository.AppPreferences
 import com.example.engine.pdf.PdfEngine
 import com.example.ui.screens.home.components.DocumentGridItem
 import com.example.ui.screens.home.components.FolderGridItem
+import com.example.ui.screens.home.components.ExportFormat
 import com.example.ui.screens.home.components.ExportPdfDialog
 import com.example.ui.screens.home.components.NewFolderDialog
 import com.example.ui.screens.home.components.RenameDocumentsDialog
@@ -647,25 +649,48 @@ fun HomeScreen(
             totalPageCount = uiState.documents.filter { exportDocIds.contains(it.id) }.sumOf { it.pageCount },
             isExporting = uiState.isLoading,
             onDismiss = { showExportPdfDialog = false },
-            onExportAction = { config, action ->
-                pendingExportConfig = config
-                if (action == ExportPdfAction.SAVE_AS) {
-                    createPdfDocumentLauncher.launch(com.example.engine.pdf.PdfEngine.safeFileName(config.title) + ".pdf")
-                } else {
-                    // Every action gives visible feedback (Preview previously produced nothing on screen).
-                    listViewModel.exportDocumentsAsPdf(
-                        context, exportDocIds, config, action,
-                        onSuccess = { file, _, _ ->
+            onExportAction = { config, action, format ->
+                // Each format has its own export path (previously JPG/PNG/DOCX/TXT silently produced a PDF).
+                when (format) {
+                    ExportFormat.PDF -> {
+                        pendingExportConfig = config
+                        if (action == ExportPdfAction.SAVE_AS) {
+                            createPdfDocumentLauncher.launch(com.example.engine.pdf.PdfEngine.safeFileName(config.title) + ".pdf")
+                        } else {
+                            listViewModel.exportDocumentsAsPdf(
+                                context, exportDocIds, config, action,
+                                onSuccess = { file, _, _ ->
+                                    showExportPdfDialog = false
+                                    exitSelection()
+                                    when (action) {
+                                        ExportPdfAction.PREVIEW -> previewPdfFile = file
+                                        ExportPdfAction.SAVE_TO_DOWNLOADS -> Toast.makeText(
+                                            context, if (isArabic) "تم الحفظ في التنزيلات/MS Scanner" else "Saved to Downloads/MS Scanner", Toast.LENGTH_LONG
+                                        ).show()
+                                        else -> Unit
+                                    }
+                                },
+                                onError = { err -> Toast.makeText(context, err, Toast.LENGTH_SHORT).show() }
+                            )
+                        }
+                    }
+                    ExportFormat.JPG, ExportFormat.PNG -> listViewModel.exportDocumentsAsImages(
+                        context, exportDocIds, asPng = format == ExportFormat.PNG, action = action,
+                        onSuccess = { count ->
                             showExportPdfDialog = false
                             exitSelection()
-                            when (action) {
-                                ExportPdfAction.PREVIEW -> previewPdfFile = file
-                                ExportPdfAction.SAVE_TO_DOWNLOADS -> Toast.makeText(
-                                    context, if (isArabic) "تم الحفظ في التنزيلات/MS Scanner" else "Saved to Downloads/MS Scanner", Toast.LENGTH_LONG
-                                ).show()
-                                else -> Unit
-                            }
-                        }
+                            Toast.makeText(context, if (isArabic) "تم تصدير $count صورة" else "$count image(s) exported", Toast.LENGTH_LONG).show()
+                        },
+                        onError = { msg -> Toast.makeText(context, msg, Toast.LENGTH_SHORT).show() }
+                    )
+                    ExportFormat.TXT, ExportFormat.DOCX -> listViewModel.exportDocumentsAsText(
+                        context, exportDocIds, asDocx = format == ExportFormat.DOCX, action = action,
+                        onSuccess = { count ->
+                            showExportPdfDialog = false
+                            exitSelection()
+                            Toast.makeText(context, if (isArabic) "تم تصدير $count ملف" else "$count file(s) exported", Toast.LENGTH_LONG).show()
+                        },
+                        onError = { msg -> Toast.makeText(context, msg, Toast.LENGTH_SHORT).show() }
                     )
                 }
             }
@@ -756,3 +781,6 @@ fun HomeScreen(
         PdfViewerOverlay(pdfFile = file, onDismiss = { previewPdfFile = null })
     }
 }
+
+
+

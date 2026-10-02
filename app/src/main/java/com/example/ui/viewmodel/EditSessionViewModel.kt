@@ -1,3 +1,4 @@
+
 package com.example.ui.viewmodel
 
 import android.content.Context
@@ -844,6 +845,11 @@ class EditSessionViewModel(
         }
     }
 
+    /** Removes a signature from the vault (the vault had no delete action). */
+    fun deleteSignatureFromVault(id: Long) {
+        viewModelScope.launch { repository.deleteSignature(id) }
+    }
+
     fun deletePageById(pageId: Long) {
         val page = _uiState.value.activePages.find { it.id == pageId } ?: return
         viewModelScope.launch {
@@ -949,3 +955,6 @@ class EditSessionViewModel(
         _uiState.update { it.copy(defaultPdfPageSize = size) }
     }
 }
+
+
+

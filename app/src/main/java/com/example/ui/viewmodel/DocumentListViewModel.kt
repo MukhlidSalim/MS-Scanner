@@ -1,3 +1,4 @@
+
 package com.example.ui.viewmodel
 import android.content.Context
 import java.io.File
@@ -377,6 +378,98 @@ class DocumentListViewModel(
             }
         }
     }
+    /** JPG / PNG export of the selected documents' pages (previously the dialog always produced a PDF). */
+    fun exportDocumentsAsImages(
+        context: Context,
+        docIds: List<Long>,
+        asPng: Boolean,
+        action: ExportPdfAction,
+        onSuccess: (count: Int) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        if (docIds.isEmpty() || _uiState.value.isLoading) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val pages = docIds.flatMap { repository.getPagesForDocumentSync(it) }
+                if (pages.isEmpty()) {
+                    onError("No pages found in selected documents")
+                    return@launch
+                }
+                val paths = pages.map { p -> p.processedImagePath.takeIf { it.isNotBlank() && File(it).exists() } ?: p.rawImagePath }
+                val engine = com.example.engine.pdf.PdfEngine
+                val files = if (asPng) engine.exportPngs(context, paths, "MS_Scanner_Export")
+                else engine.prepareImagesForShare(context, paths, "MS_Scanner_Export")
+                val mime = if (asPng) "image/png" else "image/jpeg"
+                when (action) {
+                    ExportPdfAction.SAVE_TO_DOWNLOADS -> {
+                        val saved = engine.saveFilesToGallery(context, files, mime)
+                        if (saved >= 0) onSuccess(saved)
+                        else if (engine.shareFiles(context, files, mime)) onSuccess(files.size)
+                        else onError("Could not save images")
+                    }
+                    else -> if (engine.shareFiles(context, files, mime)) onSuccess(files.size) else onError("Nothing to share")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onError(e.localizedMessage ?: "Image export failed")
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
+            }
+        }
+    }
+
+    /** TXT / Word (.docx) export of the OCR text (previously the dialog always produced a PDF). */
+    fun exportDocumentsAsText(
+        context: Context,
+        docIds: List<Long>,
+        asDocx: Boolean,
+        action: ExportPdfAction,
+        onSuccess: (count: Int) -> Unit,
+        onError: (String) -> Unit
+    ) {
+        if (docIds.isEmpty() || _uiState.value.isLoading) return
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true) }
+            try {
+                val engine = com.example.engine.pdf.PdfEngine
+                val files = mutableListOf<File>()
+                for (id in docIds) {
+                    val doc = repository.getDocumentById(id) ?: continue
+                    val text = repository.getPagesForDocumentSync(id)
+                        .map { it.ocrText }.filter { it.isNotBlank() && !it.startsWith("OCR Failed") }
+                        .joinToString("\n\n").ifBlank { doc.ocrText }
+                    if (text.isBlank()) continue
+                    files += if (asDocx) engine.exportDocx(context, doc.title, text)
+                    else engine.exportText(context, text, doc.title, "txt")
+                }
+                if (files.isEmpty()) {
+                    onError(if (isArabic) "لا يوجد نص مستخرج — شغّل استخراج النص (OCR) أولاً" else "No extracted text — run OCR first")
+                    return@launch
+                }
+                val mime = if (asDocx) "application/vnd.openxmlformats-officedocument.wordprocessingml.document" else "text/plain"
+                when (action) {
+                    ExportPdfAction.SAVE_TO_DOWNLOADS -> {
+                        val saved = engine.saveFilesToDownloads(context, files, mime)
+                        if (saved >= 0) onSuccess(saved)
+                        else if (engine.shareFiles(context, files, mime)) onSuccess(files.size)
+                        else onError("Could not save files")
+                    }
+                    else -> if (engine.shareFiles(context, files, mime)) onSuccess(files.size) else onError("Nothing to share")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onError(e.localizedMessage ?: "Text export failed")
+            } finally {
+                _uiState.update { it.copy(isLoading = false) }
+            }
+        }
+    }
+
     fun shareDocumentsAsPdf(context: Context, docIds: List<Long>) {
         if (docIds.isEmpty()) return
         val config = com.example.engine.pdf.PdfExportConfig(
@@ -580,3 +673,6 @@ class DocumentListViewModel(
         }
     }
 }
+
+
+

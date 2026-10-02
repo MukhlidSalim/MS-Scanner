@@ -1,3 +1,4 @@
+
 package com.example
 
 import android.graphics.Bitmap
@@ -134,5 +135,59 @@ class DocumentDetectionAccuracyTest {
         val report = ImageProcessor.analyzeQuality(bmp)
         assertTrue(report.score in 0..100)
         bmp.recycle()
+    }
+
+    /** White sheet on a near-white desk with a printed table inside: the SHEET must win, not the table. */
+    @Test fun whiteSheetOnWhiteDeskWithTable() {
+        val corners = pts(90f, 100f, 710f, 85f, 720f, 920f, 80f, 905f)
+        val bmp = scene(corners, Color.rgb(222, 222, 220), paper = Color.rgb(250, 250, 250))
+        try {
+            val c = Canvas(bmp)
+            val frame = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(30, 30, 30); style = Paint.Style.STROKE; strokeWidth = 3f }
+            c.drawRect(150f, 300f, 650f, 700f, frame)
+            val d = DocumentDetector.detect(bmp)
+            assertNotNull("document not detected", d)
+            val err = errorPercent(d!!.quad, corners)
+            assertTrue("corner error ${"%.2f".format(err)}% > 1.5%", err <= 1.5)
+        } finally {
+            bmp.recycle()
+        }
+    }
+
+    /** Text printed with a 3° skew is measured and corrected (sign = getRotationMatrix2D convention). */
+    @Test fun deskewMeasuresTextSkew() {
+        val page = Bitmap.createBitmap(850, 1100, Bitmap.Config.ARGB_8888)
+        try {
+            val c = Canvas(page)
+            c.drawColor(Color.rgb(245, 245, 245))
+            c.save()
+            c.rotate(3f, 425f, 550f) // clockwise on screen
+            val ink = Paint().apply { color = Color.rgb(40, 40, 40) }
+            var y = 90f
+            while (y < 1010f) {
+                var x = 70f
+                while (x < 760f) { c.drawRect(x, y, x + 60f, y + 10f, ink); x += 80f }
+                y += 30f
+            }
+            c.restore()
+            val angle = com.example.engine.cv.PageStraightener.estimateSkew(page)
+            assertTrue("measured $angle°", kotlin.math.abs(kotlin.math.abs(angle) - 3.0) <= 0.3)
+        } finally {
+            page.recycle()
+        }
+    }
+
+    @Test fun deskewLeavesStraightPageAlone() {
+        val page = Bitmap.createBitmap(850, 1100, Bitmap.Config.ARGB_8888)
+        try {
+            val c = Canvas(page)
+            c.drawColor(Color.WHITE)
+            val ink = Paint().apply { color = Color.BLACK }
+            var y = 90f
+            while (y < 1010f) { c.drawRect(70f, y, 760f, y + 10f, ink); y += 30f }
+            assertEquals(0.0, com.example.engine.cv.PageStraightener.estimateSkew(page), 0.0)
+        } finally {
+            page.recycle()
+        }
     }
 }

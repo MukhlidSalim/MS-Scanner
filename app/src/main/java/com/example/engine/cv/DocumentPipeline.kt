@@ -1,3 +1,4 @@
+
 package com.example.engine.cv
 
 import android.content.Context
@@ -76,9 +77,11 @@ object DocumentPipeline {
     private const val TAG = "DocumentPipeline"
     /** One default scan filter for every source (previously AUTO in some paths, MAGIC in others). */
     val DEFAULT_FILTER: FilterType = FilterType.AUTO
-    private const val CAPTURE_MAX_SIDE = 2400
-    private const val IMPORT_MAX_SIDE = 2048
-    private const val PDF_MAX_SIDE = 2200
+    private const val CAPTURE_MAX_SIDE = 3000
+    private const val IMPORT_MAX_SIDE = 2560
+    private const val PDF_MAX_SIDE = 2480
+    /** Resolution used when re-rendering a stored raw page (edit, rotate, filter, re-detect). */
+    private const val RENDER_MAX_SIDE = 3000
     private const val ALT_PASS_MAX_SIDE = 900
 
     // ------------------------------------------------------------------ entry points
@@ -203,7 +206,7 @@ object DocumentPipeline {
         filter: FilterType? = FilterType.AUTO,
         prefix: String = "recrop"
     ): ProcessedPage? = withContext(Dispatchers.Default) {
-        val raw = ImageProcessor.loadBitmapFromFile(rawPath, IMPORT_MAX_SIDE) ?: return@withContext null
+        val raw = ImageProcessor.loadBitmapFromFile(rawPath, RENDER_MAX_SIDE) ?: return@withContext null
         try {
             val detection = detectWithFallback(raw, null, expectedAspectRatio)
             val previousStatus = QuadStore.loadStatus(rawPath)
@@ -215,7 +218,7 @@ object DocumentPipeline {
             }
             QuadStore.save(rawPath, quad)
             QuadStore.saveStatus(rawPath, status)
-            val out = renderBitmap(raw, quad, rotationDegrees, filter, 0f, 1f, false)
+            val out = renderBitmap(raw, quad, rotationDegrees, filter, 0f, 1f, false, previousStatus != DetectionStatus.SKIPPED)
             try {
                 val path = ImageProcessor.saveBitmapToFile(context, out, "${prefix}_")
                 ProcessedPage(rawPath, path, quad, detection != null, detection?.confidence ?: 0f, status)
@@ -246,11 +249,12 @@ object DocumentPipeline {
         sharpen: Boolean = false,
         prefix: String = "edit_proc"
     ): String? = withContext(Dispatchers.Default) {
-        val raw = ImageProcessor.loadBitmapFromFile(rawPath, IMPORT_MAX_SIDE) ?: return@withContext null
+        val raw = ImageProcessor.loadBitmapFromFile(rawPath, RENDER_MAX_SIDE) ?: return@withContext null
         try {
             val safeQuad = if (DocumentDetector.isPlausible(quad)) quad.clamped() else DocumentQuad.fullQuad()
             QuadStore.save(rawPath, safeQuad)
-            val out = renderBitmap(raw, safeQuad, rotationDegrees, filter, brightness, contrast, sharpen)
+            val straighten = QuadStore.loadStatus(rawPath) != DetectionStatus.SKIPPED
+            val out = renderBitmap(raw, safeQuad, rotationDegrees, filter, brightness, contrast, sharpen, straighten)
             try {
                 ImageProcessor.saveBitmapToFile(context, out, "${prefix}_")
             } finally {
@@ -272,7 +276,9 @@ object DocumentPipeline {
         filter: FilterType?,
         brightness: Float,
         contrast: Float,
-        sharpen: Boolean
+        sharpen: Boolean,
+        /** Automatic straightening after the crop (background sliver trim + text deskew). */
+        straighten: Boolean = true
     ): Bitmap {
         var current = raw
         fun replace(next: Bitmap) {
@@ -282,6 +288,10 @@ object DocumentPipeline {
             }
         }
         replace(warp(raw, quad))
+        if (straighten) {
+            val key = runCatching { PageStraightener.fingerprint(raw) + ":" + quad.toJson() }.getOrNull()
+            replace(PageStraightener.straighten(current, key, trim = !quad.isFullImage()))
+        }
         val rot = ((rotationDegrees % 360) + 360) % 360
         if (rot != 0) replace(rotate(current, rot))
         if (filter != null) replace(ImageProcessor.applyFilter(current, filter))
@@ -444,7 +454,8 @@ object DocumentPipeline {
         }
         QuadStore.save(rawPath, quad)
         QuadStore.saveStatus(rawPath, status)
-        val out = renderBitmap(upright, quad, 0, filter, 0f, 1f, false)
+        // Google scanner / PDF pages (SKIPPED) are already straight: no second correction.
+        val out = renderBitmap(upright, quad, 0, filter, 0f, 1f, false, straighten = autoCrop)
         val procPath = try {
             ImageProcessor.saveBitmapToFile(context, out, "${prefix}_proc_")
         } finally {
@@ -604,3 +615,6 @@ object QuadStore {
         try { statusFileFor(rawPath).delete() } catch (_: Exception) { }
     }
 }
+
+
+

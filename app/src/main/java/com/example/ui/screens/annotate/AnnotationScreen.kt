@@ -1,3 +1,4 @@
+
 package com.example.ui.screens.annotate
 
 import androidx.compose.ui.res.stringResource
@@ -43,6 +44,12 @@ import com.example.engine.cv.ImageProcessor
 import com.example.ui.theme.EmeraldLight
 import com.example.ui.theme.StudioCanvasBg
 import com.example.ui.viewmodel.EditSessionViewModel
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
+import kotlinx.coroutines.launch
+import java.io.File
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -115,6 +122,7 @@ fun AnnotationScreen(
     var redactEnd by remember { mutableStateOf<Offset?>(null) }
 
     var showSignatureDialog by remember { mutableStateOf(false) }
+    val vaultScope = rememberCoroutineScope()
 
     fun undo() {
         if (undoStack.isNotEmpty()) {
@@ -655,6 +663,51 @@ fun AnnotationScreen(
             title = { Text(stringResource(R.string.txt_draw_electronic_signature), fontWeight = FontWeight.Bold) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    // Signature vault: signatures were saved on every use but could never be reused.
+                    if (uiState.savedSignatures.isNotEmpty()) {
+                        val ar = context.resources.configuration.locales[0].language == "ar"
+                        Text(if (ar) "توقيعات محفوظة (اضغط للاستخدام)" else "Saved signatures (tap to use)", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            items(uiState.savedSignatures, key = { it.id }) { sig ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(84.dp, 48.dp)
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(Color.White)
+                                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            vaultScope.launch {
+                                                val bmp = ImageProcessor.loadBitmapFromFile(sig.imagePath, 1000)
+                                                if (bmp != null) {
+                                                    val ps = PlacedSignature(signatureBitmap = bmp, x = 0.5f, y = 0.75f, scale = 0.35f)
+                                                    placedSignatures.add(ps)
+                                                    undoStack.add(AnnotationAction.SignatureAction(ps))
+                                                    redoStack.clear()
+                                                }
+                                                showSignatureDialog = false
+                                            }
+                                        }
+                                ) {
+                                    AsyncImage(
+                                        model = File(sig.imagePath),
+                                        contentDescription = sig.title,
+                                        contentScale = ContentScale.Fit,
+                                        modifier = Modifier.fillMaxSize().padding(4.dp)
+                                    )
+                                    Icon(
+                                        Icons.Default.Close,
+                                        contentDescription = if (ar) "حذف" else "Delete",
+                                        tint = MaterialTheme.colorScheme.error,
+                                        modifier = Modifier
+                                            .align(Alignment.TopEnd)
+                                            .size(16.dp)
+                                            .clickable { viewModel.deleteSignatureFromVault(sig.id) }
+                                    )
+                                }
+                            }
+                        }
+                        HorizontalDivider()
+                    }
                     Text(stringResource(R.string.txt_sign_inside_the_box_below), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Box(
                         modifier = Modifier
@@ -740,3 +793,6 @@ fun AnnotationScreen(
         )
     }
 }
+
+
+

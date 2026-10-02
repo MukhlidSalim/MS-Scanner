@@ -1,3 +1,4 @@
+
 package com.example.ui.screens.viewer
 
 import android.net.Uri
@@ -1004,9 +1005,8 @@ fun DocumentViewerScreen(
                 if (targetPage.ocrText.isBlank()) {
                     toast(t("No text yet — run OCR first", "لا يوجد نص بعد — شغّل استخراج النص أولاً"))
                 } else runBusy(t("Exporting…", "جاري التصدير…")) {
-                    val html = "<html><body>${targetPage.ocrText.replace("&", "&amp;").replace("<", "&lt;").replace("\n", "<br>")}</body></html>"
-                    val file = PdfEngine.exportText(context, html, "${docTitle}_p${pageForActionsIndex + 1}", "doc")
-                    PdfEngine.shareFiles(context, listOf(file), "application/msword")
+                    val file = PdfEngine.exportDocx(context, "${docTitle}_p${pageForActionsIndex + 1}", targetPage.ocrText)
+                    PdfEngine.shareFiles(context, listOf(file), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
                 }
             },
             onExportTxtClick = {
@@ -1123,3 +1123,6 @@ private fun PageTool(icon: ImageVector, label: String, onClick: () -> Unit) {
         }
     }
 }
+
+
+

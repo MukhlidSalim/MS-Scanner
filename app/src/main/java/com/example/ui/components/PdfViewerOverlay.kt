@@ -1,3 +1,4 @@
+
 package com.example.ui.components
 
 import android.content.Context
@@ -548,23 +549,19 @@ fun PdfViewerOverlay(
                             // Save on Device
                             OutlinedButton(
                                 onClick = {
-                                    val (savedUri, path) = PdfEngine.savePdfToStorage(
-                                        context,
-                                        pdfFile,
-                                        pdfFile.nameWithoutExtension
-                                    )
-                                    if (savedUri != null) {
-                                        Toast.makeText(
-                                            context,
-                                            context.getString(R.string.export_pdf_success_saved, path ?: "Downloads"),
-                                            Toast.LENGTH_LONG
-                                        ).show()
-                                    } else {
-                                        Toast.makeText(
-                                            context,
-                                            context.getString(R.string.export_pdf_error, "Save failed"),
-                                            Toast.LENGTH_SHORT
-                                        ).show()
+                                    coroutineScope.launch {
+                                        // Public Downloads/MS Scanner first (visible in Files); legacy app folder only on Android 7-9.
+                                        val publicUri = withContext(Dispatchers.IO) {
+                                            PdfEngine.savePdfToDownloads(context, pdfFile, pdfFile.nameWithoutExtension)
+                                        }
+                                        val where: String? = if (publicUri != null) "Downloads/MS Scanner" else withContext(Dispatchers.IO) {
+                                            PdfEngine.savePdfToStorage(context, pdfFile, pdfFile.nameWithoutExtension).let { (u, p) -> if (u != null) (p ?: "Documents") else null }
+                                        }
+                                        if (where != null) {
+                                            Toast.makeText(context, context.getString(R.string.export_pdf_success_saved, where), Toast.LENGTH_LONG).show()
+                                        } else {
+                                            Toast.makeText(context, context.getString(R.string.export_pdf_error, "Save failed"), Toast.LENGTH_SHORT).show()
+                                        }
                                     }
                                 },
                                 shape = RoundedCornerShape(14.dp),
@@ -614,7 +611,7 @@ fun PdfViewerOverlay(
                             // Print Button
                             IconButton(
                                 onClick = {
-                                    PdfEngine.openPdf(context, pdfFile)
+                                    PdfEngine.printPdfFile(context, pdfFile, pdfFile.nameWithoutExtension)
                                 },
                                 modifier = Modifier
                                     .size(48.dp)
@@ -701,4 +698,7 @@ class SafePdfSession(val file: File) {
         pfd = null
     }
 }
+
+
+
 

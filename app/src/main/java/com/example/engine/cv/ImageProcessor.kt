@@ -1,3 +1,4 @@
+
 package com.example.engine.cv
 
 import android.content.Context
@@ -945,9 +946,9 @@ object ImageProcessor {
         val isThumb = prefix.contains("thumb", ignoreCase = true)
         val quality = when {
             isThumb -> 75
-            isRaw -> 92
-            isTextContent -> 90
-            else -> 80
+            isRaw -> 95 // every edit re-renders from the raw image: keep it close to lossless
+            isTextContent -> 92
+            else -> 85
         }
 
         FileOutputStream(file).use { out ->
@@ -1006,7 +1007,7 @@ object ImageProcessor {
         result
     }
 
-    suspend fun loadBitmapFromFile(path: String, maxDim: Int = 2400): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun loadBitmapFromFile(path: String, maxDim: Int = 3000): Bitmap? = withContext(Dispatchers.IO) {
         try {
             if (path.isBlank()) return@withContext null
             val file = File(path)
@@ -1103,3 +1104,6 @@ object ImageProcessor {
         )
     }
 }
+
+
+
