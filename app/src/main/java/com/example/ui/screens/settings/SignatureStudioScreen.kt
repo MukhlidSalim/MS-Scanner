@@ -55,10 +55,9 @@ private data class StrokePt(val x: Float, val y: Float)
 private data class DrawnStroke(val points: List<StrokePt>, val color: Int)
 
 /**
- * Reusable signature vault (Settings -> Signatures). Unchanged from the previous version except that
- * "New signature" / "Redraw" now open [FullScreenSignatureWorkspace] instead of a small AlertDialog box
- * (see that composable for the root-cause fix: a small fixed-height box made natural handwriting
- * impossible; drawing now has the full screen).
+ * Reusable signature vault (Settings -> Signatures). "New signature" / "Redraw" open
+ * [FullScreenSignatureWorkspace] instead of a small AlertDialog box (see that composable for the root
+ * cause fix: a small fixed-height box made natural handwriting impossible; drawing now has the full screen).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -417,16 +416,4 @@ fun FullScreenSignatureWorkspace(
             dismissButton = { TextButton(onClick = { showDiscardConfirm = false }) { Text(t("Keep editing", "متابعة الرسم")) } }
         )
     }
-}
-
-/** Kept for source compatibility with any older call site still referencing the dialog-based sheet. */
-@Deprecated("Replaced by FullScreenSignatureWorkspace (full-screen drawing area).")
-@Composable
-fun DrawSignatureSheet(
-    isArabic: Boolean,
-    title: String,
-    onDismiss: () -> Unit,
-    onSave: (Bitmap) -> Unit
-) {
-    FullScreenSignatureWorkspace(isArabic = isArabic, title = title, onCancel = onDismiss, onSave = onSave)
 }

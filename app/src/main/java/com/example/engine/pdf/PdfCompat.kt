@@ -2,7 +2,6 @@ package com.example.engine.pdf
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
@@ -26,8 +25,8 @@ import kotlin.math.min
  * reader, the editor import and the signing import).
  *
  * ROOT CAUSE of "Cannot read PDF" / "the file does not display" on scanned or protected PDFs: the whole app
- * depended on PdfRenderer alone (see DocumentPipeline.importPdf and CameraViewModel.setImportedPdfPendingEdit),
- * and PdfRenderer refuses (SecurityException / IOException) files that are common for scanned documents:
+ * depended on PdfRenderer alone (DocumentPipeline.importPdf), and PdfRenderer refuses (SecurityException /
+ * IOException) files that are common for scanned documents:
  *  - "protected" PDFs with an owner password only (copiers, banks, e-government portals): they open in every
  *    reader without a password, but PdfRenderer rejects ANY encrypted file on Android < 15;
  *  - files with a damaged / non-standard cross-reference table or trailer (many scanner drivers);

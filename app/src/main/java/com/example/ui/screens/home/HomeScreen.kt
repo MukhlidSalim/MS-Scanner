@@ -1,4 +1,3 @@
-
 package com.example.ui.screens.home
 import android.net.Uri
 import android.widget.Toast
@@ -207,7 +206,9 @@ fun HomeScreen(
         coroutineScope.launch {
             isProcessingCapture = true
             try {
-                val page = DocumentPipeline.processFile(context, file.absolutePath, prefix = "scan")
+                // Original filter by default for a plain document capture (filter = null): the user applies
+                // a filter afterwards from the editor if they want one.
+                val page = DocumentPipeline.processFile(context, file.absolutePath, prefix = "scan", filter = null)
                 if (page != null) {
                     onPagesCaptured(listOf(Pair(page.rawPath, page.processedPath)))
                     onNavigateToEditSession("CAMERA", 0L)
@@ -422,10 +423,18 @@ fun HomeScreen(
                             )
                             HorizontalDivider()
                             Text(
-                                if (isArabic) "مسح خاص" else "Special scan",
+                                if (isArabic) "أوضاع المسح" else "Scan modes",
                                 style = MaterialTheme.typography.labelMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                            )
+                            // RESTORED: Multi-page / Multi-Capture was reachable from the camera screen's own
+                            // mode switcher but had no explicit entry point here, which made it easy to miss.
+                            // It now sits alongside the other scan modes, same as ID card / Passport below.
+                            DropdownMenuItem(
+                                text = { Text(if (isArabic) "تصوير متعدد الصفحات" else "Multi-page scan") },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.InsertDriveFile, null) },
+                                onClick = { showImportMenu = false; onNavigateToScan("BATCH") }
                             )
                             // ID card / passport keep the built-in camera (front/back steps + framing guides).
                             DropdownMenuItem(
@@ -629,7 +638,6 @@ fun HomeScreen(
             dismissButton = { TextButton(onClick = { showMoveDialog = false }) { Text(if (isArabic) "إلغاء" else "Cancel") } }
         )
     }
-
     if (showRenameDialog) {
         RenameDocumentsDialog(
             show = showRenameDialog,
@@ -781,6 +789,3 @@ fun HomeScreen(
         PdfViewerOverlay(pdfFile = file, onDismiss = { previewPdfFile = null })
     }
 }
-
-
-

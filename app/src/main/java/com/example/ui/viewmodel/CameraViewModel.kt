@@ -35,16 +35,11 @@ import java.io.File
  * image with DocumentPipeline (warp(quad) -> rotate -> filter -> brightness/contrast), so edits never
  * stack on an already-processed image and the crop is never lost.
  *
- * Default filter changed from DocumentPipeline.DEFAULT_FILTER to null (Original): requested behaviour is
- * that a freshly captured/imported document page keeps its true colours by default, and the user applies
- * a filter afterwards if they want one. This affects the EDIT/BOOKKEEPING state shown in the review screen
- * (rotate/filter panel) and every path that falls back to "no edit recorded yet" for a page -
- * most importantly the initial entry created the first time a page is touched by renderPages()/editFor().
- * NOTE: the actual pixels of a brand-new capture are produced by DocumentPipeline's own default filter
- * argument at capture time (DocumentScanController.processCapture / ImageCapture callback), which is a
- * separate code path not included in this file; that default must also be set to null/ORIGINAL there for
- * the very first preview of a freshly captured page to show no filter. See the delivery report for the
- * exact file/line needed to complete that part.
+ * Default filter changed from DocumentPipeline.DEFAULT_FILTER to null (Original): a freshly captured or
+ * imported document page keeps its true colours by default, and the user applies a filter afterwards if
+ * they want one. The actual pixels of a fresh camera capture now also default to null via
+ * DocumentScanController.defaultFilterFor(mode) and HomeScreen's system-camera fallback, so both the
+ * bookkeeping state here and the rendered image agree for DOCUMENT / BATCH captures.
  */
 data class PendingPageEdit(
     val rotation: Int = 0,
@@ -368,7 +363,6 @@ class CameraViewModel(
                             s.copy(pagesPendingEdit = list, pendingPages = list, pageEdits = s.pageEdits + (rawPath to newEdit))
                         }
                         if (applied) deleteIfUnreferenced(oldProcessed, rawPath) else File(newPath).delete()
-                        // Rotate / filter / brightness do not fix a missing crop: the flag stays until crop / continue.
                         setStatus(rawPath, if (before.needsAttention) before else PageStatus.EDITED)
                     }
                 } catch (e: CancellationException) {
@@ -377,7 +371,6 @@ class CameraViewModel(
                     e.printStackTrace()
                     _events.trySend(UiEvent.Error("Failed to update page"))
                 } finally {
-                    // No page may stay stuck in PROCESSING (it would block Save forever).
                     _uiState.update { s ->
                         s.copy(
                             isProcessingEdit = false,
@@ -392,10 +385,6 @@ class CameraViewModel(
         val delta = if (clockwise) 90 else 270
         renderPages(listOf(index)) { it.copy(rotation = (it.rotation + delta) % 360) }
     }
-    /**
-     * Applies a filter and/or brightness/contrast to one or several pages ("Apply to all").
-     * [filter] is applied only when [changeFilter] is true (null filter = Original colors).
-     */
     fun applyEditsToPendingPages(
         indices: List<Int>,
         changeFilter: Boolean,
@@ -411,7 +400,6 @@ class CameraViewModel(
             )
         }
     }
-    /** Result of the crop editor (quad already persisted in QuadStore by DocumentPipeline.render). */
     fun updatePendingPageCrop(index: Int, result: CropEditorResult) {
         val pages = _uiState.value.pagesPendingEdit
         val page = pages.getOrNull(index) ?: return
@@ -430,7 +418,6 @@ class CameraViewModel(
         }
         if (page.second != result.processedPath) deleteIfUnreferenced(page.second, rawPath)
     }
-    /** Legacy entry point (crop editor without result object). */
     fun updatePendingPageProcessedImage(index: Int, newPath: String) {
         val pages = _uiState.value.pagesPendingEdit.toMutableList()
         if (index !in pages.indices) return
@@ -498,7 +485,6 @@ class CameraViewModel(
                         val list = s.pagesPendingEdit.toMutableList()
                         list.removeAt(i)
                         list.addAll(i, ordered.map { it to it })
-                        // Halves are already processed pixels: no second filter on re-render.
                         val edits = s.pageEdits - page.first + ordered.associateWith { PendingPageEdit(filter = null) }
                         val statuses = s.pageStatuses - page.first + ordered.associateWith { PageStatus.EDITED }
                         s.copy(pagesPendingEdit = list, pendingPages = list, pageEdits = edits, pageStatuses = statuses)
@@ -621,7 +607,6 @@ class CameraViewModel(
                 throw e
             } catch (e: Exception) {
                 e.printStackTrace()
-                // Nothing was written (transaction rolled back): pages stay in the session, user can retry.
                 _events.trySend(UiEvent.Error("Failed to save document: ${e.localizedMessage ?: "storage error"}"))
             } finally {
                 _uiState.update { it.copy(isSaving = false) }

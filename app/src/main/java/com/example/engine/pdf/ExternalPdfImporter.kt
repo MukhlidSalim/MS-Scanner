@@ -37,7 +37,6 @@ object ExternalPdfImporter {
             // DocumentPipeline.importPdf takes a Uri; a file:// Uri of our own cache file is readable
             // through ContentResolver.openFileDescriptor without needing a content:// grant.
             val processedPages = DocumentPipeline.importPdf(app, Uri.fromFile(pdfFile), filter = null)
-                .take(MAX_PAGES)
             if (processedPages.isEmpty()) return@withContext null
             val fullQuad = DocumentQuad.fullQuad()
             val entities = processedPages.mapIndexed { i, page ->

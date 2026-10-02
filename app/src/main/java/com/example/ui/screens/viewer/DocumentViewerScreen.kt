@@ -1,6 +1,4 @@
-
 package com.example.ui.screens.viewer
-
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -72,6 +70,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/** What the pre-export dialog ([ExportOptionsDialog]) should do once the user confirms name + size. */
+private enum class PendingExportKind { SAVE_PDF, SAVE_PDF_AS, SAVE_IMAGES, SHARE_PDF, SHARE_IMAGES }
+
 /**
  * Saved document screen.
  *
@@ -80,6 +81,11 @@ import java.io.File
  *   Share PDF · Share as Images · Print / Save via print dialog · PDF settings (advanced)
  * Every export runs off the main thread, shows one progress overlay and can't be started twice.
  * The sheet opens automatically right after a new scan is saved.
+ *
+ * ADDED: every Save/Share entry point now opens [ExportOptionsDialog] first, letting the user rename the
+ * output file and choose a smaller file size (compression level) before the PDF/images are produced -
+ * this was previously only available deep inside "PDF settings & export…", not from the main Save & Share
+ * flow that most shares actually go through.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -102,7 +108,6 @@ fun DocumentViewerScreen(
     val pages = if (uiState.activeDocument?.id == docId) uiState.activePages else emptyList()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
     fun t(en: String, ar: String) = if (isArabic) ar else en
-
     var showShareSheet by remember { mutableStateOf(false) }
     var shareScope by remember { mutableStateOf(com.example.ui.screens.viewer.components.ShareScope.DOCUMENT) }
     var showDocInfo by remember { mutableStateOf(false) }
@@ -113,7 +118,6 @@ fun DocumentViewerScreen(
         viewModel.loadDocument(docId)
         if (viewModel.consumeShareSheetRequest(docId)) showShareSheet = true
     }
-
     val pagerState = rememberPagerState(pageCount = { pages.size })
     var selectionMode by remember { mutableStateOf(false) }
     var selectedPageIds by remember { mutableStateOf(setOf<Long>()) }
@@ -125,7 +129,6 @@ fun DocumentViewerScreen(
         val ids = pages.map { it.id }.toSet()
         if (selectedPageIds.any { it !in ids }) selectedPageIds = selectedPageIds.intersect(ids)
     }
-
     var isGridView by remember { mutableStateOf(false) }
     var showPdfExportDialog by remember { mutableStateOf(false) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
@@ -143,28 +146,27 @@ fun DocumentViewerScreen(
     var targetPageForReplace by remember { mutableStateOf<PageEntity?>(null) }
     var pendingPdfForSaveAs by remember { mutableStateOf<File?>(null) }
     var pendingImagesForFolder by remember { mutableStateOf<List<String>>(emptyList()) }
-
     val docTitle = doc?.title?.ifBlank { null } ?: "Document"
     fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-
     fun exitSelection() {
         selectionMode = false
         selectedPageIds = emptySet()
     }
-
     /** Pages targeted by Save / Share / Print: the selection when active, otherwise the whole document. */
     fun targetPages(): List<PageEntity> =
         if (selectionMode && selectedPageIds.isNotEmpty()) pages.filter { it.id in selectedPageIds } else pages
-
     fun imagePathOf(p: PageEntity): String =
         if (p.processedImagePath.isNotBlank() && File(p.processedImagePath).exists()) p.processedImagePath else p.rawImagePath
 
-    fun quickConfig() = PdfExportConfig(
-        title = docTitle,
-        pageSize = uiState.defaultPdfPageSize,
-        compression = uiState.defaultPdfCompression
-    )
+    // ---- Export options (name + size) shown before any Save/Share action runs ----
+    var exportDialogKind by remember { mutableStateOf<PendingExportKind?>(null) }
+    var exportDialogTargets by remember { mutableStateOf<List<PageEntity>>(emptyList()) }
 
+    fun quickConfig(title: String = docTitle, compression: CompressionPreset = uiState.defaultPdfCompression) = PdfExportConfig(
+        title = title,
+        pageSize = uiState.defaultPdfPageSize,
+        compression = compression
+    )
     /** Runs one export at a time with a progress overlay; errors become a message, never a crash. */
     fun runBusy(message: String, block: suspend () -> Unit) {
         if (busyMessage != null) return
@@ -182,10 +184,8 @@ fun DocumentViewerScreen(
             }
         }
     }
-
-    suspend fun buildPdf(targets: List<PageEntity>): File =
-        PdfEngine.generatePdf(context, targets.map { Pair(imagePathOf(it), it.ocrText) }, quickConfig())
-
+    suspend fun buildPdf(targets: List<PageEntity>, title: String, compression: CompressionPreset): File =
+        PdfEngine.generatePdf(context, targets.map { Pair(imagePathOf(it), it.ocrText) }, quickConfig(title, compression))
     // ---- System pickers (no storage permission needed) ----
     val createPdfLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("application/pdf")
@@ -209,35 +209,32 @@ fun DocumentViewerScreen(
             }
         }
     }
-
-    // ---- Save & Share actions ----
-    fun savePdf(targets: List<PageEntity>) {
+    // ---- Save & Share actions (name + compression already chosen by ExportOptionsDialog) ----
+    fun savePdf(targets: List<PageEntity>, title: String, compression: CompressionPreset) {
         if (targets.isEmpty()) return
         runBusy(t("Creating PDF…", "جاري إنشاء PDF…")) {
-            val pdf = buildPdf(targets)
-            val uri = PdfEngine.savePdfToDownloads(context, pdf, docTitle)
+            val pdf = buildPdf(targets, title, compression)
+            val uri = PdfEngine.savePdfToDownloads(context, pdf, title)
             if (uri != null) {
                 toast(t("Saved to Downloads/MS Scanner", "تم الحفظ في التنزيلات/MS Scanner"))
             } else {
                 pendingPdfForSaveAs = pdf
-                createPdfLauncher.launch("${PdfEngine.safeFileName(docTitle)}.pdf")
+                createPdfLauncher.launch("${PdfEngine.safeFileName(title)}.pdf")
             }
         }
     }
-
-    fun savePdfAs(targets: List<PageEntity>) {
+    fun savePdfAs(targets: List<PageEntity>, title: String, compression: CompressionPreset) {
         if (targets.isEmpty()) return
         runBusy(t("Creating PDF…", "جاري إنشاء PDF…")) {
-            pendingPdfForSaveAs = buildPdf(targets)
-            createPdfLauncher.launch("${PdfEngine.safeFileName(docTitle)}.pdf")
+            pendingPdfForSaveAs = buildPdf(targets, title, compression)
+            createPdfLauncher.launch("${PdfEngine.safeFileName(title)}.pdf")
         }
     }
-
-    fun saveImages(targets: List<PageEntity>) {
+    fun saveImages(targets: List<PageEntity>, title: String) {
         if (targets.isEmpty()) return
         val paths = targets.map { imagePathOf(it) }
         runBusy(t("Saving images…", "جاري حفظ الصور…")) {
-            val saved = PdfEngine.saveImagesToGallery(context, paths, docTitle)
+            val saved = PdfEngine.saveImagesToGallery(context, paths, title)
             if (saved < 0) {
                 pendingImagesForFolder = paths
                 pickFolderLauncher.launch(null)
@@ -246,30 +243,31 @@ fun DocumentViewerScreen(
             }
         }
     }
-
-    fun sharePdf(targets: List<PageEntity>) {
+    fun sharePdf(targets: List<PageEntity>, title: String, compression: CompressionPreset) {
         if (targets.isEmpty()) return
         runBusy(t("Creating PDF…", "جاري إنشاء PDF…")) {
-            val pdf = buildPdf(targets)
+            val pdf = buildPdf(targets, title, compression)
             if (!PdfEngine.sharePdf(context, pdf, t("Share PDF", "مشاركة PDF"))) toast(t("Nothing to share with", "لا يوجد تطبيق للمشاركة"))
         }
     }
-
-    fun shareImages(targets: List<PageEntity>) {
+    fun shareImages(targets: List<PageEntity>, title: String) {
         if (targets.isEmpty()) return
         runBusy(t("Preparing images…", "جاري تجهيز الصور…")) {
-            val files = PdfEngine.prepareImagesForShare(context, targets.map { imagePathOf(it) }, docTitle)
+            val files = PdfEngine.prepareImagesForShare(context, targets.map { imagePathOf(it) }, title)
             if (!PdfEngine.shareFiles(context, files, "image/jpeg", t("Share images", "مشاركة الصور"))) {
                 toast(t("Nothing to share", "لا يوجد ما يمكن مشاركته"))
             }
         }
     }
-
+    /** Opens the rename/size dialog, then runs [kind] with whatever the user confirms. */
+    fun requestExport(kind: PendingExportKind, targets: List<PageEntity>) {
+        exportDialogKind = kind
+        exportDialogTargets = targets
+    }
     fun print(targets: List<PageEntity>) {
         if (targets.isEmpty()) return
         PdfEngine.printScannedDocuments(context, docTitle, targets.map { imagePathOf(it) })
     }
-
     fun deletePages(ids: List<Long>) {
         if (ids.isEmpty()) return
         exitSelection()
@@ -280,7 +278,6 @@ fun DocumentViewerScreen(
             ids.forEach { viewModel.deletePageById(it) }
         }
     }
-
     // ---- Pickers for adding / replacing pages (same pipeline as the camera) ----
     val addPhotoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(20)
@@ -312,7 +309,6 @@ fun DocumentViewerScreen(
             }
         }
     }
-
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
@@ -324,7 +320,6 @@ fun DocumentViewerScreen(
             }
         }
     }
-
     BackHandler {
         when {
             selectionMode -> exitSelection()
@@ -332,7 +327,6 @@ fun DocumentViewerScreen(
             else -> onNavigateBack()
         }
     }
-
     Scaffold(
         modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -628,7 +622,6 @@ fun DocumentViewerScreen(
                         }
                     }
                 }
-
                 // Per-page tools
                 if (!isGridView && pages.isNotEmpty()) {
                     Row(
@@ -648,7 +641,6 @@ fun DocumentViewerScreen(
                         }
                     }
                 }
-
                 if (pages.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
@@ -763,7 +755,6 @@ fun DocumentViewerScreen(
                     }
                 }
             }
-
             // Export progress overlay (blocks double taps; everything runs off the main thread).
             busyMessage?.let { msg ->
                 Box(
@@ -784,9 +775,7 @@ fun DocumentViewerScreen(
             }
         }
     }
-
     // ================================================================================== sheets & dialogs
-
     if (showShareSheet) {
         val selectedInOrder = pages.filter { it.id in selectedPageIds }
         val currentPage = pages.getOrNull(pagerState.currentPage)
@@ -819,16 +808,37 @@ fun DocumentViewerScreen(
                 if (selectedPageIds.isEmpty()) pages.getOrNull(pagerState.currentPage)?.let { selectedPageIds = setOf(it.id) }
                 toast(t("Tap pages to select them, then tap Share", "اضغط على الصفحات لتحديدها ثم اضغط مشاركة"))
             },
-            onSavePdf = { showShareSheet = false; savePdf(targets) },
-            onSavePdfAs = { showShareSheet = false; savePdfAs(targets) },
-            onSaveImages = { showShareSheet = false; saveImages(targets) },
-            onSharePdf = { showShareSheet = false; sharePdf(targets) },
-            onShareImages = { showShareSheet = false; shareImages(targets) },
+            onSavePdf = { showShareSheet = false; requestExport(PendingExportKind.SAVE_PDF, targets) },
+            onSavePdfAs = { showShareSheet = false; requestExport(PendingExportKind.SAVE_PDF_AS, targets) },
+            onSaveImages = { showShareSheet = false; requestExport(PendingExportKind.SAVE_IMAGES, targets) },
+            onSharePdf = { showShareSheet = false; requestExport(PendingExportKind.SHARE_PDF, targets) },
+            onShareImages = { showShareSheet = false; requestExport(PendingExportKind.SHARE_IMAGES, targets) },
             onPrint = { showShareSheet = false; print(targets) },
             onPdfSettings = { showShareSheet = false; showPdfExportDialog = true }
         )
     }
-
+    // Rename + file-size (compression) step shown before the chosen Save/Share action actually runs.
+    exportDialogKind?.let { kind ->
+        ExportOptionsDialog(
+            isArabic = isArabic,
+            defaultTitle = docTitle,
+            defaultCompression = uiState.defaultPdfCompression,
+            showCompression = kind != PendingExportKind.SAVE_IMAGES && kind != PendingExportKind.SHARE_IMAGES,
+            pageCount = exportDialogTargets.size,
+            onDismiss = { exportDialogKind = null },
+            onConfirm = { title, compression ->
+                val targets = exportDialogTargets
+                exportDialogKind = null
+                when (kind) {
+                    PendingExportKind.SAVE_PDF -> savePdf(targets, title, compression)
+                    PendingExportKind.SAVE_PDF_AS -> savePdfAs(targets, title, compression)
+                    PendingExportKind.SAVE_IMAGES -> saveImages(targets, title)
+                    PendingExportKind.SHARE_PDF -> sharePdf(targets, title, compression)
+                    PendingExportKind.SHARE_IMAGES -> shareImages(targets, title)
+                }
+            }
+        )
+    }
     if (showDeleteSelectedConfirmDialog) {
         val count = selectedPageIds.size
         val deletesAll = count >= pages.size
@@ -858,7 +868,6 @@ fun DocumentViewerScreen(
             }
         )
     }
-
     if (showReorderDialog) {
         ReorderPagesScreen(
             pages = pages,
@@ -869,7 +878,6 @@ fun DocumentViewerScreen(
             onCancel = { showReorderDialog = false }
         )
     }
-
     if (showRenameDialog) {
         AlertDialog(
             onDismissRequest = { showRenameDialog = false },
@@ -898,7 +906,6 @@ fun DocumentViewerScreen(
             }
         )
     }
-
     if (showFilterSheet) {
         ModalBottomSheet(
             onDismissRequest = { showFilterSheet = false },
@@ -939,7 +946,6 @@ fun DocumentViewerScreen(
             }
         }
     }
-
     if (showPdfExportDialog) {
         PdfSettingsDialog(
             isArabic = isArabic,
@@ -976,7 +982,6 @@ fun DocumentViewerScreen(
             }
         )
     }
-
     pageForActions?.let { targetPage ->
         PageActionsBottomSheet(
             page = targetPage,
@@ -999,7 +1004,7 @@ fun DocumentViewerScreen(
                 replacePhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
             },
             onPrintClick = { pageForActions = null; print(listOf(targetPage)) },
-            onShareClick = { pageForActions = null; shareImages(listOf(targetPage)) },
+            onShareClick = { pageForActions = null; shareImages(listOf(targetPage), docTitle) },
             onExportDocxClick = {
                 pageForActions = null
                 if (targetPage.ocrText.isBlank()) {
@@ -1034,7 +1039,6 @@ fun DocumentViewerScreen(
             }
         )
     }
-
     if (showMergeDialog) {
         MergePagesDialog(
             allPages = pages,
@@ -1053,7 +1057,6 @@ fun DocumentViewerScreen(
             }
         )
     }
-
     if (showDocInfo && doc != null) {
         var title by remember(doc.id) { mutableStateOf(doc.title) }
         var tags by remember(doc.id) { mutableStateOf(doc.tagsCsv) }
@@ -1113,7 +1116,6 @@ fun DocumentViewerScreen(
         PdfViewerOverlay(pdfFile = file, onDismiss = { previewPdfFile = null })
     }
 }
-
 @Composable
 private fun PageTool(icon: ImageVector, label: String, onClick: () -> Unit) {
     IconButton(onClick = onClick) {
@@ -1124,5 +1126,68 @@ private fun PageTool(icon: ImageVector, label: String, onClick: () -> Unit) {
     }
 }
 
-
-
+/**
+ * Lets the user rename the output file and pick a smaller size (compression) BEFORE a Save/Share action
+ * actually runs. Addresses "share flow should expose filename and size control": previously this was only
+ * reachable through the separate "PDF settings & export…" menu entry, not from the main Save/Share flow
+ * that Save as PDF / Share PDF / Share images actually use.
+ */
+@Composable
+private fun ExportOptionsDialog(
+    isArabic: Boolean,
+    defaultTitle: String,
+    defaultCompression: CompressionPreset,
+    showCompression: Boolean,
+    pageCount: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (title: String, compression: CompressionPreset) -> Unit
+) {
+    fun t(en: String, ar: String) = if (isArabic) ar else en
+    var name by remember { mutableStateOf(defaultTitle) }
+    var compression by remember { mutableStateOf(defaultCompression) }
+    val estimatedBytes = remember(pageCount, compression) { PdfEngine.estimatePdfSizeBytes(pageCount.coerceAtLeast(1), compression) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(22.dp),
+        title = { Text(t("Name & size", "الاسم والحجم"), fontWeight = FontWeight.Bold) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    singleLine = true,
+                    label = { Text(t("File name", "اسم الملف")) },
+                    shape = RoundedCornerShape(12.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (showCompression) {
+                    Column {
+                        Text(t("Reduce file size", "تقليل حجم الملف"), style = MaterialTheme.typography.labelLarge)
+                        Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CompressionPreset.values().forEach { preset ->
+                                FilterChip(
+                                    selected = compression == preset,
+                                    onClick = { compression = preset },
+                                    label = { Text(preset.name) }
+                                )
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            t("Estimated size: ", "الحجم التقريبي: ") + PdfEngine.formatEstimatedSize(estimatedBytes),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = { onConfirm(name.trim().ifBlank { defaultTitle }, compression) },
+                shape = RoundedCornerShape(12.dp)
+            ) { Text(t("Continue", "متابعة"), fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text(t("Cancel", "إلغاء")) } }
+    )
+}

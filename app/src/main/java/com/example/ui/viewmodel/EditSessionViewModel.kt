@@ -135,10 +135,6 @@ class EditSessionViewModel(
     fun replacePage(pageId: Long, newRawPath: String, newProcessedPath: String) {
         viewModelScope.launch {
             val page = repository.getPageById(pageId) ?: return@launch
-            // The stored filter must describe the new image exactly, otherwise a later rotate / re-render
-            // applies a filter a second time:
-            //  - Google document scanner pages and PDF pages (status SKIPPED) are already processed -> ORIGINAL
-            //  - camera / gallery pages were rendered by the pipeline with its default filter
             val alreadyProcessed = QuadStore.loadStatus(newRawPath) == com.example.engine.cv.DetectionStatus.SKIPPED
             val updatedPage = page.copy(
                 rawImagePath = newRawPath,
@@ -165,7 +161,6 @@ class EditSessionViewModel(
         }
     }
     fun loadDocument(docId: Long) {
-        // One collector per document: previous calls created a new never-ending collector every time.
         loadJob?.cancel()
         loadJob = viewModelScope.launch {
             val doc = repository.getDocumentById(docId)
@@ -174,7 +169,6 @@ class EditSessionViewModel(
                 it.copy(activeDocument = doc, selectedPageIndex = keepIndex)
             }
             repository.getPagesForDocument(docId).collectLatest { pages ->
-                // Keep the title / OCR metadata fresh (background analysis may rename the document).
                 repository.getDocumentById(docId)?.let { fresh -> _uiState.update { it.copy(activeDocument = fresh) } }
                 _uiState.update { s ->
                     s.copy(activePages = pages, selectedPageIndex = s.selectedPageIndex.coerceIn(0, (pages.size - 1).coerceAtLeast(0)))
@@ -208,8 +202,6 @@ class EditSessionViewModel(
         }
     }
     // =========================================================================== editing session
-    // The session is an in-memory copy of the document pages. Nothing is written to the database
-    // until commitEditingSessionChanges(); cancel discards only the files created by the session.
     fun startEditingSession(pages: List<PageEntity>) {
         originalSessionPages = pages
         sessionAdjust.clear()
@@ -226,11 +218,6 @@ class EditSessionViewModel(
         sessionAdjust.clear()
         _uiState.update { it.copy(editingSessionPages = emptyList(), isEditingSession = false) }
     }
-    /**
-     * Commits the editing session through the single save transaction (DocumentRepository.saveDocument):
-     * deletions, updates, new pages (blank / merged) and the final order are written atomically.
-     * Obsolete files are deleted only AFTER a successful commit, so a failed save never loses pages.
-     */
     fun commitEditingSessionChanges(onComplete: () -> Unit) {
         if (_uiState.value.isSaving || _uiState.value.isLoading) return
         val pages = _uiState.value.editingSessionPages
@@ -253,7 +240,6 @@ class EditSessionViewModel(
                             removedPageIds = removed.map { it.id }
                         )
                     )
-                    // Commit succeeded: now it is safe to delete replaced / removed files.
                     val stillUsed = finalPages.flatMap { listOf(it.rawImagePath, it.processedImagePath) }.toSet()
                     for (orig in originalSessionPages) {
                         listOf(orig.rawImagePath, orig.processedImagePath).distinct().forEach { path ->
@@ -268,7 +254,6 @@ class EditSessionViewModel(
                     sessionAdjust.clear()
                     _uiState.update { it.copy(editingSessionPages = emptyList(), isEditingSession = false) }
                     onComplete()
-                    // OCR / classification for new or replaced pages, in the background (WorkManager).
                     DocumentAnalysisWorker.enqueue(context, docId, generatedTitle = false)
                 }
             } catch (e: CancellationException) {
@@ -303,10 +288,6 @@ class EditSessionViewModel(
         }
         sessionAdjust.remove(result.rawPath)
     }
-    /**
-     * Re-renders session pages from RAW (warp -> rotate -> filter -> adjust). Session only: nothing is
-     * written to the DB here. Pages are matched by raw path so a concurrent delete/reorder is safe.
-     */
     private fun renderSessionPages(
         indices: List<Int>,
         transform: (rotation: Int, filter: FilterType?, adjust: Pair<Float, Float>) -> Triple<Int, FilterType?, Pair<Float, Float>>
@@ -413,7 +394,6 @@ class EditSessionViewModel(
         )
         repository.updatePage(updated)
         if (rotation == page.rotationDegrees) {
-            // Same geometry (filter only): the text layout is still exact, no new OCR needed.
             OcrLayoutStore.copy(page.processedImagePath, newPath)
         } else {
             DocumentAnalysisWorker.enqueue(context, page.documentId, generatedTitle = false)
@@ -502,7 +482,6 @@ class EditSessionViewModel(
         val page = pages.getOrNull(_uiState.value.selectedPageIndex) ?: return
         deletePageById(page.id)
     }
-    /** Favorite / title / category / tags of the open document; the screen updates immediately. */
     fun updateDocumentMetadata(
         docId: Long,
         title: String? = null,
@@ -601,7 +580,6 @@ class EditSessionViewModel(
                         merged.recycle()
                     }
                     val firstIdx = sorted.first()
-                    // Merged page becomes a NEW page (its raw is the merged image); originals are removed on commit.
                     val newPage = selectedPages.first().copy(
                         id = 0L, processedImagePath = path, rawImagePath = path,
                         rotationDegrees = 0, cropQuadJson = "", filterType = FilterType.ORIGINAL.name
@@ -642,7 +620,6 @@ class EditSessionViewModel(
     fun runOcrInBackground(pageId: Long) {
         viewModelScope.launch(Dispatchers.Default) {
             try {
-                // Clear the previous page's result: the OCR screen never shows another page's text.
                 _uiState.update { it.copy(isOcrLoading = true, ocrResult = null) }
                 val page = repository.getPageById(pageId) ?: return@launch
                 val language = _uiState.value.ocrLanguage
@@ -656,7 +633,6 @@ class EditSessionViewModel(
                     bmp.recycle()
                 }
                 _uiState.update { it.copy(ocrResult = result) }
-                // A failed OCR returns an error message as "text": never store it as page content.
                 if (result.confidence <= 0f && result.fullText.startsWith("OCR Failed")) return@launch
                 val current = repository.getPageById(pageId) ?: return@launch
                 repository.updatePage(current.copy(ocrText = result.fullText))
@@ -691,16 +667,12 @@ class EditSessionViewModel(
     }
     // ---------------------------------------------------------------- post-save share sheet (one-shot)
     private var pendingShareSheetDocId: Long = 0L
-    /** Called right after a NEW scan is saved: the document screen opens with Save & Share options. */
-    fun requestShareSheet(docId: Long) {
-        pendingShareSheetDocId = docId
-    }
+    fun requestShareSheet(docId: Long) { pendingShareSheetDocId = docId }
     fun consumeShareSheetRequest(docId: Long): Boolean {
         if (pendingShareSheetDocId != docId || docId <= 0L) return false
         pendingShareSheetDocId = 0L
         return true
     }
-    /** Deleting the last page removes the document (to Trash) instead of leaving an empty document. */
     fun moveDocumentToTrash(docId: Long, onDone: () -> Unit = {}) {
         viewModelScope.launch {
             DocumentAnalysisWorker.cancel(context, docId)
@@ -711,7 +683,6 @@ class EditSessionViewModel(
     fun duplicatePage(pageId: Long) {
         val page = _uiState.value.activePages.find { it.id == pageId } ?: return
         viewModelScope.launch {
-            // A duplicate needs its own files: sharing paths would let one delete break the other.
             val (raw, proc) = withContext(Dispatchers.IO) {
                 fun copyOf(path: String): String {
                     val src = File(path)
@@ -787,11 +758,9 @@ class EditSessionViewModel(
         }
     }
     /**
-     * Saves a drawn signature to the reusable vault as a lossless, truly transparent PNG.
-     * ROOT CAUSE fixed here: this previously called ImageProcessor.saveBitmapToFile(), which always
-     * writes JPEG (no alpha channel), turning every transparent pixel opaque white on save — the
-     * signature was correct in memory but became a white rectangle the moment it was written to disk.
-     * SignatureStore.savePng keeps the alpha channel exactly as drawn.
+     * Saves a drawn signature to the vault as a lossless PNG (SignatureStore), not the old JPEG path
+     * (ImageProcessor.saveBitmapToFile), which silently filled every transparent pixel with opaque white
+     * and is the actual root cause of signatures showing as a white rectangle on the page.
      */
     fun saveSignatureToVault(title: String, bitmap: android.graphics.Bitmap) {
         viewModelScope.launch {
@@ -799,18 +768,15 @@ class EditSessionViewModel(
             repository.saveSignature(title, path)
         }
     }
-    /** Removes a saved signature from the vault (the vault had no delete action before). */
+    /** Removes a saved signature from the vault. */
     fun deleteSignatureFromVault(id: Long) {
         viewModelScope.launch {
-            val sig = _uiState.value.savedSignatures.find { it.id == id }
             repository.deleteSignature(id)
-            sig?.let { SignatureStore.delete(it.imagePath) }
         }
     }
     fun deletePageById(pageId: Long) {
         val page = _uiState.value.activePages.find { it.id == pageId } ?: return
         viewModelScope.launch {
-            // repository.deletePage re-indexes the remaining pages, updates pageCount and the thumbnail.
             repository.deletePage(pageId, page.documentId)
             runCatching {
                 QuadStore.delete(page.rawImagePath)
@@ -824,7 +790,6 @@ class EditSessionViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             try {
-                // Previously re-rendered raw WITHOUT the crop quad: every page lost its crop.
                 for (page in repository.getPagesList(docId)) {
                     rerenderSavedPage(page, page.rotationDegrees, filter.takeIf { it != FilterType.ORIGINAL }, "proc_all")
                 }

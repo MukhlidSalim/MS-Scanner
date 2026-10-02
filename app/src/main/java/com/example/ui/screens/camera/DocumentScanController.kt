@@ -1,5 +1,4 @@
 package com.example.ui.screens.camera
-
 import android.content.Context
 import android.util.Rational
 import android.util.Size
@@ -49,7 +48,6 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import java.util.concurrent.ExecutorService
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-
 /**
  * Owns live detection state for CameraScanScreen (built-in camera = fallback scanner).
  * All Compose state here is written on the main thread only.
@@ -65,25 +63,20 @@ class DocumentScanController(context: Context) {
         internal set
     var isFrontCamera: Boolean by mutableStateOf(false)
     val analyzer = LiveDocumentAnalyzer(ContextCompat.getMainExecutor(context)) { s -> state = s }
-
     fun setMode(mode: ScanCameraMode) {
         analyzer.expectedAspectRatio = expectedAspectFor(mode)
         reset()
     }
-
     fun reset() {
         analyzer.reset()
         state = LiveDetectionState.EMPTY
     }
-
     /** Quad to use as capture prior, only when frames are guaranteed to share the same field of view. */
     fun captureQuadForShutter() = if (viewportActive && state.phase != LiveDetectionPhase.SEARCHING) state.captureQuad else null
-
     /** Call when a capture starts. Stops analysis work while the photo is processed. */
     fun onCaptureStarted() {
         analyzer.enabled = false
     }
-
     /**
      * Call after a capture finished. [stayOnCamera] = batch page / first side of ID or passport:
      * auto-capture re-arms only after the page changes (no duplicate shots of the same page).
@@ -93,14 +86,22 @@ class DocumentScanController(context: Context) {
         if (stayOnCamera) analyzer.requireNewScene() else analyzer.reset()
         state = LiveDetectionState.EMPTY
     }
-
-    /** Processes a saved CameraX photo through the unified pipeline, using the live quad as prior. */
+    /**
+     * Processes a saved CameraX photo through the unified pipeline, using the live quad as prior.
+     *
+     * Default filter is now mode-dependent (fixes "Original filter should be the default for a plain
+     * document capture"): DOCUMENT and BATCH captures default to null (Original / true colors) so the
+     * user applies a filter afterwards only if they want one; ID_CARD and PASSPORT keep the pipeline's
+     * own default (DocumentPipeline.DEFAULT_FILTER) unchanged, since that behaviour was not reported as
+     * broken and these captures are not plain "documents". An explicit [filter] argument from the caller
+     * always wins over this default.
+     */
     suspend fun processCapture(
         context: Context,
         photo: File,
         mode: ScanCameraMode,
         previewQuad: com.example.engine.cv.DocumentQuad?,
-        filter: FilterType? = DocumentPipeline.DEFAULT_FILTER
+        filter: FilterType? = defaultFilterFor(mode)
     ): ProcessedPage? = DocumentPipeline.processCapturedFile(
         context = context,
         file = photo,
@@ -108,23 +109,25 @@ class DocumentScanController(context: Context) {
         expectedAspectRatio = expectedAspectFor(mode),
         filter = filter
     )
-
     companion object {
         fun expectedAspectFor(mode: ScanCameraMode): Float? = when (mode) {
             ScanCameraMode.ID_CARD -> ScanAspect.ID_CARD
             ScanCameraMode.PASSPORT -> ScanAspect.PASSPORT
             else -> null
         }
+        /** null (Original) for plain document / batch captures; unchanged default for ID card / passport. */
+        fun defaultFilterFor(mode: ScanCameraMode): FilterType? = when (mode) {
+            ScanCameraMode.DOCUMENT, ScanCameraMode.BATCH -> null
+            else -> DocumentPipeline.DEFAULT_FILTER
+        }
     }
 }
-
 @Composable
 fun rememberDocumentScanController(context: Context): DocumentScanController {
     val controller = remember { DocumentScanController(context.applicationContext) }
     DisposableEffect(controller) { onDispose { controller.analyzer.enabled = false } }
     return controller
 }
-
 /** Suspends until the CameraX provider is ready (no extra futures library needed). */
 suspend fun awaitCameraProvider(context: Context): ProcessCameraProvider = suspendCancellableCoroutine { cont ->
     val future = ProcessCameraProvider.getInstance(context)
@@ -136,7 +139,6 @@ suspend fun awaitCameraProvider(context: Context): ProcessCameraProvider = suspe
         }
     }, ContextCompat.getMainExecutor(context))
 }
-
 /** Waits (max ~1 s) until the view has a real size, so the ViewPort can be built correctly. */
 suspend fun awaitLaidOut(view: PreviewView) {
     var waited = 0
@@ -145,10 +147,8 @@ suspend fun awaitLaidOut(view: PreviewView) {
         waited += 16
     }
 }
-
 /** Result of [bindScannerCamera]. */
 class BoundScanner(val camera: Camera, val imageCapture: ImageCapture)
-
 /**
  * Binds Preview + ImageCapture + ImageAnalysis.
  *  1. ViewPort is used only with a valid, laid-out size (aligned frames, capture prior usable).
@@ -231,7 +231,6 @@ fun bindScannerCamera(
         null
     }
 }
-
 /**
  * Fires [onAutoCapture] exactly once each time the tracker enters STABLE while [enabled].
  * The stabilizer's hold time IS the countdown (shown as the progress ring): one time source.
@@ -247,7 +246,6 @@ fun AutoCaptureEffect(controller: DocumentScanController, enabled: Boolean, onAu
             .collect { if (latestEnabled) latestCallback() }
     }
 }
-
 /**
  * Live quad overlay. Must be laid out exactly over the PreviewView (same size and position).
  * Colors: gold while tracking, green when stable; a ring on the quad center shows hold progress.
