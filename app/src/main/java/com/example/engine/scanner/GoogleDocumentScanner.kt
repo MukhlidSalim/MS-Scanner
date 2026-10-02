@@ -7,40 +7,50 @@ import android.content.ContextWrapper
 import android.content.Intent
 import android.content.IntentSender
 import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.util.Log
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
-import com.google.android.gms.common.moduleinstall.InstallStatusListener
 import com.google.android.gms.common.moduleinstall.ModuleInstall
 import com.google.android.gms.common.moduleinstall.ModuleInstallRequest
-import com.google.android.gms.common.moduleinstall.ModuleInstallStatusUpdate
 import com.google.mlkit.common.MlKitException
 import com.google.mlkit.vision.documentscanner.GmsDocumentScannerOptions
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanning
 import com.google.mlkit.vision.documentscanner.GmsDocumentScanningResult
-import java.util.concurrent.TimeoutException
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Google ML Kit Document Scanner (same engine as the Google Drive scanner). This is the PRIMARY capture
- * engine; the built-in camera is only a fallback.
+ * Google ML Kit Document Scanner (same engine as the Google Drive scanner). PRIMARY capture engine; the
+ * built-in camera is only a fallback.
  *
- * Root cause of "Google scanner unavailable although the device supports it": the scanner UI and models are
- * an OPTIONAL Play-services module downloaded on first use. getStartScanIntent() fails while the module is
- * missing or still downloading, and the previous code treated ANY failure as "unavailable" and opened the
- * built-in camera. Once the download finished in the background the next attempt worked, which is why the
- * behaviour looked random. Now availability is checked with ModuleInstallClient, the module is installed
- * (with progress) when missing, transient failures are retried, and only a real failure falls back.
- *
- * Returned JPEG pages enter the app's own pipeline (DocumentPipeline.processUri, no second detection,
- * no second filter) and the existing review -> save -> share flow.
+ * Fix for "Could not start the Google scanner: NullPointerException":
+ *  - The NullPointerException had no message, which is the signature of a Google Play services
+ *    Preconditions.checkNotNull() failure inside the optional-module layer (ModuleInstallClient), not of
+ *    the scanner itself. The previous version ALWAYS went through ModuleInstall (areModulesAvailable /
+ *    installModules with a status listener) before opening the scanner, so a failure there replaced a
+ *    scanner that was actually available. The official integration calls getStartScanIntent() directly: the
+ *    scanner downloads its own module when needed. That is now the first and normal path; ModuleInstall is
+ *    only used as a recovery step when the scanner itself reports UNAVAILABLE.
+ *  - The scanner is started only from a live Activity (not finishing / destroyed). Changing the app language
+ *    recreates the Activity; an attempt made during that window is retried instead of falling back.
+ *  - Transient failures (UNAVAILABLE, NullPointerException, IllegalStateException) are retried with backoff
+ *    before the built-in camera is used.
+ *  - Every real failure is written with its FULL stack trace, device, Android version, app locale and Play
+ *    services version to filesDir/crash/ (Settings > Diagnostics > Share), so the next failure, if any, can
+ *    be diagnosed from the exact Google frame that failed instead of a short toast.
  */
 object GoogleDocumentScanner {
-
+    private const val TAG = "GoogleDocScanner"
     /** Google requires about 1.7 GB of device RAM; below that the API returns UNSUPPORTED. */
     private const val MIN_TOTAL_RAM_BYTES = 1_700_000_000L
-    private const val INSTALL_TIMEOUT_MS = 90_000L
     private const val MAX_LAUNCH_RETRIES = 3
 
     /** Scanner could not be used; [userMessageAr]/[userMessageEn] explain why (shown before the fallback). */
@@ -52,7 +62,7 @@ object GoogleDocumentScanner {
 
     /**
      * Device capability only (Google Play services present + enough RAM). A missing / outdated scanner
-     * MODULE is not a reason to skip Google: [start] installs it.
+     * MODULE is not a reason to skip Google: the scanner installs it itself.
      */
     fun isSupported(context: Context): Boolean {
         val status = runCatching { GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(context) }
@@ -77,10 +87,17 @@ object GoogleDocumentScanner {
             .apply { if (pageLimit != null && pageLimit > 0) setPageLimit(pageLimit) }
             .build()
 
+    private fun isAlive(a: Activity): Boolean =
+        !a.isFinishing && !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1 && a.isDestroyed)
+
+    private fun isTransient(e: Throwable): Boolean =
+        (e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE) ||
+            e is NullPointerException || e is IllegalStateException
+
     /**
-     * Opens the Google scanner. Order: module available? -> launch. Missing -> install (progress through
-     * [onPreparing], 0..100 or null when unknown) -> launch. Transient launch failures are retried.
-     * Exactly one of [onIntent] / [onError] is called, on the main thread.
+     * Opens the Google scanner. getStartScanIntent() is called directly (the official path). Transient failures
+     * are retried; UNAVAILABLE additionally asks Play services to install the scanner module (progress through
+     * [onPreparing]). Exactly one of [onIntent] / [onError] is called, on the main thread.
      */
     fun start(
         activity: Activity,
@@ -91,107 +108,118 @@ object GoogleDocumentScanner {
     ) {
         val main = Handler(Looper.getMainLooper())
         val finished = AtomicBoolean(false)
-        fun fail(e: ScannerUnavailableException) {
-            if (finished.compareAndSet(false, true)) main.post { onError(e) }
+        val appContext = activity.applicationContext
+        var moduleInstallRequested = false
+
+        fun fail(e: Throwable) {
+            if (!finished.compareAndSet(false, true)) return
+            recordFailure(appContext, e)
+            val described = describe(e)
+            main.post { onError(described) }
         }
+
         val scanner = try {
             GmsDocumentScanning.getClient(options(pageLimit))
-        } catch (e: Exception) {
-            fail(describe(e)); return
+        } catch (e: Throwable) {
+            fail(e); return
         }
-        val moduleClient = ModuleInstall.getClient(activity)
+
+        fun requestModuleInstall() {
+            if (moduleInstallRequested) return
+            moduleInstallRequested = true
+            runCatching {
+                // No status listener: the listener path is where the Play services precondition failed.
+                ModuleInstall.getClient(appContext)
+                    .installModules(ModuleInstallRequest.newBuilder().addApi(scanner).build())
+                    .addOnFailureListener { Log.w(TAG, "installModules failed", it) }
+            }.onFailure { Log.w(TAG, "installModules threw", it) }
+        }
 
         fun launch(attempt: Int) {
             if (finished.get()) return
-            scanner.getStartScanIntent(activity)
-                .addOnSuccessListener { sender ->
-                    if (finished.compareAndSet(false, true)) onIntent(sender)
+            if (!isAlive(activity)) {
+                // Activity being recreated (e.g. language change): the caller relaunches on the new instance.
+                if (attempt < MAX_LAUNCH_RETRIES) {
+                    main.postDelayed({ launch(attempt + 1) }, 600L)
+                } else {
+                    fail(IllegalStateException("Activity destroyed before the scanner could start"))
                 }
-                .addOnFailureListener { e ->
-                    val transient = e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE
-                    if (transient && attempt < MAX_LAUNCH_RETRIES) {
+                return
+            }
+            val task = try {
+                scanner.getStartScanIntent(activity)
+            } catch (e: Throwable) {
+                if (isTransient(e) && attempt < MAX_LAUNCH_RETRIES) {
+                    Log.w(TAG, "getStartScanIntent threw (attempt $attempt), retrying", e)
+                    main.postDelayed({ launch(attempt + 1) }, 800L * (attempt + 1))
+                } else {
+                    fail(e)
+                }
+                return
+            }
+            task.addOnSuccessListener { sender ->
+                if (finished.compareAndSet(false, true)) onIntent(sender)
+            }.addOnFailureListener { e ->
+                if (isTransient(e) && attempt < MAX_LAUNCH_RETRIES) {
+                    Log.w(TAG, "getStartScanIntent failed (attempt $attempt), retrying", e)
+                    if (e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE) {
                         onPreparing(null)
-                        main.postDelayed({ launch(attempt + 1) }, 1500L * (attempt + 1))
-                    } else {
-                        fail(describe(e))
+                        requestModuleInstall()
                     }
-                }
-        }
-
-        fun install() {
-            onPreparing(0)
-            val listener = object : InstallStatusListener {
-                override fun onInstallStatusUpdated(update: ModuleInstallStatusUpdate) {
-                    update.progressInfo?.let { p ->
-                        if (p.totalBytesToDownload > 0) onPreparing((100L * p.bytesDownloaded / p.totalBytesToDownload).toInt())
-                    }
-                    when (update.installState) {
-                        ModuleInstallStatusUpdate.InstallState.STATE_COMPLETED -> {
-                            moduleClient.unregisterListener(this)
-                            launch(0)
-                        }
-                        ModuleInstallStatusUpdate.InstallState.STATE_FAILED,
-                        ModuleInstallStatusUpdate.InstallState.STATE_CANCELED -> {
-                            moduleClient.unregisterListener(this)
-                            fail(
-                                ScannerUnavailableException(
-                                    "تعذر تنزيل ماسح Google (تحقق من الإنترنت ومتجر Play)",
-                                    "Could not download the Google scanner (check internet / Play Store)"
-                                )
-                            )
-                        }
-                        else -> Unit
-                    }
+                    main.postDelayed({ launch(attempt + 1) }, 1500L * (attempt + 1))
+                } else {
+                    fail(e)
                 }
             }
-            val request = ModuleInstallRequest.newBuilder()
-                .addApi(scanner)
-                .setListener(listener)
-                .build()
-            moduleClient.installModules(request)
-                .addOnSuccessListener { response ->
-                    if (response.areModulesAlreadyInstalled()) {
-                        moduleClient.unregisterListener(listener)
-                        launch(0)
-                    }
-                    // Otherwise STATE_COMPLETED on the listener continues the flow.
-                }
-                .addOnFailureListener {
-                    moduleClient.unregisterListener(listener)
-                    launch(0) // last attempt: the scanner itself may still be able to start
-                }
-            main.postDelayed({
-                if (!finished.get()) {
-                    moduleClient.unregisterListener(listener)
-                    fail(
-                        ScannerUnavailableException(
-                            "تنزيل ماسح Google يستغرق وقتاً أطول من المعتاد",
-                            "The Google scanner download is taking too long",
-                            TimeoutException()
-                        )
-                    )
-                }
-            }, INSTALL_TIMEOUT_MS)
         }
 
-        moduleClient.areModulesAvailable(scanner)
-            .addOnSuccessListener { response -> if (response.areModulesAvailable()) launch(0) else install() }
-            .addOnFailureListener { launch(0) }
+        main.post { launch(0) }
     }
 
-    private fun describe(e: Exception): ScannerUnavailableException = when {
-        e is ScannerUnavailableException -> e
-        e is MlKitException && e.errorCode == MlKitException.UNSUPPORTED ->
-            ScannerUnavailableException("هذا الجهاز لا يدعم ماسح Google", "This device does not support the Google scanner", e)
-        e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE ->
-            ScannerUnavailableException(
-                "ماسح Google غير جاهز بعد (جاري تنزيله من خدمات Google)",
-                "The Google scanner is not ready yet (being downloaded by Google Play services)", e
+    private fun describe(e: Throwable): ScannerUnavailableException {
+        val where = e.stackTrace.firstOrNull { it.className.startsWith("com.google") }
+            ?.let { " @ ${it.className.substringAfterLast('.')}.${it.methodName}" }.orEmpty()
+        val reason = (e.localizedMessage?.takeIf { it.isNotBlank() } ?: e.javaClass.simpleName) + where
+        return when {
+            e is ScannerUnavailableException -> e
+            e is MlKitException && e.errorCode == MlKitException.UNSUPPORTED ->
+                ScannerUnavailableException("هذا الجهاز لا يدعم ماسح Google", "This device does not support the Google scanner", e)
+            e is MlKitException && e.errorCode == MlKitException.UNAVAILABLE ->
+                ScannerUnavailableException(
+                    "ماسح Google غير جاهز بعد (جاري تنزيله من خدمات Google)",
+                    "The Google scanner is not ready yet (being downloaded by Google Play services)", e
+                )
+            else -> ScannerUnavailableException(
+                "تعذر تشغيل ماسح Google: $reason (التفاصيل: الإعدادات ← التشخيص)",
+                "Could not start the Google scanner: $reason (details: Settings > Diagnostics)", e
             )
-        else -> ScannerUnavailableException(
-            "تعذر تشغيل ماسح Google: ${e.localizedMessage ?: e.javaClass.simpleName}",
-            "Could not start the Google scanner: ${e.localizedMessage ?: e.javaClass.simpleName}", e
-        )
+        }
+    }
+
+    /** Full diagnostic report next to the crash reports (shared from Settings > Diagnostics). */
+    private fun recordFailure(context: Context, e: Throwable) {
+        runCatching {
+            val dir = File(context.filesDir, "crash").apply { mkdirs() }
+            val stamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
+            val trace = StringWriter().also { e.printStackTrace(PrintWriter(it)) }.toString()
+            val gmsVersion = runCatching {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo("com.google.android.gms", 0).versionName
+            }.getOrDefault("unknown")
+            val report = buildString {
+                appendLine("MS Scanner - Google document scanner failure")
+                appendLine("Time: $stamp")
+                appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+                appendLine("App locale: ${context.resources.configuration.locales[0]}  System locale: ${Locale.getDefault()}")
+                appendLine("Google Play services: $gmsVersion")
+                appendLine()
+                append(trace)
+            }
+            File(dir, "scanner_$stamp.txt").writeText(report)
+            dir.listFiles { f -> f.name.startsWith("scanner_") }?.sortedByDescending { it.lastModified() }
+                ?.drop(5)?.forEach { it.delete() }
+            Log.e(TAG, report)
+        }
     }
 
     /** Page image URIs of a successful scan (empty when cancelled or nothing was scanned). */
