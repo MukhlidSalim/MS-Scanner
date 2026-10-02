@@ -316,7 +316,7 @@ fun FullScreenSignatureWorkspace(
                     t("Sign with your finger — use the full area below", "وقّع بإصبعك — استخدم كامل المساحة أدناه"),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(horizontal = 16.dp, bottom = 4.dp)
+                    modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 4.dp)
                 )
                 // THE drawing surface: fills essentially the whole remaining screen (full-screen workspace).
                 Box(
