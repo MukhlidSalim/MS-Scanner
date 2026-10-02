@@ -30,6 +30,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -47,6 +49,7 @@ import com.example.ui.theme.GoldBase
 import com.example.ui.theme.StudioCanvasBg
 import com.example.ui.viewmodel.EditSessionViewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.math.atan2
@@ -114,14 +117,10 @@ fun AnnotationScreen(
     var showSignatureDialog by remember { mutableStateOf(false) }
 
     // ---------------------------------------------------------------------------------------------
-    // FIX (issue 6 — reused signature must support Move / Resize / Recolor, not just one-time placement):
-    // root cause was that no selection/drag/resize/recolor state existed at all for an already-placed
-    // PlacedSignature: the only interaction implemented was the initial tap-to-place. A placed signature
-    // is now selectable (tap on it), draggable (move), resizable (slider bound to `scale`), and
-    // re-colourable (swatches, applied via the EXISTING, previously unused SignatureStore.tinted()).
-    // No change to PlacedSignature's definition is required: PlacedSignature is already a data class used
-    // here with named arguments (signatureBitmap, x, y, scale), so `.copy(...)` is used to update an
-    // entry in place — this keeps the fix fully contained in this file.
+    // Reused-signature editing: a placed signature is selectable (tap on it), draggable (move),
+    // resizable (slider bound to `scale`), and re-colourable (swatches, applied via
+    // SignatureStore.tinted()). `.copy(...)` is used to update an entry in place since PlacedSignature
+    // is a data class used here with named arguments (signatureBitmap, x, y, scale).
     // ---------------------------------------------------------------------------------------------
     var selectedSignatureIndex by remember { mutableStateOf<Int?>(null) }
     /** Approximate on-screen half-size of a placed signature, for hit-testing and the move gesture. */
@@ -232,16 +231,17 @@ fun AnnotationScreen(
                 val selIdx = selectedSignatureIndex
                 if (selIdx != null && selIdx in placedSignatures.indices) {
                     val selected = placedSignatures[selIdx]
+                    val isArabicLocal = context.resources.configuration.locales[0].language == "ar"
                     Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                if (context.resources.configuration.locales[0].language == "ar") "تعديل التوقيع" else "Edit signature",
+                                if (isArabicLocal) "تعديل التوقيع" else "Edit signature",
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.Bold,
                                 modifier = Modifier.weight(1f)
                             )
                             TextButton(onClick = { selectedSignatureIndex = null }) {
-                                Text(if (context.resources.configuration.locales[0].language == "ar") "تم" else "Done")
+                                Text(if (isArabicLocal) "تم" else "Done")
                             }
                         }
                         // Resize
@@ -257,7 +257,7 @@ fun AnnotationScreen(
                             )
                             Icon(Icons.Default.PhotoSizeSelectLarge, contentDescription = null, modifier = Modifier.size(22.dp))
                         }
-                        // Recolor — reuses the existing (previously unused) SignatureStore.tinted()
+                        // Recolor — reuses SignatureStore.tinted()
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                             SignatureStore.DEFAULT_COLORS.forEach { colorInt ->
                                 Box(
@@ -281,7 +281,7 @@ fun AnnotationScreen(
                             }
                         }
                         Text(
-                            if (context.resources.configuration.locales[0].language == "ar") "اسحب التوقيع على الصفحة لتحريكه"
+                            if (isArabicLocal) "اسحب التوقيع على الصفحة لتحريكه"
                             else "Drag the signature on the page to move it",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -420,8 +420,7 @@ fun AnnotationScreen(
                         .fillMaxSize()
                         // Tap layer: selects / deselects a placed signature when the SIGNATURE tool is
                         // active. Kept separate from the drawing drag layer so pen/shape/redact tools are
-                        // completely unaffected (same approach already used in this file: multiple
-                        // pointerInput blocks keyed by different tool state).
+                        // completely unaffected.
                         .pointerInput(activeTool, placedSignatures.size, renderW, renderH, offsetX, offsetY) {
                             if (activeTool != AnnotateTool.SIGNATURE) return@pointerInput
                             detectTapGestures { tapPos ->
@@ -642,8 +641,8 @@ fun AnnotationScreen(
                                 else -> {}
                             }
                         }
-                        // Placed signatures: the selected one gets a dashed selection outline so the user
-                        // can see what Resize/Recolor/Drag currently applies to.
+                        // Placed signatures: the selected one gets a selection outline so the user can
+                        // see what Resize/Recolor/Drag currently applies to.
                         for ((i, sig) in placedSignatures.withIndex()) {
                             val sigW = (renderW * sig.scale).toInt()
                             val sigH = (sigW * (sig.signatureBitmap.height.toFloat() / sig.signatureBitmap.width.toFloat())).toInt()
@@ -747,7 +746,7 @@ fun AnnotationScreen(
         val isArabic = context.resources.configuration.locales[0].language == "ar"
 
         /** Places a signature bitmap (new or from the vault) and immediately selects it for editing,
-         *  so Change Color / Resize / Move are available right away, as requested. */
+         *  so Change Color / Resize / Move are available right away. */
         fun placeAndSelect(bmp: Bitmap) {
             val ps = PlacedSignature(signatureBitmap = bmp, x = 0.5f, y = 0.75f, scale = 0.35f)
             placedSignatures.add(ps)
