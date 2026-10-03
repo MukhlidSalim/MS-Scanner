@@ -61,7 +61,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsState()
     val stats = uiState.storageStats
-    val isArabic = context.resources.configuration.locales\[0\].language == "ar"
+    val isArabic = context.resources.configuration.locales[0].language == "ar"
     fun t(en: String, ar: String) = if (isArabic) ar else en
     LaunchedEffect(Unit) { viewModel.refreshStorageStats() }
     var showPinDialog by remember { mutableStateOf(false) }
