@@ -706,10 +706,10 @@ fun DocScanApp(
                     }
                 }
             }
-            val appPrefs = remember { AppPreferences(context) }
-            val googleEligible = remember(backStackEntry.id) {
-                appPrefs.scanEngine == AppPreferences.SCAN_ENGINE_GOOGLE && GoogleDocumentScanner.isSupported(context)
-            }
+                       val appPrefs = remember { AppPreferences(context) }
+            // Unified Scan Document entry: CameraScanScreen's own mode selector (Document/Batch/
+            // ID Card/Passport) must always be reachable before any external scanner engine starts.
+            val googleEligible = false
             val pageLimit: Int? = remember(backStackEntry.id) {
                 when {
                     replacePageId > 0L || cameraViewModel.peekCaptureTarget() is CaptureTarget.Replace -> 1
