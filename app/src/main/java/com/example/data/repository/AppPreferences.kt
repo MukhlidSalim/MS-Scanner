@@ -184,6 +184,24 @@ class AppPreferences(context: Context) {
             ?.takeIf { it == SCAN_ENGINE_GOOGLE || it == SCAN_ENGINE_BUILT_IN } ?: SCAN_ENGINE_GOOGLE
         set(value) = prefs.edit().putString("scan_engine", value).apply()
 
+    /**
+     * Default output orientation for a PLAIN DOCUMENT capture (Normal Document / Multi-Capture only).
+     * ID Card and Passport are never affected by this setting: they always pass their own
+     * expectedAspectRatio to DocumentPipeline and keep their Landscape-appropriate handling untouched.
+     *
+     * This is intentionally used in DocumentPipeline ONLY as a FALLBACK for the case where no document
+     * border could be detected at all (the full raw camera frame is kept because there is no real quad
+     * to measure): in that one case, if the kept frame came out wider than tall, it is rotated so the
+     * saved page defaults to Portrait, matching what a user expects from "scan a normal document".
+     * When a border WAS actually detected and cropped, its real, measured shape is always kept as-is —
+     * a genuinely landscape document (a certificate, a wide table, a receipt photographed sideways on
+     * purpose) is never force-rotated into Portrait just to match this default, because doing so would
+     * silently distort real content the detector was confident about.
+     */
+    var documentDefaultOrientationPortrait: Boolean
+        get() = prefs.getBoolean("doc_default_orientation_portrait", true)
+        set(value) = prefs.edit().putBoolean("doc_default_orientation_portrait", value).apply()
+
     /** Last version announced by a notification (one notification per version). */
     var lastNotifiedUpdateVersion: String
         get() = prefs.getString("last_notified_update_version", "") ?: ""
