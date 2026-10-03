@@ -1,3 +1,4 @@
+
 package com.example.engine.cv
 
 import android.content.Context
@@ -14,7 +15,6 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.example.data.model.FilterType
-import com.example.data.repository.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -218,9 +218,6 @@ object DocumentPipeline {
             }
             QuadStore.save(rawPath, quad)
             QuadStore.saveStatus(rawPath, status)
-            // Re-detection on an EXISTING page is a user-invoked action on a page they may already have
-            // rotated/edited: the Portrait-default fallback (see processUpright) intentionally does not
-            // run again here, so it never undoes a rotation the user already chose.
             val out = renderBitmap(raw, quad, rotationDegrees, filter, 0f, 1f, false, previousStatus != DetectionStatus.SKIPPED)
             try {
                 val path = ImageProcessor.saveBitmapToFile(context, out, "${prefix}_")
@@ -457,49 +454,14 @@ object DocumentPipeline {
         }
         QuadStore.save(rawPath, quad)
         QuadStore.saveStatus(rawPath, status)
-        // FIX ("Normal Document default orientation = Portrait"): see
-        // AppPreferences.documentDefaultOrientationPortrait and defaultOrientationRotation() below for the
-        // exact, narrow scope of this behaviour (plain documents only, fallback-no-detection case only).
-        val orientationRotation = defaultOrientationRotation(context, upright, quad, expectedAspectRatio, status)
         // Google scanner / PDF pages (SKIPPED) are already straight: no second correction.
-        val out = renderBitmap(upright, quad, orientationRotation, filter, 0f, 1f, false, straighten = autoCrop)
+        val out = renderBitmap(upright, quad, 0, filter, 0f, 1f, false, straighten = autoCrop)
         val procPath = try {
             ImageProcessor.saveBitmapToFile(context, out, "${prefix}_proc_")
         } finally {
             if (out !== upright) out.recycle()
         }
         return ProcessedPage(rawPath, procPath, quad, detection != null, detection?.confidence ?: 0f, status)
-    }
-
-    /**
-     * Portrait-by-default fallback for a freshly captured/imported PLAIN document page (see
-     * AppPreferences.documentDefaultOrientationPortrait for the full rationale). Deliberately narrow:
-     *
-     *  - [expectedAspectRatio] != null means this is an ID Card / Passport capture: always returns 0,
-     *    ID Card and Passport keep their existing Landscape-appropriate handling untouched.
-     *  - [status] != NOT_FOUND means a document border WAS actually detected (or this page is a
-     *    Google-scanner / PDF page where detection was intentionally skipped): the real, measured shape
-     *    is kept as-is. Rotating a genuinely landscape, correctly-detected document just to force
-     *    Portrait would silently distort real content, so this never happens.
-     *  - Only when NO border could be found at all (the full raw frame was kept, i.e. there is no real
-     *    measured shape to respect) does this apply Portrait as the sensible default for the common case
-     *    of a tall document photographed sideways by mistake.
-     *
-     * The user can always override the result afterwards with the existing manual rotate action in the
-     * editor; this function only decides the STARTING orientation of a brand-new page.
-     */
-    private fun defaultOrientationRotation(
-        context: Context,
-        upright: Bitmap,
-        quad: DocumentQuad,
-        expectedAspectRatio: Float?,
-        status: DetectionStatus
-    ): Int {
-        if (expectedAspectRatio != null) return 0
-        if (status != DetectionStatus.NOT_FOUND) return 0
-        if (!AppPreferences(context).documentDefaultOrientationPortrait) return 0
-        val (dstW, dstH) = quad.targetDimensions(upright.width.toFloat(), upright.height.toFloat())
-        return if (dstW > dstH) 90 else 0
     }
 
     // ------------------------------------------------------------------ decoding
@@ -653,3 +615,6 @@ object QuadStore {
         try { statusFileFor(rawPath).delete() } catch (_: Exception) { }
     }
 }
+
+
+
