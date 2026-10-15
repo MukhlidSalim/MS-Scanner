@@ -383,11 +383,11 @@ fun DocumentCropEditorScreen(
                                 onClick = { if (filter != null) { pushHistory(); filter = null } },
                                 label = { Text(t("Original", "الأصل")) }
                             )
-                            for (f in FilterType.values()) {
+                            for (f in FilterType.values().filter { it != FilterType.ORIGINAL }) {
                                 FilterChip(
                                     selected = filter == f,
                                     onClick = { if (filter != f) { pushHistory(); filter = f } },
-                                    label = { Text(prettyName(f.name)) }
+                                    label = { Text(if (isArabic) f.displayNameAr else f.displayNameEn) }
                                 )
                             }
                         }

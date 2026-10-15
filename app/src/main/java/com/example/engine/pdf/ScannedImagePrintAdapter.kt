@@ -85,7 +85,7 @@ class ScannedImagePrintAdapter(
                         mainHandler.post { callback.onWriteCancelled() }
                         return@launch
                     }
-                    if (pageRanges.none { i in it.start..it.end }) continue
+                    if (pageRanges.none { (it == PageRange.ALL_PAGES) || i in it.start..it.end }) continue
                     val bitmap = ImageProcessor.loadBitmapFromFile(imagePaths[i], maxDim = 2000)
                     val page = pdfDoc.startPage(i)
                     try {
@@ -118,6 +118,8 @@ class ScannedImagePrintAdapter(
                 FileOutputStream(destination.fileDescriptor).use { out -> pdfDoc.writeTo(out) }
                 val ranges = toRanges(written)
                 mainHandler.post { callback.onWriteFinished(ranges) }
+            } catch (ce: kotlinx.coroutines.CancellationException) {
+                throw ce
             } catch (e: Throwable) {
                 e.printStackTrace()
                 mainHandler.post { callback.onWriteFailed(e.localizedMessage ?: "Print writing failed") }

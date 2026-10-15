@@ -1,13 +1,11 @@
 package com.example.ui.screens.home.components
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -66,17 +64,25 @@ fun RenameDocumentsDialog(
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
+    val context = LocalContext.current
+    val isArabic = context.resources.configuration.locales[0].language == "ar"
     var baseName by remember { mutableStateOf("") }
     if (show) {
         AlertDialog(
             onDismissRequest = onDismiss,
             shape = RoundedCornerShape(22.dp),
-            title = { Text("Rename Documents", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold) },
+            title = {
+                Text(
+                    if (isArabic) "إعادة تسمية المستندات" else "Rename Documents",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold
+                )
+            },
             text = {
                 OutlinedTextField(
                     value = baseName,
                     onValueChange = { baseName = it },
-                    label = { Text("Base Name") },
+                    label = { Text(if (isArabic) "الاسم الأساسي" else "Base Name") },
                     singleLine = true,
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth()

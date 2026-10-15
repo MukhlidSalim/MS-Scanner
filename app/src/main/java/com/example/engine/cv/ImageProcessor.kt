@@ -562,7 +562,10 @@ object ImageProcessor {
 
         val cm = ColorMatrix()
         val scale = contrast.coerceIn(0.5f, 2.5f)
-        val translate = (-0.5f * scale + 0.5f) * 255f + (brightness * 255f / 100f)
+        // Normalise caller range: EditSessionScreen / DocumentCropEditorScreen pass -1f..1f,
+        // while AnnotationScreen / smartEnhance pass -100f..100f (or -50f..50f).
+        val effectiveBrightness = if (kotlin.math.abs(brightness) <= 1.5f) brightness * 55f else brightness.coerceIn(-100f, 100f)
+        val translate = (-0.5f * scale + 0.5f) * 255f + (effectiveBrightness * 255f / 100f)
         val array = floatArrayOf(
             scale, 0f, 0f, 0f, translate,
             0f, scale, 0f, 0f, translate,

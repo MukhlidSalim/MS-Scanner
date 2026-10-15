@@ -451,6 +451,7 @@ fun EditSessionScreen(
                     onDelete = if (pages.size > 1 || !isExisting) ({ pendingDeleteIndex = safeIndex }) else null,
                     onMarkup = if (isExisting && pages[safeIndex].entityId > 0L) ({ onNavigateToAnnotate(docId, pages[safeIndex].entityId) }) else null,
                     onPrevious = { if (safeIndex > 0) currentIndex = safeIndex - 1 },
+                    onNext = { if (safeIndex < pages.lastIndex) currentIndex = safeIndex + 1 },
                     onRetryDetection = if (isExisting) null else ({ onRetryDetection(safeIndex) }),
                     onSplit = if (isExisting || onSplitPendingPage == null) null else ({ splitIndex = safeIndex }),
                     onAcceptAsIs = if (isExisting) null else ({ onAcceptPageAsIs(safeIndex) }),
@@ -527,6 +528,7 @@ private fun ReviewStageContent(
     onDelete: (() -> Unit)?,
     onMarkup: (() -> Unit)?,
     onPrevious: () -> Unit,
+    onNext: () -> Unit = {},
     onRetryDetection: (() -> Unit)? = null,
     onAcceptAsIs: (() -> Unit)? = null,
     onSplit: (() -> Unit)? = null,
@@ -583,11 +585,13 @@ private fun ReviewStageContent(
                 modifier = Modifier.fillMaxSize().padding(8.dp)
             )
             if (count > 1) {
-                Row(Modifier.align(Alignment.CenterStart).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Row(Modifier.align(Alignment.Center).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     IconButton(onClick = onPrevious, enabled = index > 0) {
                         Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, contentDescription = t("Previous", "السابق"))
                     }
-                    Spacer(Modifier.width(1.dp))
+                    IconButton(onClick = onNext, enabled = index < count - 1) {
+                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = t("Next", "التالي"))
+                    }
                 }
             }
         }

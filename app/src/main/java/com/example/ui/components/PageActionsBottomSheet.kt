@@ -111,7 +111,7 @@ fun PageActionsBottomSheet(
                 PageActionItem(Icons.Default.Share, t("Share image", "مشاركة الصورة"), Modifier.weight(1f)) { onDismiss(); onShareClick() }
                 PageActionItem(Icons.Default.Image, t("PNG image", "صورة PNG"), Modifier.weight(1f)) { onDismiss(); onExportPngClick() }
                 PageActionItem(Icons.Default.TextSnippet, t("Text (.txt)", "نص (.txt)"), Modifier.weight(1f)) { onDismiss(); onExportTxtClick() }
-                PageActionItem(Icons.Default.Description, t("Word (.doc)", "وورد (.doc)"), Modifier.weight(1f)) { onDismiss(); onExportDocxClick() }
+                PageActionItem(Icons.Default.Description, t("Word (.docx)", "وورد (.docx)"), Modifier.weight(1f)) { onDismiss(); onExportDocxClick() }
             }
             OutlinedButton(
                 onClick = { onDismiss(); onDeleteClick() },

@@ -614,7 +614,7 @@ fun DocumentViewerScreen(
                                 modifier = Modifier.weight(1f)
                             )
                             TextButton(
-                                onClick = { viewModel.applyFilterToActivePage(FilterType.AUTO) },
+                                onClick = { viewModel.smartEnhanceActivePage() },
                                 contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)
                             ) {
                                 Text(t("Auto Fix", "إصلاح تلقائي"), color = Emerald400, fontSize = 12.sp, fontWeight = FontWeight.Bold)

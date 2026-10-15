@@ -152,22 +152,41 @@ fun DocumentGridItem(
                                 .size(14.dp)
                         )
                     }
-                    Box(
+                    Surface(
                         modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .fillMaxWidth()
-                            .background(
-                                brush = Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.6f))),
-                                shape = RoundedCornerShape(bottomStart = 8.dp, bottomEnd = 8.dp)
-                            )
-                            .padding(vertical = 3.dp),
-                        contentAlignment = Alignment.Center
+                            .align(Alignment.TopEnd)
+                            .padding(8.dp),
+                        shape = RoundedCornerShape(50),
+                        color = Color.Black.copy(alpha = 0.62f)
                     ) {
                         Text(
-                            text = if (isArabic) "${doc.pageCount} صفحة" else "${doc.pageCount} p",
+                            text = if (isArabic) "${doc.pageCount} ص" else "${doc.pageCount} Pages",
                             color = Color.White,
-                            style = MaterialTheme.typography.labelSmall
+                            style = MaterialTheme.typography.labelSmall,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
                         )
+                    }
+                    if (doc.category.isNotBlank() && doc.category != "OTHER" && doc.category != "ALL") {
+                        val catObj = runCatching { com.example.data.model.DocumentCategory.valueOf(doc.category) }.getOrNull()
+                        val catLabel = if (catObj != null) (if (isArabic) catObj.displayNameAr else catObj.displayNameEn) else doc.category
+                        Surface(
+                            modifier = Modifier
+                                .align(Alignment.BottomStart)
+                                .padding(8.dp),
+                            shape = RoundedCornerShape(50),
+                            color = Color(0xCC122820),
+                            border = BorderStroke(0.8.dp, Emerald400.copy(alpha = 0.55f))
+                        ) {
+                            Text(
+                                text = "AI: $catLabel",
+                                color = EmeraldLight,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
+                            )
+                        }
                     }
                 }
 
@@ -191,11 +210,15 @@ fun DocumentGridItem(
                                 style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             )
                         } else {
+                            val dateText = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(doc.updatedAt))
+                            val metaText = if (doc.fileSizeFormatted.isNotBlank()) "$dateText • ${doc.fileSizeFormatted}" else dateText
                             Text(
-                                text = SimpleDateFormat("dd MMM yyyy", Locale.getDefault()).format(Date(doc.updatedAt)),
+                                text = metaText,
                                 style = MaterialTheme.typography.bodySmall,
                                 fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
                     }

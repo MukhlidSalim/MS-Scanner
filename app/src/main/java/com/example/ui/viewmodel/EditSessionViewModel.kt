@@ -89,7 +89,8 @@ class EditSessionViewModel(
     private fun filterOf(page: PageEntity): FilterType? =
         runCatching { FilterType.valueOf(page.filterType) }.getOrNull()?.takeIf { it != FilterType.ORIGINAL }
     private fun rawOf(page: PageEntity): String = page.rawImagePath.ifBlank { page.processedImagePath }
-    private suspend fun refreshThumbnail(docId: Long, firstPagePath: String?) {
+    private suspend fun refreshThumbnail(docId: Long, firstPagePath: String? = null) {
+        val firstPagePath = firstPagePath ?: repository.getPagesList(docId).firstOrNull()?.processedImagePath
         val doc = repository.getDocumentById(docId) ?: return
         doc.thumbnailPath?.let { runCatching { File(it).delete() } }
         val thumb = firstPagePath?.let { ImageProcessor.createThumbnail(context, it) }
@@ -441,13 +442,17 @@ class EditSessionViewModel(
                         if (enhanced !== bmp) enhanced.recycle()
                         bmp.recycle()
                     }
-                    repository.updatePage(page.copy(processedImagePath = newPath))
+                    val updatedPage = page.copy(processedImagePath = newPath)
+                    repository.updatePage(updatedPage)
+                    if (page.pageIndex == 0) refreshThumbnail(page.documentId, newPath)
                     OcrLayoutStore.copy(page.processedImagePath, newPath)
                     if (page.processedImagePath != page.rawImagePath) {
                         runCatching { File(page.processedImagePath).delete() }
                         OcrLayoutStore.delete(page.processedImagePath)
                     }
                     qualityCache.remove(page.id)
+                    evaluateQuality(updatedPage)
+                    DocumentAnalysisWorker.enqueue(context, page.documentId, generatedTitle = false)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -847,17 +852,30 @@ class EditSessionViewModel(
             if (replaceSelected) {
                 val firstId = selectedPageIds.first()
                 repository.getPageById(firstId)?.let { page ->
+                    val oldRaw = page.rawImagePath
+                    val oldProc = page.processedImagePath
                     repository.updatePage(
                         page.copy(
                             rawImagePath = mergedImagePath, processedImagePath = mergedImagePath,
-                            cropQuadJson = "", rotationDegrees = 0, filterType = FilterType.ORIGINAL.name
+                            cropQuadJson = "", rotationDegrees = 0, filterType = FilterType.ORIGINAL.name,
+                            ocrText = ""
                         )
                     )
+                    if (oldRaw.isNotBlank() && oldRaw != mergedImagePath) {
+                        runCatching { QuadStore.delete(oldRaw) }
+                        runCatching { File(oldRaw).delete() }
+                    }
+                    if (oldProc.isNotBlank() && oldProc != mergedImagePath) {
+                        OcrLayoutStore.delete(oldProc)
+                        runCatching { File(oldProc).delete() }
+                    }
                 }
                 for (i in 1 until selectedPageIds.size) repository.deletePage(selectedPageIds[i], docId)
             } else {
                 repository.addPageToDocument(docId, mergedImagePath, mergedImagePath)
             }
+            refreshThumbnail(docId, outFile.absolutePath)
+            DocumentAnalysisWorker.enqueue(context, docId, generatedTitle = false)
             onComplete()
         }
     }
@@ -866,6 +884,22 @@ class EditSessionViewModel(
     }
     fun setOcrLanguage(language: com.example.engine.ocr.OcrLanguage) {
         _uiState.update { it.copy(ocrLanguage = language) }
+    }
+    fun saveEditedOcrText(pageId: Long, newText: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val page = repository.getPageById(pageId) ?: return@launch
+            repository.updatePage(page.copy(ocrText = newText))
+            _uiState.update { state ->
+                state.copy(ocrResult = state.ocrResult?.copy(fullText = newText))
+            }
+            val doc = repository.getDocumentById(page.documentId)
+            if (doc != null) {
+                val allText = repository.getPagesList(doc.id).map { it.ocrText }
+                    .filter { it.isNotBlank() && !it.startsWith("OCR Failed") }
+                    .joinToString("\n")
+                repository.updateDocument(doc.copy(ocrText = allText))
+            }
+        }
     }
     fun setPdfPageSize(size: PageSizePreset) {
         _uiState.update { it.copy(defaultPdfPageSize = size) }

@@ -3,10 +3,15 @@ package com.example.data.repository
 import android.content.Context
 import android.net.Uri
 import com.example.data.model.PageEntity
+import com.example.engine.annotation.SignatureStore
 import com.example.engine.cv.DocumentQuad
 import com.example.engine.cv.QuadStore
+import com.example.engine.ocr.DocumentAnalysisWorker
+import com.example.engine.ocr.OcrLayoutStore
+import com.example.engine.ocr.OcrLine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -23,14 +28,12 @@ import java.util.zip.ZipOutputStream
  * In-app backup / restore (ZIP).
  *
  * Format v2 (v1 still restorable):
- *   backup_manifest.json
+ *   backup_manifest.json (includes custom folders list)
+ *   signatures/sig_<id>.png + signatures/signatures.json
  *   documents/doc_<id>/metadata.json
  *   documents/doc_<id>/pages/p<index>_raw.jpg | p<index>_proc.jpg
- * Pages keep their crop quad, rotation and filter, so a restored page can still be re-edited.
- *
- * Security (restore): every entry is validated against Zip Slip (canonical path must stay inside the
- * temp folder), total size / entry count are capped (zip bomb) and only file names are used from
- * metadata (never paths). Each document is restored through the single save transaction.
+ * Pages keep their crop quad, rotation, filter, OCR text, OCR entities, and OCR layout lines,
+ * and documents preserve their original creation/modification timestamps, tags, and suggested titles.
  */
 class BackupManager(
     private val context: Context,
@@ -40,20 +43,46 @@ class BackupManager(
     suspend fun createBackup(outputUri: Uri): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val docs = repository.getAllDocumentsSync().filter { !it.isTrash }
+            val folders = runCatching { repository.observeFolders().first() }.getOrDefault(emptyList())
+                .filter { !repository.isReservedFolder(it) }
+            val signatures = runCatching { repository.getAllSignatures().first() }.getOrDefault(emptyList())
+
             var docCount = 0
             val out = context.contentResolver.openOutputStream(outputUri)
                 ?: return@withContext Result.failure(IOException("Cannot open backup destination"))
             out.use { outStream ->
                 ZipOutputStream(outStream).use { zos ->
+                    val foldersArray = JSONArray().apply { folders.forEach { put(it) } }
                     val manifest = JSONObject().apply {
                         put("version", FORMAT_VERSION)
                         put("app_version", com.example.BuildConfig.VERSION_NAME)
                         put("timestamp", System.currentTimeMillis())
                         put("doc_count", docs.size)
+                        put("folders", foldersArray)
                     }
                     zos.putNextEntry(ZipEntry(MANIFEST))
                     zos.write(manifest.toString(2).toByteArray())
                     zos.closeEntry()
+
+                    // Backup saved signatures
+                    if (signatures.isNotEmpty()) {
+                        val sigArray = JSONArray()
+                        signatures.forEachIndexed { idx, sig ->
+                            val sigFile = File(sig.imagePath)
+                            if (sigFile.isFile) {
+                                val entryName = "sig_${idx}.png"
+                                copyFileToZip(sig.imagePath, "signatures/$entryName", zos)
+                                sigArray.put(JSONObject().apply {
+                                    put("title", sig.title)
+                                    put("entry", entryName)
+                                    put("createdAt", sig.createdAt)
+                                })
+                            }
+                        }
+                        zos.putNextEntry(ZipEntry("signatures/signatures.json"))
+                        zos.write(sigArray.toString(2).toByteArray())
+                        zos.closeEntry()
+                    }
 
                     for (doc in docs) {
                         val pages = repository.getPagesForDocumentSync(doc.id).sortedBy { it.pageIndex }
@@ -61,12 +90,23 @@ class BackupManager(
                         val pagesArray = JSONArray()
                         pages.forEachIndexed { i, page ->
                             val rawEntry = "p${i}_raw.jpg"
-                            // Blank / merged pages use the same file for raw and processed: stored once
-                            // (the previous format wrote the same entry twice -> "duplicate entry" failure).
                             val sameFile = page.processedImagePath == page.rawImagePath
                             val procEntry = if (sameFile) rawEntry else "p${i}_proc.jpg"
                             copyFileToZip(page.rawImagePath, "${docDir}pages/$rawEntry", zos)
                             if (!sameFile) copyFileToZip(page.processedImagePath, "${docDir}pages/$procEntry", zos)
+
+                            val layoutLines = OcrLayoutStore.load(page.processedImagePath)
+                            val layoutArr = JSONArray()
+                            layoutLines?.forEach { l ->
+                                layoutArr.put(JSONObject().apply {
+                                    put("t", l.text)
+                                    put("l", l.left.toDouble())
+                                    put("tp", l.top.toDouble())
+                                    put("r", l.right.toDouble())
+                                    put("b", l.bottom.toDouble())
+                                })
+                            }
+
                             pagesArray.put(JSONObject().apply {
                                 put("pageIndex", i)
                                 put("rawEntry", rawEntry)
@@ -75,6 +115,10 @@ class BackupManager(
                                 put("filterType", page.filterType)
                                 put("cropQuadJson", page.cropQuadJson.ifBlank { QuadStore.load(page.rawImagePath)?.toJson() ?: "" })
                                 put("ocrText", page.ocrText)
+                                put("ocrEntitiesJson", page.ocrEntitiesJson)
+                                put("qualityStatus", page.qualityStatus)
+                                put("createdAt", page.createdAt)
+                                if (layoutArr.length() > 0) put("ocrLayout", layoutArr)
                             })
                         }
                         val meta = JSONObject().apply {
@@ -84,6 +128,8 @@ class BackupManager(
                             put("isFavorite", doc.isFavorite)
                             put("createdAt", doc.createdAt)
                             put("updatedAt", doc.updatedAt)
+                            put("suggestedTitle", doc.suggestedTitle)
+                            put("tagsCsv", doc.tagsCsv)
                             put("ocrText", doc.ocrText)
                             put("pages", pagesArray)
                         }
@@ -120,8 +166,39 @@ class BackupManager(
 
             val manifestFile = File(tempDir, MANIFEST)
             if (!manifestFile.isFile) return@withContext Result.failure(Exception("Invalid backup: missing manifest"))
-            val version = JSONObject(manifestFile.readText()).optInt("version", 0)
+            val manifestJson = JSONObject(manifestFile.readText())
+            val version = manifestJson.optInt("version", 0)
             if (version !in 1..FORMAT_VERSION) return@withContext Result.failure(Exception("Unsupported backup version $version"))
+
+            // Restore custom folders if present
+            val foldersArr = manifestJson.optJSONArray("folders")
+            if (foldersArr != null) {
+                for (i in 0 until foldersArr.length()) {
+                    val folderName = foldersArr.optString(i).trim()
+                    if (folderName.isNotBlank() && !repository.isReservedFolder(folderName)) {
+                        runCatching { repository.createFolder(folderName) }
+                    }
+                }
+            }
+
+            // Restore saved signatures if present
+            val sigJsonFile = File(tempDir, "signatures/signatures.json")
+            if (sigJsonFile.isFile) {
+                val sigArr = runCatching { JSONArray(sigJsonFile.readText()) }.getOrNull()
+                if (sigArr != null) {
+                    val sigDir = File(context.filesDir, "signatures").apply { mkdirs() }
+                    for (i in 0 until sigArr.length()) {
+                        val sObj = sigArr.optJSONObject(i) ?: continue
+                        val entryName = File(sObj.optString("entry")).name
+                        val srcSig = File(tempDir, "signatures/$entryName")
+                        if (entryName.isNotBlank() && srcSig.isFile) {
+                            val dstSig = File(sigDir, "sig_restored_${UUID.randomUUID().toString().take(8)}.png")
+                            srcSig.copyTo(dstSig, overwrite = true)
+                            repository.saveSignature(sObj.optString("title", "Signature"), dstSig.absolutePath)
+                        }
+                    }
+                }
+            }
 
             var restoredCount = 0
             val docsDir = File(tempDir, "documents")
@@ -182,10 +259,10 @@ class BackupManager(
         val scansDir = File(context.filesDir, "scans").apply { mkdirs() }
         val createdFiles = mutableListOf<File>()
         val pages = mutableListOf<PageEntity>()
+        var anyMissingOcrLayout = false
         try {
             for (i in 0 until pagesArray.length()) {
                 val p = pagesArray.optJSONObject(i) ?: continue
-                // Only bare file names are accepted from metadata (never paths).
                 val rawName = File(if (version >= 2) p.optString("rawEntry") else p.optString("rawImagePath")).name
                 val procName = File(if (version >= 2) p.optString("procEntry") else p.optString("processedImagePath")).name
                 val rawSrc = File(pagesDir, rawName).takeIf { rawName.isNotBlank() && it.isFile }
@@ -201,6 +278,24 @@ class BackupManager(
 
                 val quadJson = p.optString("cropQuadJson", "")
                 DocumentQuad.fromJsonOrNull(quadJson)?.let { QuadStore.save(newRaw.absolutePath, it) }
+
+                val layoutArr = p.optJSONArray("ocrLayout")
+                if (layoutArr != null && layoutArr.length() > 0) {
+                    val lines = (0 until layoutArr.length()).mapNotNull { idx ->
+                        val o = layoutArr.optJSONObject(idx) ?: return@mapNotNull null
+                        OcrLine(
+                            o.optString("t"),
+                            o.optDouble("l").toFloat(),
+                            o.optDouble("tp").toFloat(),
+                            o.optDouble("r").toFloat(),
+                            o.optDouble("b").toFloat()
+                        ).takeIf { it.text.isNotBlank() }
+                    }
+                    if (lines.isNotEmpty()) OcrLayoutStore.save(newProc.absolutePath, lines)
+                } else {
+                    anyMissingOcrLayout = true
+                }
+
                 pages += PageEntity(
                     documentId = 0L,
                     pageIndex = pages.size,
@@ -209,34 +304,51 @@ class BackupManager(
                     rotationDegrees = p.optInt("rotationDegrees", 0),
                     filterType = p.optString("filterType", "").ifBlank { "ORIGINAL" },
                     cropQuadJson = quadJson,
-                    ocrText = p.optString("ocrText", "")
+                    ocrText = p.optString("ocrText", ""),
+                    ocrEntitiesJson = p.optString("ocrEntitiesJson", ""),
+                    qualityStatus = p.optString("qualityStatus", "GOOD").ifBlank { "GOOD" },
+                    createdAt = p.optLong("createdAt", System.currentTimeMillis())
                 )
             }
             if (pages.isEmpty()) return false
+            val folderName = meta.optString("folderName", "Default").ifBlank { "Default" }
+            if (!repository.isReservedFolder(folderName)) {
+                runCatching { repository.createFolder(folderName) }
+            }
+            val rawTitle = meta.optString("title", "Document").removeSuffix(" (Restored)").removeSuffix(" (مستعاد)").ifBlank { "Document" }
             val docId = repository.saveDocument(
                 DocumentSaveRequest(
                     existingDocId = null,
-                    title = meta.optString("title", "Document") + " (Restored)",
-                    folderName = meta.optString("folderName", "Default").ifBlank { "Default" },
+                    title = rawTitle,
+                    folderName = folderName,
                     category = meta.optString("category", "OTHER").ifBlank { "OTHER" },
                     pages = pages
                 )
             )
+            val now = System.currentTimeMillis()
+            val origCreatedAt = meta.optLong("createdAt", now).takeIf { it > 0L } ?: now
+            val origUpdatedAt = meta.optLong("updatedAt", origCreatedAt).takeIf { it > 0L } ?: origCreatedAt
             repository.getDocumentById(docId)?.let { doc ->
                 repository.updateDocument(
                     doc.copy(
                         isFavorite = meta.optBoolean("isFavorite", false),
+                        createdAt = origCreatedAt,
+                        updatedAt = origUpdatedAt,
+                        suggestedTitle = meta.optString("suggestedTitle", doc.suggestedTitle),
+                        tagsCsv = meta.optString("tagsCsv", doc.tagsCsv),
                         ocrText = meta.optString("ocrText", doc.ocrText)
                     )
                 )
             }
+            if (anyMissingOcrLayout) {
+                runCatching { DocumentAnalysisWorker.enqueue(context, docId, generatedTitle = false) }
+            }
             return true
         } catch (e: CancellationException) {
-            createdFiles.forEach { it.delete(); QuadStore.delete(it.absolutePath) }
+            createdFiles.forEach { it.delete(); QuadStore.delete(it.absolutePath); OcrLayoutStore.delete(it.absolutePath) }
             throw e
         } catch (e: Exception) {
-            // Nothing was committed for this document: remove the copied files.
-            createdFiles.forEach { it.delete(); QuadStore.delete(it.absolutePath) }
+            createdFiles.forEach { it.delete(); QuadStore.delete(it.absolutePath); OcrLayoutStore.delete(it.absolutePath) }
             e.printStackTrace()
             return false
         }

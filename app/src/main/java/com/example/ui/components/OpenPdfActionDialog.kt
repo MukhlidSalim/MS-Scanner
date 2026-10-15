@@ -137,7 +137,7 @@ fun OpenPdfActionDialog(
                             )
                             Spacer(modifier = Modifier.width(10.dp))
                             Text(
-                                text = pdfFile.nameWithoutExtension.ifBlank { "Document" },
+                                text = pdfFile.nameWithoutExtension.replace(Regex("^\\d{10,}_"), "").ifBlank { "Document" },
                                 style = MaterialTheme.typography.labelLarge,
                                 fontWeight = FontWeight.SemiBold,
                                 color = TextPrimary,
@@ -170,7 +170,7 @@ fun OpenPdfActionDialog(
                         iconBg = GoldBase.copy(alpha = 0.15f),
                         title = stringResource(R.string.pdf_open_view_title),
                         description = stringResource(R.string.pdf_open_view_desc),
-                        badgeText = if (java.util.Locale.getDefault().language == "ar") "سريع" else "Fast",
+                        badgeText = if (androidx.compose.ui.platform.LocalContext.current.resources.configuration.locales[0].language == "ar") "سريع" else "Fast",
                         badgeColor = SemanticSuccess,
                         enabled = !isConverting,
                         onClick = onBrowseOnly
@@ -185,7 +185,7 @@ fun OpenPdfActionDialog(
                         iconBg = Emerald400.copy(alpha = 0.15f),
                         title = stringResource(R.string.pdf_open_edit_title),
                         description = stringResource(R.string.pdf_open_edit_desc),
-                        badgeText = if (java.util.Locale.getDefault().language == "ar") "أدوات متكاملة" else "Full Tools",
+                        badgeText = if (androidx.compose.ui.platform.LocalContext.current.resources.configuration.locales[0].language == "ar") "أدوات متكاملة" else "Full Tools",
                         badgeColor = Emerald400,
                         enabled = !isConverting,
                         onClick = onEditInStudio
@@ -229,7 +229,7 @@ fun OpenPdfActionDialog(
                             )
                             Spacer(modifier = Modifier.height(16.dp))
                             val progressText = if (conversionProgress != null && conversionProgress.second > 0) {
-                                if (java.util.Locale.getDefault().language == "ar") {
+                                if (androidx.compose.ui.platform.LocalContext.current.resources.configuration.locales[0].language == "ar") {
                                     "جاري تجهيز الصفحة ${conversionProgress.first} من ${conversionProgress.second}…"
                                 } else {
                                     "Preparing page ${conversionProgress.first} of ${conversionProgress.second}…"

@@ -65,6 +65,7 @@ fun SettingsScreen(
     fun t(en: String, ar: String) = if (isArabic) ar else en
     LaunchedEffect(Unit) { viewModel.refreshStorageStats() }
     var showPinDialog by remember { mutableStateOf(false) }
+    var showPrivacyDialog by remember { mutableStateOf(false) }
     var pinInput by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
@@ -475,16 +476,67 @@ fun SettingsScreen(
                     Text(stringResource(R.string.txt_clear_cache))
                 }
             }
+            // ======================================================================= Diagnostics
+            SectionHeader(t("Diagnostics & Error Logs", "التشخيص وسجلات الأخطاء"))
+            SectionCard {
+                var reportCount by remember { mutableIntStateOf(CrashReporter.listReports(context).size) }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            t("Recorded diagnostic logs", "سجلات التشخيص والأخطاء المسجلة"),
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp
+                        )
+                        Text(
+                            if (reportCount == 0) t("No crashes or scanner errors recorded", "لا توجد أخطاء أو أعطال مسجلة")
+                            else t("$reportCount report(s) available for inspection", "يوجد $reportCount تقرير متاح للفحص أو المشاركة"),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (reportCount > 0) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            onClick = {
+                                val file = CrashReporter.exportForSharing(context)
+                                if (file != null) {
+                                    PdfEngine.shareFiles(context, listOf(file), "text/plain")
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(t("Share Logs", "مشاركة السجل"))
+                        }
+                        OutlinedButton(
+                            onClick = {
+                                CrashReporter.clear(context)
+                                reportCount = 0
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(Modifier.width(6.dp))
+                            Text(t("Clear", "مسح السجل"))
+                        }
+                    }
+                }
+            }
             // ======================================================================= Legal & About
             SectionHeader(stringResource(R.string.txt_legal))
             SectionCard {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .clickable {
-                            val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://example.com/privacy"))
-                            runCatching { context.startActivity(intent) }
-                        },
+                        .clickable { showPrivacyDialog = true },
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -500,6 +552,43 @@ fun SettingsScreen(
             }
             Spacer(Modifier.height(8.dp))
         }
+    }
+    if (showPrivacyDialog) {
+        AlertDialog(
+            onDismissRequest = { showPrivacyDialog = false },
+            shape = RoundedCornerShape(22.dp),
+            title = { Text(t("Privacy & Data Security", "سياسة الخصوصية وأمان البيانات"), fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        t(
+                            "• 100% On-Device Processing: All camera captures, OpenCV image enhancements, OCR text extraction, and PDF/Word exports run locally on your device.",
+                            "• معالجة محلية 100% داخل جهازك: تتم جميع عمليات التصوير، وتحسين الصور عبر OpenCV، واستخراج النصوص (OCR)، وتوليد ملفات PDF/Word محلياً بالكامل داخل جهازك."
+                        ),
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        t(
+                            "• Zero Cloud Uploads: Your documents, ID cards, passports, and electronic signatures are never uploaded to external servers.",
+                            "• عدم رفع أي بيانات للسحابة: لا يتم إرسال أو رفع مستنداتك أو بطاقات الهوية أو جوازات السفر أو توقيعاتك الإلكترونية إلى أي خوادم خارجية."
+                        ),
+                        fontSize = 13.sp
+                    )
+                    Text(
+                        t(
+                            "• Local Security & Backups: PIN hashes (SHA-256), biometric locks, and ZIP backups stay strictly under your control.",
+                            "• حماية محلية ونسخ احتياطي آمن: يتم حفظ رمز القفل (مشفر بـ SHA-256) وقفل البصمة والنسخ الاحتياطية تحت تحكمك الكامل فقط."
+                        ),
+                        fontSize = 13.sp
+                    )
+                }
+            },
+            confirmButton = {
+                Button(onClick = { showPrivacyDialog = false }, shape = RoundedCornerShape(12.dp)) {
+                    Text(t("Got it", "حسناً"), fontWeight = FontWeight.Bold)
+                }
+            }
+        )
     }
     if (showPinDialog) {
         AlertDialog(

@@ -25,8 +25,11 @@ fun PinLockScreen(
     title: String = "Enter PIN",
     subtitle: String = "Protect your confidential documents",
     onPinEntered: (String) -> Boolean,
-    onSuccess: () -> Unit
+    onSuccess: () -> Unit,
+    onUseBiometric: (() -> Unit)? = null
 ) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isArabic = context.resources.configuration.locales[0].language == "ar" 
     var enteredDigits by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
 
@@ -90,7 +93,7 @@ fun PinLockScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = if (isError) "Incorrect PIN, please try again" else subtitle,
+                text = if (isError) (if (isArabic) "رمز PIN غير صحيح، حاول مرة أخرى" else "Incorrect PIN, please try again") else subtitle,
                 style = MaterialTheme.typography.bodyMedium,
                 color = if (isError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -184,6 +187,15 @@ fun PinLockScreen(
                             }
                         }
                     }
+                }
+            }
+            if (onUseBiometric != null) {
+                Spacer(modifier = Modifier.height(16.dp))
+                TextButton(onClick = onUseBiometric) {
+                    Text(
+                        text = if (isArabic) "استخدام البصمة / قفل الجهاز" else "Use Biometrics / Device Lock",
+                        fontWeight = FontWeight.SemiBold
+                    )
                 }
             }
         }

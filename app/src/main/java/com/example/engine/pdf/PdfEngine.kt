@@ -682,12 +682,14 @@ object PdfEngine {
         try {
             var displayName = "document_${System.currentTimeMillis()}.pdf"
             if (uri.scheme == "content") {
-                context.contentResolver.query(uri, null, null, null, null)?.use {
-                    if (it.moveToFirst()) {
-                        val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                        if (nameIndex != -1) {
-                            val name = it.getString(nameIndex)
-                            if (!name.isNullOrBlank()) displayName = name
+                runCatching {
+                    context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                        if (it.moveToFirst()) {
+                            val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (nameIndex != -1) {
+                                val name = it.getString(nameIndex)
+                                if (!name.isNullOrBlank()) displayName = name
+                            }
                         }
                     }
                 }
@@ -699,10 +701,33 @@ object PdfEngine {
             val safeName = safeFileName(displayName, "document.pdf")
             val targetDir = File(context.cacheDir, "incoming_pdfs").apply { if (!exists()) mkdirs() }
             val targetFile = File(targetDir, "${System.currentTimeMillis()}_$safeName")
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(targetFile).use { output -> input.copyTo(output) }
+            var copied = false
+            runCatching {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    FileOutputStream(targetFile).use { output -> input.copyTo(output) }
+                    copied = targetFile.exists() && targetFile.length() > 0L
+                }
             }
-            if (targetFile.exists() && targetFile.length() > 0L) targetFile else null
+            if (!copied) {
+                runCatching {
+                    context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                        java.io.FileInputStream(pfd.fileDescriptor).use { input ->
+                            FileOutputStream(targetFile).use { output -> input.copyTo(output) }
+                        }
+                        copied = targetFile.exists() && targetFile.length() > 0L
+                    }
+                }
+            }
+            if (!copied && uri.scheme == "file") {
+                val src = uri.path?.let { File(it) }
+                if (src != null && src.exists() && src.length() > 0L) {
+                    src.copyTo(targetFile, overwrite = true)
+                    copied = targetFile.exists() && targetFile.length() > 0L
+                }
+            }
+            if (copied) targetFile else null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: Exception) {
             e.printStackTrace()
             null

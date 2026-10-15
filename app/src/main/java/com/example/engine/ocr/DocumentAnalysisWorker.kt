@@ -149,7 +149,7 @@ class DocumentAnalysisWorker(
                     Pair(running.progress.getInt(KEY_DONE, 0), total)
                 }
 
-        fun enqueue(context: Context, docId: Long, generatedTitle: Boolean) {
+        fun enqueue(context: Context, docId: Long, generatedTitle: Boolean = false) {
             if (docId <= 0L) return
             val request = OneTimeWorkRequestBuilder<DocumentAnalysisWorker>()
                 .setInputData(workDataOf(KEY_DOC_ID to docId, KEY_GENERATED_TITLE to generatedTitle))

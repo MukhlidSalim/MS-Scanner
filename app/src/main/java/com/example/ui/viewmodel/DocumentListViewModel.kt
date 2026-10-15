@@ -496,9 +496,9 @@ class DocumentListViewModel(
             val clean = name.trim()
             if (repository.createFolder(clean)) {
                 filterByFolder(clean)
-                _events.send(UiEvent.ShowToast("Folder created: $clean"))
+                _events.send(UiEvent.ShowToast(if (isArabic) "تم إنشاء المجلد: $clean" else "Folder created: $clean"))
             } else {
-                _events.send(UiEvent.Error("Invalid or existing folder name"))
+                _events.send(UiEvent.Error(if (isArabic) "اسم المجلد غير صالح أو موجود مسبقاً" else "Invalid or existing folder name"))
             }
         }
     }
@@ -513,7 +513,7 @@ class DocumentListViewModel(
                 repository.createFolder(target)
             }
             repository.moveDocumentsToFolder(docIds, target.ifBlank { "Default" })
-            _events.send(UiEvent.ShowToast("Moved ${docIds.size} document(s)"))
+            _events.send(UiEvent.ShowToast(if (isArabic) "تم نقل ${docIds.size} مستند" else "Moved ${docIds.size} document(s)"))
         }
     }
 
@@ -579,7 +579,7 @@ class DocumentListViewModel(
             } catch (e: Exception) {
                 e.printStackTrace()
                 created.forEach { it.delete() }
-                _events.send(UiEvent.Error("Merge failed: ${e.localizedMessage ?: "storage error"}"))
+                _events.send(UiEvent.Error(if (isArabic) "فشل الدمج: ${e.localizedMessage ?: "خطأ في التخزين"}" else "Merge failed: ${e.localizedMessage ?: "storage error"}"))
             }
         }
     }
@@ -615,7 +615,7 @@ class DocumentListViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             val result = backupManager.createBackup(uri)
-            val msg = if (result.isSuccess) "Backup created: ${result.getOrNull()} documents" else "Backup failed: ${result.exceptionOrNull()?.message}"
+            val msg = if (result.isSuccess) (if (isArabic) "تم إنشاء النسخة الاحتياطية: ${result.getOrNull()} مستند" else "Backup created: ${result.getOrNull()} documents") else (if (isArabic) "فشل النسخ الاحتياطي: ${result.exceptionOrNull()?.message}" else "Backup failed: ${result.exceptionOrNull()?.message}")
             _uiState.update { it.copy(isLoading = false) }
             _events.send(UiEvent.ShowSnackbar(msg))
         }
@@ -625,7 +625,7 @@ class DocumentListViewModel(
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             val result = backupManager.restoreBackup(uri)
-            val msg = if (result.isSuccess) "Restored ${result.getOrNull()} documents" else "Restore failed: ${result.exceptionOrNull()?.message}"
+            val msg = if (result.isSuccess) (if (isArabic) "تمت استعادة ${result.getOrNull()} مستند بنجاح" else "Restored ${result.getOrNull()} documents") else (if (isArabic) "فشلت الاستعادة: ${result.exceptionOrNull()?.message}" else "Restore failed: ${result.exceptionOrNull()?.message}")
             _uiState.update { it.copy(isLoading = false) }
             _events.send(UiEvent.ShowSnackbar(msg))
             // Room Flows update the lists automatically (re-subscribing here leaked a collector per restore).
@@ -641,7 +641,7 @@ class DocumentListViewModel(
     fun setLockType(type: com.example.data.model.LockType) {
         // A PIN lock without a PIN could never be unlocked: require the PIN dialog first.
         if (type == LockType.PIN && !prefs.hasPin) {
-            _events.trySend(UiEvent.Error("Set a PIN first"))
+            _events.trySend(UiEvent.Error(if (isArabic) "يرجى تعيين رمز PIN أولاً" else "Set a PIN first"))
             return
         }
         prefs.lockType = type
@@ -661,8 +661,8 @@ class DocumentListViewModel(
             val ok = TessDataManager.ensureArabic(context)
             _uiState.update { it.copy(isDownloadingArabicModel = false, arabicModelReady = ok) }
             _events.send(
-                if (ok) UiEvent.ShowToast("Arabic text recognition is ready")
-                else UiEvent.Error("Could not download the Arabic model. Check the internet connection and retry.")
+                if (ok) UiEvent.ShowToast(if (isArabic) "التعرف الضوئي على العربية جاهز الآن" else "Arabic text recognition is ready")
+                else UiEvent.Error(if (isArabic) "تعذر تنزيل نموذج اللغة العربية. تحقق من الاتصال بالإنترنت وحاول مجدداً." else "Could not download the Arabic model. Check the internet connection and retry.")
             )
         }
     }

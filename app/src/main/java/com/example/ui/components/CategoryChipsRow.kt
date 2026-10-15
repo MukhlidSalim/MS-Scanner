@@ -8,11 +8,11 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.ui.theme.*
 import com.example.data.model.DocumentCategory
-import java.util.Locale
 
 @Composable
 fun CategoryChipsRow(
@@ -20,6 +20,8 @@ fun CategoryChipsRow(
     onCategorySelected: (DocumentCategory) -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val isArabic = context.resources.configuration.locales[0].language == "ar"
     Row(
         modifier = modifier
             .fillMaxWidth()
@@ -29,7 +31,6 @@ fun CategoryChipsRow(
     ) {
         DocumentCategory.values().forEach { cat ->
             val isSelected = cat == selectedCategory
-            val isArabic = Locale.getDefault().language == "ar"
             val displayName = if (isArabic) cat.displayNameAr else cat.displayNameEn
             FilterChip(
                 selected = isSelected,

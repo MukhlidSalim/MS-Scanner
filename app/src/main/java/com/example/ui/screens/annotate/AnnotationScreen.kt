@@ -123,11 +123,18 @@ fun AnnotationScreen(
     // is a data class used here with named arguments (signatureBitmap, x, y, scale).
     // ---------------------------------------------------------------------------------------------
     var selectedSignatureIndex by remember { mutableStateOf<Int?>(null) }
+    var selectedTextIndex by remember { mutableStateOf<Int?>(null) }
     /** Approximate on-screen half-size of a placed signature, for hit-testing and the move gesture. */
     fun placedSignatureHalfSize(sig: PlacedSignature, renderW: Float): Pair<Float, Float> {
         val w = renderW * sig.scale
         val h = w * (sig.signatureBitmap.height.toFloat() / sig.signatureBitmap.width.toFloat().coerceAtLeast(1f))
         return (w / 2f) to (h / 2f)
+    }
+    fun placedTextHalfSize(pt: PlacedText, renderW: Float): Pair<Float, Float> {
+        val fontPx = pt.textSize * (renderW / 1080f)
+        val halfW = (pt.text.length.coerceAtLeast(2) * fontPx * 0.35f).coerceAtLeast(36f)
+        val halfH = (fontPx * 0.8f).coerceAtLeast(24f)
+        return halfW to halfH
     }
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -154,7 +161,10 @@ fun AnnotationScreen(
                     placedSignatures.remove(lastAction.sig)
                     selectedSignatureIndex = null
                 }
-                is AnnotationAction.TextAction -> placedTexts.remove(lastAction.text)
+                is AnnotationAction.TextAction -> {
+                    placedTexts.remove(lastAction.text)
+                    selectedTextIndex = null
+                }
             }
         }
     }
@@ -289,18 +299,83 @@ fun AnnotationScreen(
                     }
                     return@Surface
                 }
+                val selTxtIdx = selectedTextIndex
+                if (selTxtIdx != null && selTxtIdx in placedTexts.indices) {
+                    val selectedTxt = placedTexts[selTxtIdx]
+                    val isArabicLocal = context.resources.configuration.locales[0].language == "ar"
+                    Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (isArabicLocal) "تعديل النص المضاف" else "Edit placed text",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.weight(1f)
+                            )
+                            TextButton(onClick = { selectedTextIndex = null }) {
+                                Text(if (isArabicLocal) "تم" else "Done")
+                            }
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Default.FormatSize, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Slider(
+                                value = selectedTxt.textSize,
+                                onValueChange = { newSize ->
+                                    placedTexts[selTxtIdx] = selectedTxt.copy(textSize = newSize.coerceIn(24f, 120f))
+                                },
+                                valueRange = 24f..120f,
+                                modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                            val colors = listOf(Color.Black, Color(0xFF1D4ED8), Color(0xFFDC2626), Color(0xFF16A34A), Color(0xFFEAB308))
+                            colors.forEach { c ->
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(c)
+                                        .border(2.dp, if (selectedTxt.color == c.toArgb()) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape)
+                                        .clickable {
+                                            placedTexts[selTxtIdx] = selectedTxt.copy(color = c.toArgb())
+                                        }
+                                )
+                            }
+                            Spacer(Modifier.weight(1f))
+                            IconButton(onClick = {
+                                placedTexts.removeAt(selTxtIdx)
+                                selectedTextIndex = null
+                            }) {
+                                Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error)
+                            }
+                        }
+                        Text(
+                            if (isArabicLocal) "اسحب النص على الصفحة لتحريكه إلى المكان المطلوب"
+                            else "Drag the text on the page to move it",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    return@Surface
+                }
+                val isArabicUi = context.resources.configuration.locales[0].language == "ar"
                 Column(
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     if (activeTool == AnnotateTool.BRIGHTNESS) {
                         Column {
-                            Text("Brightness", style = MaterialTheme.typography.labelSmall)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(if (isArabicUi) "السطوع" else "Brightness", style = MaterialTheme.typography.labelSmall)
+                                Text("${brightness.toInt()}", style = MaterialTheme.typography.labelSmall)
+                            }
                             Slider(value = brightness, onValueChange = { brightness = it }, valueRange = -100f..100f)
                         }
                     } else if (activeTool == AnnotateTool.CONTRAST) {
                         Column {
-                            Text("Contrast", style = MaterialTheme.typography.labelSmall)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                Text(if (isArabicUi) "التباين" else "Contrast", style = MaterialTheme.typography.labelSmall)
+                                Text(String.format(java.util.Locale.US, "%.2fx", contrast), style = MaterialTheme.typography.labelSmall)
+                            }
                             Slider(value = contrast, onValueChange = { contrast = it }, valueRange = 0.5f..2.0f)
                         }
                     }
@@ -329,28 +404,28 @@ fun AnnotationScreen(
                             selected = activeTool == AnnotateTool.ARROW,
                             onClick = { activeTool = AnnotateTool.ARROW },
                             shape = RoundedCornerShape(50),
-                            label = { Text("Arrow") },
+                            label = { Text(if (isArabicUi) "سهم" else "Arrow") },
                             leadingIcon = { Icon(Icons.Default.ArrowRightAlt, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                         FilterChip(
                             selected = activeTool == AnnotateTool.RECTANGLE,
                             onClick = { activeTool = AnnotateTool.RECTANGLE },
                             shape = RoundedCornerShape(50),
-                            label = { Text("Rectangle") },
+                            label = { Text(if (isArabicUi) "مستطيل" else "Rectangle") },
                             leadingIcon = { Icon(Icons.Default.CropSquare, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                         FilterChip(
                             selected = activeTool == AnnotateTool.CIRCLE,
                             onClick = { activeTool = AnnotateTool.CIRCLE },
                             shape = RoundedCornerShape(50),
-                            label = { Text("Circle") },
+                            label = { Text(if (isArabicUi) "دائرة" else "Circle") },
                             leadingIcon = { Icon(Icons.Default.RadioButtonUnchecked, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                         FilterChip(
                             selected = activeTool == AnnotateTool.TEXT,
-                            onClick = { showTextDialog = true },
+                            onClick = { activeTool = AnnotateTool.TEXT; showTextDialog = true },
                             shape = RoundedCornerShape(50),
-                            label = { Text("Text") },
+                            label = { Text(if (isArabicUi) "نص" else "Text") },
                             leadingIcon = { Icon(Icons.Default.TextFields, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                         FilterChip(
@@ -373,6 +448,20 @@ fun AnnotationScreen(
                             shape = RoundedCornerShape(50),
                             label = { Text(stringResource(R.string.txt_eraser)) },
                             leadingIcon = { Icon(Icons.Default.AutoFixHigh, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        )
+                        FilterChip(
+                            selected = activeTool == AnnotateTool.BRIGHTNESS,
+                            onClick = { activeTool = AnnotateTool.BRIGHTNESS },
+                            shape = RoundedCornerShape(50),
+                            label = { Text(if (isArabicUi) "السطوع" else "Brightness") },
+                            leadingIcon = { Icon(Icons.Default.Brightness6, contentDescription = null, modifier = Modifier.size(16.dp)) }
+                        )
+                        FilterChip(
+                            selected = activeTool == AnnotateTool.CONTRAST,
+                            onClick = { activeTool = AnnotateTool.CONTRAST },
+                            shape = RoundedCornerShape(50),
+                            label = { Text(if (isArabicUi) "التباين" else "Contrast") },
+                            leadingIcon = { Icon(Icons.Default.Contrast, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                     }
                     if (activeTool in listOf(AnnotateTool.PEN, AnnotateTool.ARROW, AnnotateTool.RECTANGLE, AnnotateTool.CIRCLE)) {
@@ -418,41 +507,63 @@ fun AnnotationScreen(
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        // Tap layer: selects / deselects a placed signature when the SIGNATURE tool is
-                        // active. Kept separate from the drawing drag layer so pen/shape/redact tools are
-                        // completely unaffected.
-                        .pointerInput(activeTool, placedSignatures.size, renderW, renderH, offsetX, offsetY) {
-                            if (activeTool != AnnotateTool.SIGNATURE) return@pointerInput
+                        // Tap layer: selects / deselects a placed signature or placed text.
+                        .pointerInput(activeTool, placedSignatures.size, placedTexts.size, renderW, renderH, offsetX, offsetY) {
+                            if (activeTool != AnnotateTool.SIGNATURE && activeTool != AnnotateTool.TEXT) return@pointerInput
                             detectTapGestures { tapPos ->
-                                var hit: Int? = null
-                                for (i in placedSignatures.indices.reversed()) {
-                                    val sig = placedSignatures[i]
-                                    val (halfW, halfH) = placedSignatureHalfSize(sig, renderW)
-                                    val cx = offsetX + sig.x * renderW
-                                    val cy = offsetY + sig.y * renderH
-                                    if (kotlin.math.abs(tapPos.x - cx) <= halfW && kotlin.math.abs(tapPos.y - cy) <= halfH) {
-                                        hit = i
-                                        break
+                                if (activeTool == AnnotateTool.SIGNATURE) {
+                                    var hit: Int? = null
+                                    for (i in placedSignatures.indices.reversed()) {
+                                        val sig = placedSignatures[i]
+                                        val (halfW, halfH) = placedSignatureHalfSize(sig, renderW)
+                                        val cx = offsetX + sig.x * renderW
+                                        val cy = offsetY + sig.y * renderH
+                                        if (kotlin.math.abs(tapPos.x - cx) <= halfW && kotlin.math.abs(tapPos.y - cy) <= halfH) {
+                                            hit = i
+                                            break
+                                        }
                                     }
+                                    selectedSignatureIndex = hit
+                                } else if (activeTool == AnnotateTool.TEXT) {
+                                    var hitTxt: Int? = null
+                                    for (i in placedTexts.indices.reversed()) {
+                                        val pt = placedTexts[i]
+                                        val (halfW, halfH) = placedTextHalfSize(pt, renderW)
+                                        val cx = offsetX + pt.x * renderW
+                                        val cy = offsetY + pt.y * renderH
+                                        if (kotlin.math.abs(tapPos.x - cx) <= halfW && kotlin.math.abs(tapPos.y - cy) <= halfH) {
+                                            hitTxt = i
+                                            break
+                                        }
+                                    }
+                                    selectedTextIndex = hitTxt
                                 }
-                                selectedSignatureIndex = hit
                             }
                         }
-                        // Move layer: drags the currently selected signature. Separate pointerInput keyed
-                        // on the selected index so it rebinds cleanly when the selection changes.
-                        .pointerInput(activeTool, selectedSignatureIndex, renderW, renderH, offsetX, offsetY) {
-                            val idx = selectedSignatureIndex
-                            if (activeTool != AnnotateTool.SIGNATURE || idx == null || idx !in placedSignatures.indices) return@pointerInput
+                        // Move layer: drags the currently selected signature or placed text.
+                        .pointerInput(activeTool, selectedSignatureIndex, selectedTextIndex, renderW, renderH, offsetX, offsetY) {
+                            val sigIdx = selectedSignatureIndex
+                            val txtIdx = selectedTextIndex
+                            val canDragSig = activeTool == AnnotateTool.SIGNATURE && sigIdx != null && sigIdx in placedSignatures.indices
+                            val canDragTxt = activeTool == AnnotateTool.TEXT && txtIdx != null && txtIdx in placedTexts.indices
+                            if (!canDragSig && !canDragTxt) return@pointerInput
                             detectDragGestures { change, dragAmount ->
                                 change.consume()
-                                val current = placedSignatures.getOrNull(idx) ?: return@detectDragGestures
-                                val newX = (current.x + dragAmount.x / renderW).coerceIn(0.05f, 0.95f)
-                                val newY = (current.y + dragAmount.y / renderH).coerceIn(0.05f, 0.95f)
-                                placedSignatures[idx] = current.copy(x = newX, y = newY)
+                                if (canDragSig && sigIdx != null) {
+                                    val current = placedSignatures.getOrNull(sigIdx) ?: return@detectDragGestures
+                                    val newX = (current.x + dragAmount.x / renderW).coerceIn(0.05f, 0.95f)
+                                    val newY = (current.y + dragAmount.y / renderH).coerceIn(0.05f, 0.95f)
+                                    placedSignatures[sigIdx] = current.copy(x = newX, y = newY)
+                                } else if (canDragTxt && txtIdx != null) {
+                                    val current = placedTexts.getOrNull(txtIdx) ?: return@detectDragGestures
+                                    val newX = (current.x + dragAmount.x / renderW).coerceIn(0.05f, 0.95f)
+                                    val newY = (current.y + dragAmount.y / renderH).coerceIn(0.05f, 0.95f)
+                                    placedTexts[txtIdx] = current.copy(x = newX, y = newY)
+                                }
                             }
                         }
                         .pointerInput(activeTool, penColor, renderW, renderH, offsetX, offsetY) {
-                            if (activeTool == AnnotateTool.SIGNATURE) return@pointerInput
+                            if (activeTool in listOf(AnnotateTool.SIGNATURE, AnnotateTool.TEXT, AnnotateTool.BRIGHTNESS, AnnotateTool.CONTRAST)) return@pointerInput
                             detectDragGestures(
                                 onDragStart = { startPt ->
                                     val nx = ((startPt.x - offsetX) / renderW).coerceIn(0f, 1f)
@@ -534,10 +645,27 @@ fun AnnotationScreen(
                         }
                 ) {
                     Canvas(modifier = Modifier.fillMaxSize()) {
+                        val strokeScale = (renderW / 400f).coerceAtLeast(1f)
+                        val liveColorFilter = if (brightness != 0f || contrast != 1f) {
+                            val cScale = contrast.coerceIn(0.5f, 2.5f)
+                            val effBr = if (kotlin.math.abs(brightness) <= 1.5f) brightness * 55f else brightness.coerceIn(-100f, 100f)
+                            val trans = (-0.5f * cScale + 0.5f) * 255f + (effBr * 255f / 100f)
+                            androidx.compose.ui.graphics.ColorFilter.colorMatrix(
+                                androidx.compose.ui.graphics.ColorMatrix(
+                                    floatArrayOf(
+                                        cScale, 0f, 0f, 0f, trans,
+                                        0f, cScale, 0f, 0f, trans,
+                                        0f, 0f, cScale, 0f, trans,
+                                        0f, 0f, 0f, 1f, 0f
+                                    )
+                                )
+                            )
+                        } else null
                         drawImage(
                             image = bmp.asImageBitmap(),
                             dstOffset = androidx.compose.ui.unit.IntOffset(offsetX.toInt(), offsetY.toInt()),
-                            dstSize = IntSize(renderW.toInt(), renderH.toInt())
+                            dstSize = IntSize(renderW.toInt(), renderH.toInt()),
+                            colorFilter = liveColorFilter
                         )
                         for (dp in paths) {
                             if (dp.points.size < 2) continue
@@ -549,8 +677,8 @@ fun AnnotationScreen(
                             }
                             drawPath(
                                 path = path,
-                                color = Color(dp.color).copy(alpha = if (dp.isHighlighter) 0.45f else 1.0f),
-                                style = Stroke(width = dp.strokeWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                                color = if (dp.isEraser) Color.White else Color(dp.color).copy(alpha = if (dp.isHighlighter) 0.45f else 1.0f),
+                                style = Stroke(width = dp.strokeWidth * strokeScale, cap = androidx.compose.ui.graphics.StrokeCap.Round)
                             )
                         }
                         if (currentPoints.size > 1) {
@@ -560,10 +688,20 @@ fun AnnotationScreen(
                                     lineTo(offsetX + currentPoints[i].x * renderW, offsetY + currentPoints[i].y * renderH)
                                 }
                             }
+                            val previewColor = when (activeTool) {
+                                AnnotateTool.HIGHLIGHTER -> Color(0xFFFFEB3B).copy(alpha = 0.45f)
+                                AnnotateTool.ERASER -> Color.White
+                                else -> penColor
+                            }
+                            val previewWidth = when (activeTool) {
+                                AnnotateTool.HIGHLIGHTER -> 14f
+                                AnnotateTool.ERASER -> 20f
+                                else -> 3.5f
+                            } * strokeScale
                             drawPath(
                                 path = activeP,
-                                color = if (activeTool == AnnotateTool.HIGHLIGHTER) Color(0xFFFFEB3B).copy(alpha = 0.45f) else penColor,
-                                style = Stroke(width = if (activeTool == AnnotateTool.HIGHLIGHTER) 14f else 3.5f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                                color = previewColor,
+                                style = Stroke(width = previewWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
                             )
                         }
                         for (s in shapes) {
@@ -662,14 +800,25 @@ fun AnnotationScreen(
                                 )
                             }
                         }
-                        for (pt in placedTexts) {
+                        for ((idx, pt) in placedTexts.withIndex()) {
+                            val cx = offsetX + pt.x * renderW
+                            val cy = offsetY + pt.y * renderH
                             drawContext.canvas.nativeCanvas.apply {
                                 val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                                     textAlign = android.graphics.Paint.Align.CENTER
                                     color = pt.color
                                     textSize = pt.textSize * (renderW / 1080f)
                                 }
-                                drawText(pt.text, offsetX + pt.x * renderW, offsetY + pt.y * renderH, paint)
+                                drawText(pt.text, cx, cy, paint)
+                            }
+                            if (idx == selectedTextIndex) {
+                                val (halfW, halfH) = placedTextHalfSize(pt, renderW)
+                                drawRect(
+                                    color = GoldBase,
+                                    topLeft = Offset(cx - halfW - 6f, cy - halfH * 1.4f - 4f),
+                                    size = androidx.compose.ui.geometry.Size(halfW * 2f + 12f, halfH * 2f + 8f),
+                                    style = Stroke(width = 2.2f)
+                                )
                             }
                         }
                         for (r in redactions) {
@@ -706,15 +855,16 @@ fun AnnotationScreen(
         }
     }
     if (showTextDialog) {
+        val isArabicDialog = context.resources.configuration.locales[0].language == "ar"
         AlertDialog(
             onDismissRequest = { showTextDialog = false },
             shape = RoundedCornerShape(22.dp),
-            title = { Text("Add Text", fontWeight = FontWeight.Bold) },
+            title = { Text(if (isArabicDialog) "إضافة نص" else "Add Text", fontWeight = FontWeight.Bold) },
             text = {
                 OutlinedTextField(
                     value = tempTextInput,
                     onValueChange = { tempTextInput = it },
-                    label = { Text("Enter text") },
+                    label = { Text(if (isArabicDialog) "أدخل النص" else "Enter text") },
                     shape = RoundedCornerShape(14.dp),
                     modifier = Modifier.fillMaxWidth()
                 )
@@ -723,16 +873,24 @@ fun AnnotationScreen(
                 Button(
                     onClick = {
                         if (tempTextInput.isNotBlank()) {
-                            val pt = PlacedText(text = tempTextInput, x = 0.5f, y = 0.5f, color = penColor.toArgb())
+                            val stagger = (placedTexts.size % 5) * 0.05f
+                            val pt = PlacedText(
+                                text = tempTextInput.trim(),
+                                x = 0.5f,
+                                y = (0.45f + stagger).coerceIn(0.15f, 0.85f),
+                                color = penColor.toArgb()
+                            )
                             placedTexts.add(pt)
                             undoStack.add(AnnotationAction.TextAction(pt))
                             redoStack.clear()
+                            selectedTextIndex = placedTexts.lastIndex
+                            activeTool = AnnotateTool.TEXT
                             tempTextInput = ""
                         }
                         showTextDialog = false
                     },
                     shape = RoundedCornerShape(12.dp)
-                ) { Text("Add", fontWeight = FontWeight.Bold) }
+                ) { Text(if (isArabicDialog) "إضافة" else "Add", fontWeight = FontWeight.Bold) }
             },
             dismissButton = {
                 TextButton(onClick = { showTextDialog = false }, shape = RoundedCornerShape(12.dp)) {

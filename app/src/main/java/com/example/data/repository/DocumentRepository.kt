@@ -88,6 +88,24 @@ class DocumentRepository(
         documentDao.getPagesListForDocument(docId)
     }
 
+    private fun computePagesSize(pages: List<PageEntity>): Pair<Long, String> {
+        var total = 0L
+        for (p in pages) {
+            val path = p.processedImagePath.ifBlank { p.rawImagePath }
+            if (path.isNotBlank()) {
+                val f = File(path)
+                if (f.exists()) total += f.length()
+            }
+        }
+        val formatted = when {
+            total <= 0L -> ""
+            total < 1024L -> "$total B"
+            total < 1024L * 1024L -> String.format(Locale.US, "%d KB", (total / 1024L).coerceAtLeast(1L))
+            else -> String.format(Locale.US, "%.1f MB", total / (1024f * 1024f))
+        }
+        return total to formatted
+    }
+
     /**
      * THE single save path for new scans, imports, "add pages to document" and edit sessions.
      *
@@ -102,7 +120,10 @@ class DocumentRepository(
         val now = System.currentTimeMillis()
         val firstPath = request.pages.first().processedImagePath.ifBlank { request.pages.first().rawImagePath }
         val newThumb = com.example.engine.cv.ImageProcessor.createThumbnail(context, firstPath)
+        val (totalBytes, formattedSize) = computePagesSize(request.pages)
         var oldThumb: String? = null
+        val deletedPages = mutableListOf<PageEntity>()
+        val activePaths = request.pages.flatMap { listOf(it.rawImagePath, it.processedImagePath) }.toSet()
         try {
             val docId = database.withTransaction {
                 val existing = request.existingDocId?.takeIf { it > 0L }?.let { documentDao.getDocumentById(it) }
@@ -120,14 +141,19 @@ class DocumentRepository(
                             createdAt = now,
                             updatedAt = now,
                             pageCount = request.pages.size,
-                            thumbnailPath = newThumb
+                            thumbnailPath = newThumb,
+                            sizeBytes = totalBytes,
+                            fileSizeFormatted = formattedSize
                         )
                     )
                 } else {
                     oldThumb = existing.thumbnailPath
                     existing.id
                 }
-                request.removedPageIds.forEach { documentDao.deletePageById(it) }
+                request.removedPageIds.forEach { remId ->
+                    documentDao.getPageById(remId)?.let { deletedPages += it }
+                    documentDao.deletePageById(remId)
+                }
                 val savedIds = HashSet<Long>()
                 request.pages.forEachIndexed { index, page ->
                     val p = page.copy(documentId = id, pageIndex = index)
@@ -141,7 +167,10 @@ class DocumentRepository(
                 // Safety net: the final list IS the document; no orphan page can survive the save.
                 documentDao.getPagesListForDocument(id)
                     .filter { it.id !in savedIds }
-                    .forEach { documentDao.deletePageById(it.id) }
+                    .forEach { orphan ->
+                        deletedPages += orphan
+                        documentDao.deletePageById(orphan.id)
+                    }
                 val finalCount = request.pages.size
                 if (existing != null) {
                     documentDao.updateDocument(
@@ -150,6 +179,8 @@ class DocumentRepository(
                             category = request.category ?: existing.category,
                             pageCount = finalCount,
                             thumbnailPath = newThumb ?: existing.thumbnailPath,
+                            sizeBytes = totalBytes,
+                            fileSizeFormatted = formattedSize,
                             updatedAt = now
                         )
                     )
@@ -158,6 +189,11 @@ class DocumentRepository(
             }
             if (newThumb != null && oldThumb != null && oldThumb != newThumb) {
                 runCatching { File(oldThumb!!).delete() }
+            }
+            deletedPages.forEach { p ->
+                if (p.rawImagePath !in activePaths && p.processedImagePath !in activePaths) {
+                    deletePageFiles(p)
+                }
             }
             docId
         } catch (e: Throwable) {
@@ -211,8 +247,17 @@ class DocumentRepository(
                     processedImagePath = processedPath
                 )
             )
+            val updatedPages = documentDao.getPagesListForDocument(docId)
+            val (totalBytes, formattedSize) = computePagesSize(updatedPages)
             documentDao.getDocumentById(docId)?.let { doc ->
-                documentDao.updateDocument(doc.copy(pageCount = existingPages.size + 1, updatedAt = System.currentTimeMillis()))
+                documentDao.updateDocument(
+                    doc.copy(
+                        pageCount = updatedPages.size,
+                        sizeBytes = totalBytes,
+                        fileSizeFormatted = formattedSize,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
             }
             pageId
         }
@@ -280,7 +325,15 @@ class DocumentRepository(
         documentDao.updatePage(page)
         val doc = documentDao.getDocumentById(page.documentId)
         if (doc != null) {
-            documentDao.updateDocument(doc.copy(updatedAt = System.currentTimeMillis()))
+            val pages = documentDao.getPagesListForDocument(page.documentId)
+            val (totalBytes, formattedSize) = computePagesSize(pages)
+            documentDao.updateDocument(
+                doc.copy(
+                    sizeBytes = totalBytes,
+                    fileSizeFormatted = formattedSize,
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
         }
     }
 
@@ -293,18 +346,29 @@ class DocumentRepository(
     }
 
     suspend fun deletePage(pageId: Long, docId: Long) = withContext(Dispatchers.IO) {
+        var removedPage: PageEntity? = null
         val oldThumb = database.withTransaction {
+            removedPage = documentDao.getPageById(pageId)
             documentDao.deletePageById(pageId)
             val remaining = documentDao.getPagesListForDocument(docId)
             remaining.forEachIndexed { idx, p ->
                 if (p.pageIndex != idx) documentDao.updatePage(p.copy(pageIndex = idx))
             }
+            val (totalBytes, formattedSize) = computePagesSize(remaining)
             val doc = documentDao.getDocumentById(docId)
             if (doc != null) {
-                documentDao.updateDocument(doc.copy(pageCount = remaining.size, updatedAt = System.currentTimeMillis()))
+                documentDao.updateDocument(
+                    doc.copy(
+                        pageCount = remaining.size,
+                        sizeBytes = totalBytes,
+                        fileSizeFormatted = formattedSize,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
             }
             doc?.thumbnailPath
         }
+        removedPage?.let { deletePageFiles(it) }
         // Thumbnail regenerated outside the transaction.
         val first = documentDao.getPagesListForDocument(docId).firstOrNull()
         val newThumb = first?.processedImagePath?.let { com.example.engine.cv.ImageProcessor.createThumbnail(context, it) }

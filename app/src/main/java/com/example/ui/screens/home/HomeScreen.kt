@@ -85,6 +85,7 @@ fun HomeScreen(
     val isArabic = context.resources.configuration.locales[0].language == "ar"
     val prefs = remember { AppPreferences(context) }
     var selectionMode by remember { mutableStateOf(false) }
+    var isCompactListView by remember { mutableStateOf(false) }
     var selectedDocIds by remember { mutableStateOf(setOf<Long>()) }
     var showRenameDialog by remember { mutableStateOf(false) }
     var renameBaseName by remember { mutableStateOf("") }
@@ -339,6 +340,12 @@ fun HomeScreen(
                         IconButton(onClick = { showSearch = !showSearch }) {
                             Icon(Icons.Default.Search, contentDescription = if (isArabic) "بحث" else "Search")
                         }
+                        IconButton(onClick = { isCompactListView = !isCompactListView }) {
+                            Icon(
+                                if (isCompactListView) Icons.Default.GridView else Icons.Default.ViewAgenda,
+                                contentDescription = if (isArabic) "تبديل طريقة العرض" else "Toggle view mode"
+                            )
+                        }
                         IconButton(onClick = { listViewModel.toggleFavoritesFilter() }) {
                             Icon(
                                 if (uiState.showFavoritesOnly) Icons.Default.Star else Icons.Default.StarBorder,
@@ -451,6 +458,176 @@ fun HomeScreen(
             }
             val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
             if (!selectionMode && uiState.searchQuery.isEmpty()) {
+                // Calm Studio Bento Quick-Action Grid (matches the approved 2.0 design)
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable { onNavigateToScan("DOCUMENT") },
+                            shape = RoundedCornerShape(18.dp),
+                            color = Emerald400.copy(alpha = 0.14f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, Emerald400.copy(alpha = 0.40f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Emerald400.copy(alpha = 0.22f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Emerald400, modifier = Modifier.size(20.dp))
+                                }
+                                Column {
+                                    Text(
+                                        text = if (isArabic) "مسح ذكي" else "Smart Scan",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = if (isArabic) "تلقائي متعدد" else "Auto & Batch",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable { onNavigateToScan("ID_CARD") },
+                            shape = RoundedCornerShape(18.dp),
+                            color = GoldBase.copy(alpha = 0.14f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, GoldBase.copy(alpha = 0.40f))
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(GoldBase.copy(alpha = 0.22f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.Badge, contentDescription = null, tint = GoldBase, modifier = Modifier.size(20.dp))
+                                }
+                                Column {
+                                    Text(
+                                        text = if (isArabic) "الهوية والجواز" else "ID & Passport",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = if (isArabic) "دمج A4 + MRZ" else "A4 Layout & MRZ",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable { pdfPickerLauncher.launch(arrayOf("application/pdf")) },
+                            shape = RoundedCornerShape(18.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.75f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(CyanScan.copy(alpha = 0.18f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = CyanScan, modifier = Modifier.size(19.dp))
+                                }
+                                Column {
+                                    Text(
+                                        text = if (isArabic) "أدوات PDF" else "PDF Tools",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = if (isArabic) "قراءة، توقيع، تعديل" else "Read, Sign & Edit",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(18.dp))
+                                .clickable { launchGalleryImport() },
+                            shape = RoundedCornerShape(18.dp),
+                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.75f),
+                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(34.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(Emerald400.copy(alpha = 0.16f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Emerald400, modifier = Modifier.size(19.dp))
+                                }
+                                Column {
+                                    Text(
+                                        text = if (isArabic) "استيراد و OCR" else "Import & OCR",
+                                        style = MaterialTheme.typography.labelLarge,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                    Text(
+                                        text = if (isArabic) "من المعرض للتحرير" else "Gallery to Studio",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 10.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 FolderChipsRow(
                     folders = folders,
                     selectedFolder = uiState.selectedFolder,
@@ -489,7 +666,7 @@ fun HomeScreen(
                 }
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
+                    columns = GridCells.Fixed(if (isCompactListView) 1 else 2),
                     contentPadding = PaddingValues(16.dp),
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -641,7 +818,13 @@ fun HomeScreen(
                                     showExportPdfDialog = false
                                     exitSelection()
                                     when (action) {
-                                        ExportPdfAction.PREVIEW -> previewPdfFile = file
+                                        ExportPdfAction.PREVIEW -> {
+                                            if (!config.password.isNullOrEmpty()) {
+                                                onOpenPdfFile(file)
+                                            } else {
+                                                previewPdfFile = file
+                                            }
+                                        }
                                         ExportPdfAction.SAVE_TO_DOWNLOADS -> Toast.makeText(
                                             context, if (isArabic) "تم الحفظ في التنزيلات/MS Scanner" else "Saved to Downloads/MS Scanner", Toast.LENGTH_LONG
                                         ).show()

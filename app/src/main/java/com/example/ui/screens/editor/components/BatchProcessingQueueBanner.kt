@@ -43,7 +43,8 @@ fun BatchProcessingQueueBanner(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val isArabic = remember { Locale.getDefault().language == "ar" }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val isArabic = context.resources.configuration.locales[0].language == "ar"
 
     // Pulsing rotation animation for active processing indicator
     val infiniteTransition = rememberInfiniteTransition(label = "batch_rot")

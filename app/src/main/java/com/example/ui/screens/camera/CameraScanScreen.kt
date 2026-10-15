@@ -61,6 +61,7 @@ import com.example.engine.cv.LiveDetectionPhase
 import com.example.engine.cv.ProcessedPage
 import com.example.engine.cv.QuadStore
 import com.example.ui.screens.camera.components.PermissionRationaleScreen
+import com.example.ui.screens.idcard.IdCardMergerScreen
 import com.example.ui.theme.*
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -220,6 +221,8 @@ fun CameraScanScreen(
     LaunchedEffect(scanMode) { frontPage = null }
     var showFlashEffect by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
+    // Holds (frontPair, backPair?) when ID_CARD or PASSPORT capture is ready for the A4 collage studio.
+    var pendingIdCardCollage by remember { mutableStateOf<Pair<Pair<String, String>, Pair<String, String>?>?>(null) }
     fun deletePageFiles(page: Pair<String, String>) {
         runCatching {
             if (page.first.isNotBlank()) {
@@ -234,9 +237,14 @@ fun CameraScanScreen(
         batchPages.clear()
         frontPage?.let { deletePageFiles(it) }
         frontPage = null
+        pendingIdCardCollage?.let { (f, b) ->
+            deletePageFiles(f)
+            b?.let { deletePageFiles(it) }
+        }
+        pendingIdCardCollage = null
         onNavigateBack()
     }
-    val hasUnsavedCaptures = batchPages.isNotEmpty() || frontPage != null
+    val hasUnsavedCaptures = batchPages.isNotEmpty() || frontPage != null || pendingIdCardCollage != null
     BackHandler(enabled = hasUnsavedCaptures) { showDiscardDialog = true }
     // Accelerometer listener for level indicator
     DisposableEffect(Unit) {
@@ -272,12 +280,12 @@ fun CameraScanScreen(
                 when {
                     pages.size >= 2 -> {
                         frontPage = null
-                        onDocumentCaptured(listOf(pages[0], pages[1]))
+                        pendingIdCardCollage = Pair(pages[0], pages[1])
                     }
                     front == null -> frontPage = pages[0]
                     else -> {
                         frontPage = null
-                        onDocumentCaptured(listOf(front, pages[0]))
+                        pendingIdCardCollage = Pair(front, pages[0])
                     }
                 }
             }
@@ -519,6 +527,38 @@ fun CameraScanScreen(
                 TextButton(onClick = { showDiscardDialog = false }) { Text(if (isArabic) "متابعة" else "Continue") }
             }
         )
+    }
+    val collagePair = pendingIdCardCollage
+    if (collagePair != null) {
+        val (frontPair, backPair) = collagePair
+        val frontImg = frontPair.second.ifBlank { frontPair.first }
+        val backImg = backPair?.let { it.second.ifBlank { it.first } } ?: ""
+        IdCardMergerScreen(
+            frontImagePath = frontImg,
+            backImagePath = backImg,
+            isPassportMode = scanMode == ScanCameraMode.PASSPORT,
+            onMerged = { mergedPath ->
+                pendingIdCardCollage = null
+                if (mergedPath.isNotBlank()) {
+                    if (mergedPath != frontPair.first && mergedPath != frontPair.second) deletePageFiles(frontPair)
+                    if (backPair != null && mergedPath != backPair.first && mergedPath != backPair.second) deletePageFiles(backPair)
+                    onDocumentCaptured(listOf(Pair(mergedPath, mergedPath)))
+                } else {
+                    val fallback = buildList {
+                        add(frontPair)
+                        if (backPair != null) add(backPair)
+                    }
+                    onDocumentCaptured(fallback)
+                }
+            },
+            onCancel = {
+                deletePageFiles(frontPair)
+                backPair?.let { deletePageFiles(it) }
+                pendingIdCardCollage = null
+                scanController.reset()
+            }
+        )
+        return
     }
     Box(
         modifier = modifier
@@ -790,6 +830,21 @@ fun CameraScanScreen(
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold
                         )
+                        if (isPhoneFlat) {
+                            Surface(
+                                shape = CircleShape,
+                                color = Emerald400.copy(alpha = 0.22f),
+                                border = BorderStroke(1.dp, Emerald400)
+                            ) {
+                                Text(
+                                    text = if (isArabic) "مستوٍ ✓" else "Level ✓",
+                                    color = Emerald400,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                )
+                            }
+                        }
                         if (isAutoCaptureEnabled && isDocumentTracked && !isAutoCancelled) {
                             Text(
                                 text = if (isArabic) "إلغاء" else "Cancel",
@@ -955,12 +1010,12 @@ fun CameraScanScreen(
                             }
                         }
                         frontPage != null -> {
-                            // Single-sided card / passport: finish with the front only.
+                            // Single-sided card / passport: open the A4 layout studio with the front side.
                             Button(
                                 onClick = {
                                     val front = frontPage ?: return@Button
                                     frontPage = null
-                                    onDocumentCaptured(listOf(front))
+                                    pendingIdCardCollage = Pair(front, null)
                                 },
                                 colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
                                 shape = RoundedCornerShape(20.dp),

@@ -1,7 +1,5 @@
 package com.example.ui.screens.ocr
 
-import androidx.compose.ui.res.stringResource
-import com.example.R
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -9,6 +7,7 @@ import android.content.Intent
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -22,15 +21,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.example.ui.theme.CyanScan
+import com.example.R
+import com.example.engine.ocr.OcrLanguage
 import com.example.ui.theme.Emerald400
-import com.example.ui.theme.EmeraldLight
 import com.example.ui.viewmodel.EditSessionViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -43,15 +42,19 @@ fun OcrScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val isArabic = context.resources.configuration.locales[0].language == "ar"
+    fun t(en: String, ar: String) = if (isArabic) ar else en
+
     val uiState by viewModel.uiState.collectAsState()
     val ocrResult = uiState.ocrResult
+    var editableFullText by remember(ocrResult?.fullText) { mutableStateOf(ocrResult?.fullText.orEmpty()) }
+    var isTextModified by remember(ocrResult?.fullText) { mutableStateOf(false) }
 
     LaunchedEffect(pageId) {
         viewModel.runOcrInBackground(pageId)
     }
 
     var selectedTab by remember { mutableStateOf(0) } // 0: Structured Data, 1: Full Text
-
     val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
@@ -92,6 +95,37 @@ fun OcrScreen(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            // Language selector bar for instant re-analysis
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
+                Text(t("OCR Language:", "لغة القراءة:"), style = MaterialTheme.typography.labelMedium)
+                val langs = listOf(
+                    OcrLanguage.ARABIC_AND_ENGLISH to t("Arabic + English", "عربي + إنجليزي"),
+                    OcrLanguage.ARABIC to t("Arabic", "عربي فقط"),
+                    OcrLanguage.ENGLISH to t("English", "إنجليزي فقط")
+                )
+                langs.forEach { (lang, label) ->
+                    FilterChip(
+                        selected = uiState.ocrLanguage == lang,
+                        onClick = {
+                            if (uiState.ocrLanguage != lang && !uiState.isOcrLoading) {
+                                viewModel.setOcrLanguage(lang)
+                                viewModel.runOcrInBackground(pageId)
+                            }
+                        },
+                        label = { Text(label, fontSize = 12.sp) },
+                        shape = RoundedCornerShape(50)
+                    )
+                }
+            }
+
             PrimaryTabRow(
                 selectedTabIndex = selectedTab,
                 containerColor = MaterialTheme.colorScheme.surface,
@@ -132,7 +166,7 @@ fun OcrScreen(
                     ) {
                         CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                         Text(
-                            text = "Analyzing document text…",
+                            text = t("Analyzing document text…", "جاري تحليل النص واستخراج البيانات…"),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -180,7 +214,7 @@ fun OcrScreen(
                                         )
                                     }
                                     Text(
-                                        text = "Suggested Title & Category",
+                                        text = t("Suggested Title & Category", "العنوان والتصنيف المقترح ذكياً"),
                                         fontWeight = FontWeight.Bold,
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.onPrimaryContainer
@@ -191,16 +225,26 @@ fun OcrScreen(
                                     style = MaterialTheme.typography.titleLarge,
                                     fontWeight = FontWeight.Bold
                                 )
+                                val catName = if (isArabic) ocrResult.detectedCategory.displayNameAr else ocrResult.detectedCategory.displayNameEn
+                                val confPct = (ocrResult.confidence * 100).toInt()
                                 Text(
-                                    text = "Category: ${ocrResult.detectedCategory.displayNameEn} • Confidence: ${(ocrResult.confidence * 100).toInt()}%",
+                                    text = if (isArabic) "التصنيف: $catName • الدقة: $confPct%" else "Category: $catName • Confidence: $confPct%",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
 
                                 Button(
                                     onClick = {
-                                        viewModel.renameDocument(docId, ocrResult.suggestedTitle)
-                                        Toast.makeText(context, "Title applied!", Toast.LENGTH_SHORT).show()
+                                        viewModel.updateDocumentMetadata(
+                                            docId = docId,
+                                            title = ocrResult.suggestedTitle,
+                                            category = ocrResult.detectedCategory.name
+                                        )
+                                        Toast.makeText(
+                                            context,
+                                            t("Title applied!", "تم تطبيق العنوان المقترح!"),
+                                            Toast.LENGTH_SHORT
+                                        ).show()
                                     },
                                     shape = RoundedCornerShape(12.dp),
                                     modifier = Modifier.testTag("apply_suggested_title_btn")
@@ -212,7 +256,7 @@ fun OcrScreen(
 
                         // Extracted Fields List
                         Text(
-                            text = "Key Extracted Fields",
+                            text = t("Key Extracted Fields", "الحقول والبيانات المستخرجة"),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold
                         )
@@ -233,7 +277,7 @@ fun OcrScreen(
                                     ) {
                                         Column(modifier = Modifier.weight(1f)) {
                                             Text(
-                                                text = "${field.labelEn} (${field.labelAr})",
+                                                text = if (isArabic) field.labelAr else "${field.labelEn} (${field.labelAr})",
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -247,7 +291,7 @@ fun OcrScreen(
 
                                         IconButton(onClick = {
                                             copyToClipboard(context, field.value)
-                                            Toast.makeText(context, "Copied to clipboard", Toast.LENGTH_SHORT).show()
+                                            Toast.makeText(context, t("Copied to clipboard", "تم النسخ إلى الحافظة"), Toast.LENGTH_SHORT).show()
                                         }) {
                                             Icon(
                                                 Icons.Default.ContentCopy,
@@ -260,14 +304,14 @@ fun OcrScreen(
                             }
                         } else {
                             Text(
-                                text = "No specific structured entities detected.",
+                                text = t("No specific structured entities detected.", "لم يتم العثور على حقول مهيكلة محددة في هذه الصفحة."),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
                     }
                 } else {
-                    // Full OCR Text View
+                    // Full OCR Text View (Editable + Saveable)
                     Column(
                         modifier = Modifier
                             .fillMaxSize()
@@ -276,49 +320,67 @@ fun OcrScreen(
                     ) {
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
+                            horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            TextButton(onClick = {
-                                copyToClipboard(context, ocrResult.fullText)
-                                Toast.makeText(context, "Full text copied!", Toast.LENGTH_SHORT).show()
-                            }) {
-                                Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(stringResource(R.string.txt_copy_all), fontWeight = FontWeight.SemiBold)
+                            if (isTextModified) {
+                                Button(
+                                    onClick = {
+                                        viewModel.saveEditedOcrText(pageId, editableFullText)
+                                        isTextModified = false
+                                        Toast.makeText(context, t("Edited text saved!", "تم حفظ النص المعدل!"), Toast.LENGTH_SHORT).show()
+                                    },
+                                    shape = RoundedCornerShape(10.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = androidx.compose.ui.graphics.Color.Black)
+                                ) {
+                                    Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(t("Save Edits", "حفظ التعديلات"), fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                }
+                            } else {
+                                Text(
+                                    t("Tap text below to edit before exporting", "يمكنك تعديل النص وتصحيحه قبل التصدير"),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
                             }
 
-                            TextButton(onClick = {
-                                val intent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_TEXT, ocrResult.fullText)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                TextButton(onClick = {
+                                    copyToClipboard(context, editableFullText)
+                                    Toast.makeText(context, t("Full text copied!", "تم نسخ النص بالكامل!"), Toast.LENGTH_SHORT).show()
+                                }) {
+                                    Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(stringResource(R.string.txt_copy_all), fontWeight = FontWeight.SemiBold)
                                 }
-                                context.startActivity(Intent.createChooser(intent, "Share OCR Text"))
-                            }) {
-                                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(stringResource(R.string.txt_share), fontWeight = FontWeight.SemiBold)
+
+                                TextButton(onClick = {
+                                    val intent = Intent(Intent.ACTION_SEND).apply {
+                                        type = "text/plain"
+                                        putExtra(Intent.EXTRA_TEXT, editableFullText)
+                                    }
+                                    context.startActivity(Intent.createChooser(intent, t("Share OCR Text", "مشاركة النص المستخرج")))
+                                }) {
+                                    Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(stringResource(R.string.txt_share), fontWeight = FontWeight.SemiBold)
+                                }
                             }
                         }
 
-                        Card(
+                        OutlinedTextField(
+                            value = editableFullText,
+                            onValueChange = {
+                                editableFullText = it
+                                isTextModified = true
+                            },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .weight(1f),
                             shape = RoundedCornerShape(16.dp),
-                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                        ) {
-                            Text(
-                                text = ocrResult.fullText,
-                                modifier = Modifier
-                                    .fillMaxSize()
-                                    .verticalScroll(rememberScrollState())
-                                    .padding(16.dp),
-                                style = MaterialTheme.typography.bodyMedium,
-                                lineHeight = 22.sp
-                            )
-                        }
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp)
+                        )
                     }
                 }
             } else {

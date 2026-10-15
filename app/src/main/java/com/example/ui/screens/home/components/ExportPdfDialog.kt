@@ -71,6 +71,7 @@ fun ExportPdfDialog(
     var includePageNumbers by remember { mutableStateOf(true) }
     var includeSearchableText by remember { mutableStateOf(true) }
     var watermarkText by remember { mutableStateOf("") }
+    var userPassword by remember { mutableStateOf("") }
     
     var showAdvancedOptions by remember { mutableStateOf(false) }
 
@@ -158,21 +159,45 @@ fun ExportPdfDialog(
                     Spacer(modifier = Modifier.height(16.dp))
 
                     if (selectedFormat == ExportFormat.PDF) {
-                        // Simplified Default Settings Info
+                        // Dynamic Settings & Estimated Size Info
                         Surface(
                             color = InkSurface3,
                             shape = RoundedCornerShape(12.dp),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Column(modifier = Modifier.padding(12.dp)) {
-                                Text(if (isArabic) "إعدادات PDF الافتراضية:" else "Default PDF Settings:", style = MaterialTheme.typography.labelSmall, color = GoldLight)
-                                Text(if (isArabic) "• جودة عالية (A4)" else "• High Quality (A4)", style = MaterialTheme.typography.bodySmall)
-                                Text(if (isArabic) "• استخراج النص (OCR) مفعل" else "• Searchable OCR enabled", style = MaterialTheme.typography.bodySmall)
-                                Text(if (isArabic) "• بدون علامة مائية" else "• No watermark", style = MaterialTheme.typography.bodySmall)
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(if (isArabic) "ملخص إعدادات PDF:" else "PDF Settings Summary:", style = MaterialTheme.typography.labelSmall, color = GoldLight)
+                                    Text(
+                                        text = if (isArabic) "الحجم التقريبي: $estimatedSizeFormatted" else "Est. size: $estimatedSizeFormatted",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Emerald400,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
+                                Text(
+                                    if (isArabic) "• الحجم والجودة: ${pageSize.name} (${compression.name})"
+                                    else "• Size & Quality: ${pageSize.name} (${compression.name})",
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    if (includeSearchableText) (if (isArabic) "• البحث النصي (OCR): مفعل" else "• Searchable OCR: Enabled")
+                                    else (if (isArabic) "• البحث النصي (OCR): متوقف" else "• Searchable OCR: Disabled"),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                                Text(
+                                    if (watermarkText.isNotBlank()) (if (isArabic) "• علامة مائية: $watermarkText" else "• Watermark: $watermarkText")
+                                    else (if (isArabic) "• بدون علامة مائية" else "• No watermark"),
+                                    style = MaterialTheme.typography.bodySmall
+                                )
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(12.dp))
+                        Spacer(modifier = Modifier.height(8.dp))
 
                         TextButton(onClick = { showAdvancedOptions = !showAdvancedOptions }) {
                             Icon(if (showAdvancedOptions) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
@@ -181,7 +206,10 @@ fun ExportPdfDialog(
                         }
 
                         AnimatedVisibility(visible = showAdvancedOptions) {
-                            Column {
+                            Column(
+                                modifier = Modifier.verticalScroll(rememberScrollState()),
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
                                 // Page Size
                                 Text(if (isArabic) "حجم الصفحة" else "Page Size", style = MaterialTheme.typography.labelMedium)
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -204,12 +232,39 @@ fun ExportPdfDialog(
                                         )
                                     }
                                 }
+                                // Switches for OCR and Page Numbers
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(if (isArabic) "تضمين نص قابل للبحث (OCR)" else "Searchable OCR text", style = MaterialTheme.typography.bodySmall)
+                                    Switch(checked = includeSearchableText, onCheckedChange = { includeSearchableText = it })
+                                }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(if (isArabic) "ترقيم الصفحات" else "Include page numbers", style = MaterialTheme.typography.bodySmall)
+                                    Switch(checked = includePageNumbers, onCheckedChange = { includePageNumbers = it })
+                                }
                                 // Watermark
                                 OutlinedTextField(
                                     value = watermarkText,
                                     onValueChange = { watermarkText = it },
                                     label = { Text(if (isArabic) "علامة مائية" else "Watermark") },
                                     modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
+                                    shape = RoundedCornerShape(12.dp)
+                                )
+                                // Password Protection
+                                OutlinedTextField(
+                                    value = userPassword,
+                                    onValueChange = { userPassword = it },
+                                    label = { Text(if (isArabic) "كلمة مرور PDF (اختياري)" else "PDF Password (optional)") },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    singleLine = true,
                                     shape = RoundedCornerShape(12.dp)
                                 )
                             }
@@ -244,7 +299,8 @@ fun ExportPdfDialog(
                             compression = compression,
                             includeSearchableText = includeSearchableText,
                             includePageNumbers = includePageNumbers,
-                            watermarkText = if (watermarkText.isNotBlank()) watermarkText.trim() else null
+                            watermarkText = if (watermarkText.isNotBlank()) watermarkText.trim() else null,
+                            password = if (userPassword.isNotBlank()) userPassword else null
                         )
                     }
 

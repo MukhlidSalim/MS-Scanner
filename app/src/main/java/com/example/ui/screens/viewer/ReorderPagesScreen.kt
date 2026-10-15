@@ -11,8 +11,6 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -23,10 +21,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.example.R
 import com.example.data.model.PageEntity
@@ -38,9 +36,11 @@ fun ReorderPagesScreen(
     onSave: (List<PageEntity>) -> Unit,
     onCancel: () -> Unit
 ) {
-    var items by remember { mutableStateOf(pages) }
+    val context = LocalContext.current
+    val isArabic = context.resources.configuration.locales[0].language == "ar"
+    var items by remember(pages) { mutableStateOf(pages) }
     val gridState = rememberLazyGridState()
-    
+
     // State for dragging
     var draggingIndex by remember { mutableStateOf<Int?>(null) }
     var draggingOffset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
@@ -48,10 +48,15 @@ fun ReorderPagesScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Reorder Pages", fontWeight = FontWeight.Bold) },
+                title = {
+                    Text(
+                        if (isArabic) "إعادة ترتيب الصفحات" else "Reorder Pages",
+                        fontWeight = FontWeight.Bold
+                    )
+                },
                 navigationIcon = {
                     IconButton(onClick = onCancel) {
-                        Icon(Icons.Default.Close, contentDescription = "Cancel")
+                        Icon(Icons.Default.Close, contentDescription = if (isArabic) "إلغاء" else "Cancel")
                     }
                 },
                 actions = {
@@ -81,7 +86,7 @@ fun ReorderPagesScreen(
                 color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.5f)
             ) {
                 Text(
-                    text = "Long-press and drag any page to change order",
+                    text = if (isArabic) "اضغط مطولاً واسحب أي صفحة لتغيير ترتيبها" else "Long-press and drag any page to change order",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
@@ -100,7 +105,8 @@ fun ReorderPagesScreen(
             ) {
                 itemsIndexed(items, key = { _, item -> item.id }) { index, page ->
                     val isDragging = index == draggingIndex
-                    
+                    val currentIndexState by rememberUpdatedState(index)
+
                     Card(
                         modifier = Modifier
                             .aspectRatio(0.72f)
@@ -110,38 +116,41 @@ fun ReorderPagesScreen(
                                     Modifier.graphicsLayer {
                                         translationX = draggingOffset.x
                                         translationY = draggingOffset.y
-                                        scaleX = 1.1f
-                                        scaleY = 1.1f
-                                        alpha = 0.85f
+                                        scaleX = 1.08f
+                                        scaleY = 1.08f
+                                        alpha = 0.88f
                                     }
                                 } else {
                                     Modifier.animateItem()
                                 }
                             )
-                            .pointerInput(Unit) {
+                            .pointerInput(page.id) {
                                 detectDragGesturesAfterLongPress(
                                     onDragStart = { _ ->
-                                        draggingIndex = index
+                                        draggingIndex = currentIndexState
                                         draggingOffset = androidx.compose.ui.geometry.Offset.Zero
                                     },
                                     onDrag = { change, dragAmount ->
                                         change.consume()
+                                        val activeIdx = draggingIndex ?: return@detectDragGesturesAfterLongPress
                                         draggingOffset += dragAmount
-                                        
-                                        val cellWidth = size.width
-                                        val cellHeight = size.height
-                                        
-                                        var newIdx = index
-                                        if (draggingOffset.x > cellWidth / 2) newIdx += 1
-                                        if (draggingOffset.x < -cellWidth / 2) newIdx -= 1
-                                        if (draggingOffset.y > cellHeight / 2) newIdx += 3
-                                        if (draggingOffset.y < -cellHeight / 2) newIdx -= 3
-                                        
+
+                                        val cellWidth = size.width.coerceAtLeast(1)
+                                        val cellHeight = size.height.coerceAtLeast(1)
+
+                                        var newIdx = activeIdx
+                                        val horizontalDelta = if (isArabic) -draggingOffset.x else draggingOffset.x
+                                        if (horizontalDelta > cellWidth * 0.55f) newIdx += 1
+                                        else if (horizontalDelta < -cellWidth * 0.55f) newIdx -= 1
+
+                                        if (draggingOffset.y > cellHeight * 0.55f) newIdx += 3
+                                        else if (draggingOffset.y < -cellHeight * 0.55f) newIdx -= 3
+
                                         newIdx = newIdx.coerceIn(0, items.size - 1)
-                                        
-                                        if (newIdx != index && newIdx != draggingIndex) {
+
+                                        if (newIdx != activeIdx) {
                                             val mutableList = items.toMutableList()
-                                            val draggedItem = mutableList.removeAt(draggingIndex!!)
+                                            val draggedItem = mutableList.removeAt(activeIdx)
                                             mutableList.add(newIdx, draggedItem)
                                             items = mutableList
                                             draggingIndex = newIdx
@@ -169,11 +178,11 @@ fun ReorderPagesScreen(
                         Box(modifier = Modifier.fillMaxSize()) {
                             AsyncImage(
                                 model = page.processedImagePath,
-                                contentDescription = "Page ${index + 1}",
+                                contentDescription = if (isArabic) "صفحة ${index + 1}" else "Page ${index + 1}",
                                 modifier = Modifier.fillMaxSize(),
                                 contentScale = ContentScale.Crop
                             )
-                            
+
                             Surface(
                                 modifier = Modifier
                                     .align(Alignment.BottomEnd)

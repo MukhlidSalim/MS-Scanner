@@ -9,95 +9,92 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 
-// Shape system — asymmetric authority:
-// Smaller elements are sharper; larger containers are more rounded.
-// Avoids the "everything is equally pill-shaped" problem.
 val AppShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),   // Chips, micro-badges
-    small      = RoundedCornerShape(10.dp),  // Input fields, small buttons
-    medium     = RoundedCornerShape(14.dp),  // Cards, bottom sheet header
-    large      = RoundedCornerShape(20.dp),  // Modal sheets, large cards
-    extraLarge = RoundedCornerShape(26.dp)   // Full-screen rounded containers
+    extraSmall = RoundedCornerShape(8.dp),
+    small      = RoundedCornerShape(12.dp),
+    medium     = RoundedCornerShape(16.dp),
+    large      = RoundedCornerShape(22.dp),
+    extraLarge = RoundedCornerShape(28.dp)
 )
 
 private val DarkColorScheme = darkColorScheme(
-    primary            = GoldBase,
-    onPrimary          = Color(0xFF18100A),
-    primaryContainer   = Color(0xFF1A1200),
-    onPrimaryContainer = GoldLight,
+    primary                = Emerald400,
+    onPrimary              = Color(0xFF072117),
+    primaryContainer       = EmeraldContainerDark,
+    onPrimaryContainer     = EmeraldLight,
 
-    secondary          = GoldLight,
-    onSecondary        = Color(0xFF1A1200),
-    secondaryContainer = InkSurface3,
-    onSecondaryContainer = TextSecondary,
+    secondary              = GoldBase,
+    onSecondary            = Color(0xFF1F1709),
+    secondaryContainer     = InkSurface3,
+    onSecondaryContainer   = GoldLight,
 
-    tertiary          = SemanticSuccess,
-    onTertiary        = Color(0xFF032018),
-    tertiaryContainer = SemanticSuccessBg,
-    onTertiaryContainer = SemanticSuccess,
+    tertiary               = CyanScan,
+    onTertiary             = Color(0xFF071E2C),
+    tertiaryContainer      = Color(0xFF132A38),
+    onTertiaryContainer    = CyanScanLight,
 
-    background            = InkBase,
-    onBackground          = TextPrimary,
-    surface               = InkSurface1,
-    onSurface             = TextPrimary,
-    surfaceVariant        = InkSurface2,
-    onSurfaceVariant      = TextSecondary,
-    surfaceContainer      = InkSurface2,
-    surfaceContainerHigh  = InkSurface3,
+    background             = InkBase,
+    onBackground           = TextPrimary,
+    surface                = InkSurface1,
+    onSurface              = TextPrimary,
+    surfaceVariant         = InkSurface2,
+    onSurfaceVariant       = TextSecondary,
+    surfaceContainer       = InkSurface2,
+    surfaceContainerHigh   = InkSurface3,
     surfaceContainerHighest = InkSurface4,
-    surfaceContainerLow   = InkSurface1,
+    surfaceContainerLow    = InkSurface1,
     surfaceContainerLowest = InkBase,
 
-    outline        = InkBorder,
-    outlineVariant = InkBorderStrong,
+    outline                = InkBorder,
+    outlineVariant         = InkBorderStrong,
 
-    error          = SemanticError,
-    onError        = Color.White,
-    errorContainer = SemanticErrorBg,
-    onErrorContainer = Color(0xFFFFB4B4)
+    error                  = SemanticError,
+    onError                = Color.White,
+    errorContainer         = SemanticErrorBg,
+    onErrorContainer       = Color(0xFFFFB8B8)
 )
 
 private val LightColorScheme = lightColorScheme(
-    primary            = GoldDeep,
-    onPrimary          = Color.White,
-    primaryContainer   = GoldPale,
-    onPrimaryContainer = GoldDeep,
+    primary                = EmeraldPrimaryLight,
+    onPrimary              = Color.White,
+    primaryContainer       = EmeraldContainerLight,
+    onPrimaryContainer     = OnEmeraldContainerLight,
 
-    secondary          = Color(0xFF8A6E3E),
-    onSecondary        = Color.White,
-    secondaryContainer = Color(0xFFF0E8D5),
-    onSecondaryContainer = GoldDeep,
+    secondary              = GoldDeep,
+    onSecondary            = Color.White,
+    secondaryContainer     = GoldPale,
+    onSecondaryContainer   = GoldDeep,
 
-    tertiary          = Color(0xFF1D6B50),
-    onTertiary        = Color.White,
-    tertiaryContainer = Color(0xFFD5F5E8),
-    onTertiaryContainer = Color(0xFF0A3D2B),
+    tertiary               = Color(0xFF2B6CB0),
+    onTertiary             = Color.White,
+    tertiaryContainer      = Color(0xFFDCEEFB),
+    onTertiaryContainer    = Color(0xFF103454),
 
-    background        = PaperBase,
-    onBackground      = PaperTextPrimary,
-    surface           = PaperSurface1,
-    onSurface         = PaperTextPrimary,
-    surfaceVariant    = PaperSurface2,
-    onSurfaceVariant  = PaperTextSecondary,
-    surfaceContainer  = PaperSurface2,
-    surfaceContainerHigh  = Color(0xFFEBE7E0),
+    background             = PaperBase,
+    onBackground           = PaperTextPrimary,
+    surface                = PaperSurface1,
+    onSurface              = PaperTextPrimary,
+    surfaceVariant         = PaperSurface2,
+    onSurfaceVariant       = PaperTextSecondary,
+    surfaceContainer       = PaperSurface2,
+    surfaceContainerHigh   = Color(0xFFE6E4DA),
     surfaceContainerHighest = PaperBorder,
-    surfaceContainerLow   = PaperSurface1,
+    surfaceContainerLow    = PaperSurface1,
     surfaceContainerLowest = PaperSurface1,
 
-    outline        = PaperBorder,
-    outlineVariant = PaperBorderStrong,
+    outline                = PaperBorder,
+    outlineVariant         = PaperBorderStrong,
 
-    error          = SemanticError,
-    onError        = Color.White,
-    errorContainer = Color(0xFFFEE2E2),
-    onErrorContainer = Color(0xFF7A1515)
+    error                  = SemanticError,
+    onError                = Color.White,
+    errorContainer         = ErrorContainerLight,
+    onErrorContainer       = Color(0xFF7A1515)
 )
 
 @Composable
 fun DocScanTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = false, // Always false — preserve Obsidian Ink identity
+    dynamicColor: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = when {

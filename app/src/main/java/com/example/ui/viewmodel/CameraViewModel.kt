@@ -95,6 +95,8 @@ class CameraViewModel(
 ) : ViewModel() {
     // Application context only: never hold an Activity in a ViewModel.
     private val context: Context = context.applicationContext
+    private val isArabic: Boolean get() = context.resources.configuration.locales[0].language == "ar"
+    private fun t(en: String, ar: String): String = if (isArabic) ar else en
     private val _uiState = MutableStateFlow(CameraUiState())
     val uiState: StateFlow<CameraUiState> = _uiState.asStateFlow()
     // Buffered + trySend: a missing collector can never suspend (hang) an import or a save.
@@ -165,7 +167,7 @@ class CameraViewModel(
                     )
                     if (result == null) {
                         setStatus(rawPath, PageStatus.FAILED)
-                        _events.trySend(UiEvent.Error("Could not read the original image"))
+                        _events.trySend(UiEvent.Error(t("Could not read the original image", "تعذر قراءة الصورة الأصلية")))
                         return@withLock
                     }
                     var applied = false
@@ -185,14 +187,14 @@ class CameraViewModel(
                         setStatus(rawPath, PageStatus.PROCESSED)
                     } else {
                         setStatus(rawPath, if (previous == PageStatus.EDITED) PageStatus.EDITED else PageStatus.NEEDS_REVIEW)
-                        _events.trySend(UiEvent.Error("Edges still not found — crop manually or retake"))
+                        _events.trySend(UiEvent.Error(t("Edges still not found — crop manually or retake", "لم يتم العثور على الحواف — قم بالقص يدوياً أو أعد التصوير")))
                     }
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     e.printStackTrace()
                     setStatus(rawPath, previous)
-                    _events.trySend(UiEvent.Error("Detection failed"))
+                    _events.trySend(UiEvent.Error(t("Detection failed", "فشل اكتشاف الحواف")))
                 } finally {
                     _uiState.update { it.copy(isProcessingEdit = false) }
                 }
@@ -285,7 +287,7 @@ class CameraViewModel(
                         failed++
                     }
                 }
-                if (failed > 0) _events.trySend(UiEvent.Error("Could not import $failed image(s)"))
+                if (failed > 0) _events.trySend(UiEvent.Error(t("Could not import $failed image(s)", "تعذر استيراد $failed صورة")))
             } finally {
                 _uiState.update { it.copy(isLoading = false, isBackgroundProcessing = false) }
             }
@@ -314,12 +316,12 @@ class CameraViewModel(
                         )
                     }
                 }
-                if (pages.isEmpty()) _events.trySend(UiEvent.Error("Could not read PDF"))
+                if (pages.isEmpty()) _events.trySend(UiEvent.Error(t("Could not read PDF", "تعذر قراءة ملف PDF")))
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
                 e.printStackTrace()
-                _events.trySend(UiEvent.Error("Could not read PDF"))
+                _events.trySend(UiEvent.Error(t("Could not read PDF", "تعذر قراءة ملف PDF")))
             } finally {
                 _uiState.update { it.copy(isLoading = false, isBackgroundProcessing = false) }
             }
@@ -352,7 +354,7 @@ class CameraViewModel(
                         )
                         if (newPath == null) {
                             setStatus(rawPath, before)
-                            _events.trySend(UiEvent.Error("Could not read the original image"))
+                            _events.trySend(UiEvent.Error(t("Could not read the original image", "تعذر قراءة الصورة الأصلية")))
                             continue
                         }
                         var applied = false
@@ -369,7 +371,7 @@ class CameraViewModel(
                     throw e
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    _events.trySend(UiEvent.Error("Failed to update page"))
+                    _events.trySend(UiEvent.Error(t("Failed to update page", "فشل تحديث الصفحة")))
                 } finally {
                     _uiState.update { s ->
                         s.copy(
@@ -453,7 +455,7 @@ class CameraViewModel(
                     throw e
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    _events.trySend(UiEvent.Error("Failed to auto-crop pending pages"))
+                    _events.trySend(UiEvent.Error(t("Failed to auto-crop pending pages", "فشل القص التلقائي للصفحات")))
                 } finally {
                     _uiState.update { it.copy(isProcessingEdit = false) }
                 }
@@ -472,7 +474,7 @@ class CameraViewModel(
                 try {
                     val halves = DocumentPipeline.splitSpread(context, page.second)
                     if (halves == null) {
-                        _events.trySend(UiEvent.Error("Could not split the page"))
+                        _events.trySend(UiEvent.Error(t("Could not split the page", "تعذر تقسيم الصفحة")))
                         return@withLock
                     }
                     val (left, right) = halves
@@ -494,7 +496,7 @@ class CameraViewModel(
                     throw e
                 } catch (e: Exception) {
                     e.printStackTrace()
-                    _events.trySend(UiEvent.Error("Could not split the page"))
+                    _events.trySend(UiEvent.Error(t("Could not split the page", "تعذر تقسيم الصفحة")))
                 } finally {
                     _uiState.update { it.copy(isProcessingEdit = false) }
                 }
@@ -528,7 +530,7 @@ class CameraViewModel(
                     if (page != null) pages += page.rawPath to page.processedPath else failed++
                     deleteScannerTemp(uri)
                 }
-                if (failed > 0) _events.trySend(UiEvent.Error("Could not read $failed scanned page(s)"))
+                if (failed > 0) _events.trySend(UiEvent.Error(t("Could not read $failed scanned page(s)", "تعذر قراءة $failed صفحة ممسوحة")))
                 _scannerPages.value = pages
             } finally {
                 _isProcessingScan.value = false
@@ -625,7 +627,7 @@ class CameraViewModel(
             try {
                 val doc = repository.getDocumentById(docId)
                 if (doc == null) {
-                    _events.trySend(UiEvent.Error("Document not found"))
+                    _events.trySend(UiEvent.Error(t("Document not found", "المستند غير موجود")))
                     return@launch
                 }
                 val existing = repository.getPagesList(docId)

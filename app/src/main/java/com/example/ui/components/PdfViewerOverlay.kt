@@ -70,6 +70,7 @@ fun PdfViewerOverlay(
     BackHandler { onDismiss() }
 
     var totalPages by remember { mutableIntStateOf(0) }
+    var currentPageIndex by remember { mutableIntStateOf(0) }
     var loadError by remember { mutableStateOf<String?>(null) }
     val pageBitmaps = remember { mutableStateMapOf<Int, Bitmap>() }
     val thumbnailBitmaps = remember { mutableStateMapOf<Int, Bitmap>() }
@@ -158,7 +159,7 @@ fun PdfViewerOverlay(
 
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = pdfFile.nameWithoutExtension.ifBlank { stringResource(R.string.pdf_preview_title) },
+                            text = pdfFile.nameWithoutExtension.replace(Regex("^\\d{10,}_"), "").ifBlank { stringResource(R.string.pdf_preview_title) },
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
                             color = TextPrimary,
@@ -181,7 +182,7 @@ fun PdfViewerOverlay(
                                     color = TextSecondary
                                 )
                                 Text(
-                                    text = stringResource(R.string.pdf_preview_page_indicator, 1, totalPages),
+                                    text = stringResource(R.string.pdf_preview_page_indicator, currentPageIndex + 1, totalPages),
                                     style = MaterialTheme.typography.labelSmall,
                                     color = TextSecondary
                                 )
@@ -275,6 +276,7 @@ fun PdfViewerOverlay(
 
                     // Sync thumbnail list with active page
                     LaunchedEffect(pagerState.currentPage) {
+                        currentPageIndex = pagerState.currentPage
                         thumbListState.animateScrollToItem(pagerState.currentPage)
                     }
 

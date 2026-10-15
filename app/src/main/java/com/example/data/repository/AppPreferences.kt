@@ -180,8 +180,8 @@ class AppPreferences(context: Context) {
      * built-in camera. ID card / passport always use the built-in camera (dedicated guides).
      */
     var scanEngine: String
-        get() = prefs.getString("scan_engine", SCAN_ENGINE_GOOGLE)
-            ?.takeIf { it == SCAN_ENGINE_GOOGLE || it == SCAN_ENGINE_BUILT_IN } ?: SCAN_ENGINE_GOOGLE
+        get() = prefs.getString("scan_engine", SCAN_ENGINE_BUILT_IN)
+            ?.takeIf { it == SCAN_ENGINE_GOOGLE || it == SCAN_ENGINE_BUILT_IN } ?: SCAN_ENGINE_BUILT_IN
         set(value) = prefs.edit().putString("scan_engine", value).apply()
 
     /** Last version announced by a notification (one notification per version). */

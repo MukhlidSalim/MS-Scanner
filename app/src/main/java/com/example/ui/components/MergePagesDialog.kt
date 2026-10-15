@@ -41,6 +41,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
 import com.example.data.model.PageEntity
+import com.example.engine.cv.DocumentPipeline
 import com.example.engine.cv.ImageProcessor
 import com.example.engine.cv.MergeFitMode
 import com.example.engine.cv.MergeGridLayout
@@ -91,7 +92,12 @@ fun MergePagesDialog(
 
     var isMerging by remember { mutableStateOf(false) }
 
-    // External photo picker
+    fun cleanupExtraFiles() {
+        extraImagePaths.forEach { p -> runCatching { File(p).delete() } }
+        extraImagePaths.clear()
+    }
+
+    // External photo picker (bounded EXIF-aware decode to prevent OOM and sideways photos)
     val extraPhotoPickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(10)
     ) { uris: List<Uri> ->
@@ -100,13 +106,11 @@ fun MergePagesDialog(
                 uris.forEach { uri ->
                     try {
                         val savedPath = withContext(Dispatchers.IO) {
-                            context.contentResolver.openInputStream(uri)?.use { stream ->
-                                BitmapFactory.decodeStream(stream)?.let { bmp ->
-                                    try {
-                                        ImageProcessor.saveBitmapToFile(context, bmp, "merge_extra_")
-                                    } finally {
-                                        bmp.recycle()
-                                    }
+                            DocumentPipeline.decodeUprightUri(context, uri, 2200)?.let { bmp ->
+                                try {
+                                    ImageProcessor.saveBitmapToFile(context, bmp, "merge_extra_")
+                                } finally {
+                                    if (!bmp.isRecycled) bmp.recycle()
                                 }
                             }
                         }
@@ -134,7 +138,7 @@ fun MergePagesDialog(
     }
 
     Dialog(
-        onDismissRequest = { if (!isMerging) onDismiss() },
+        onDismissRequest = { if (!isMerging) { cleanupExtraFiles(); onDismiss() } },
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Surface(
@@ -165,7 +169,7 @@ fun MergePagesDialog(
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = { if (!isMerging) onDismiss() }) {
+                        IconButton(onClick = { if (!isMerging) { cleanupExtraFiles(); onDismiss() } }) {
                             Icon(Icons.Default.Close, contentDescription = "Close")
                         }
                     },
@@ -204,6 +208,7 @@ fun MergePagesDialog(
                                             outPrefix = "merged_page_"
                                         )
                                         if (mergedPath.isBlank()) throw IllegalStateException("Merge returned an empty path")
+                                        cleanupExtraFiles()
                                         onMergeCompleted(mergedPath, selectedPageIds.toList(), replaceOriginalPages)
                                     } catch (e: Exception) {
                                         e.printStackTrace()
@@ -364,7 +369,10 @@ fun MergePagesDialog(
                                             modifier = Modifier.fillMaxSize()
                                         )
                                         IconButton(
-                                            onClick = { extraImagePaths.removeAt(index) },
+                                            onClick = {
+                                                val removed = extraImagePaths.removeAt(index)
+                                                runCatching { File(removed).delete() }
+                                            },
                                             modifier = Modifier
                                                 .align(Alignment.TopEnd)
                                                 .size(24.dp)

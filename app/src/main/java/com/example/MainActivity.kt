@@ -364,32 +364,91 @@ class MainActivity : AppCompatActivity() {
     private fun parseIncoming(intent: android.content.Intent?): MainViewModel.IncomingImport? {
         if (intent == null) return null
         val action = intent.action ?: return null
-        val uris: List<Uri> = when (action) {
-            android.content.Intent.ACTION_VIEW, android.content.Intent.ACTION_EDIT -> listOfNotNull(intent.data)
-            android.content.Intent.ACTION_SEND -> listOfNotNull(
-                if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
-                else @Suppress("DEPRECATION") intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM)
-            )
-            android.content.Intent.ACTION_SEND_MULTIPLE ->
-                (if (Build.VERSION.SDK_INT >= 33) intent.getParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
-                else @Suppress("DEPRECATION") intent.getParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM)).orEmpty()
-            else -> emptyList()
+        if (action != android.content.Intent.ACTION_VIEW &&
+            action != android.content.Intent.ACTION_EDIT &&
+            action != android.content.Intent.ACTION_SEND &&
+            action != android.content.Intent.ACTION_SEND_MULTIPLE
+        ) return null
+
+        val extracted = mutableListOf<Uri>()
+        when (action) {
+            android.content.Intent.ACTION_VIEW, android.content.Intent.ACTION_EDIT -> {
+                intent.data?.let { extracted += it }
+            }
+            android.content.Intent.ACTION_SEND -> {
+                val streamUri: Uri? = if (Build.VERSION.SDK_INT >= 33) {
+                    intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableExtra(android.content.Intent.EXTRA_STREAM)
+                }
+                streamUri?.let { extracted += it }
+                if (extracted.isEmpty()) intent.data?.let { extracted += it }
+            }
+            android.content.Intent.ACTION_SEND_MULTIPLE -> {
+                val list: List<Uri> = (if (Build.VERSION.SDK_INT >= 33) {
+                    intent.getParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM, Uri::class.java)
+                } else {
+                    @Suppress("DEPRECATION")
+                    intent.getParcelableArrayListExtra(android.content.Intent.EXTRA_STREAM)
+                }).orEmpty()
+                extracted += list
+            }
         }
+        // Fallback: also inspect ClipData (used by Gmail, Files, WhatsApp, and Chrome when sharing/viewing)
+        val clip = intent.clipData
+        if (clip != null) {
+            for (i in 0 until clip.itemCount) {
+                clip.getItemAt(i)?.uri?.let { u ->
+                    if (u !in extracted) extracted += u
+                }
+            }
+        }
+        val uris = extracted.distinct()
         if (uris.isEmpty()) return null
         if (uris.size == 1 && DefaultPdfApp.isProbeUri(this, uris[0])) return MainViewModel.IncomingImport.DefaultAppCheck
-        val type = intent.type.orEmpty()
-        fun typeOf(u: Uri) = runCatching { contentResolver.getType(u) }.getOrNull() ?: type
-        fun isPdf(u: Uri): Boolean {
-            val t = typeOf(u).lowercase()
-            return t == "application/pdf" || t == "application/x-pdf" || t == "application/acrobat" ||
-                u.toString().endsWith(".pdf", true) ||
-                (t == "application/octet-stream" && (u.lastPathSegment?.endsWith(".pdf", true) == true))
+
+        val intentMime = intent.type.orEmpty().lowercase()
+        fun resolvedMime(u: Uri): String {
+            val crType = runCatching { contentResolver.getType(u) }.getOrNull().orEmpty().lowercase()
+            return if (crType.isBlank() || crType == "application/octet-stream" || crType == "*/*") {
+                intentMime.ifBlank { crType }
+            } else {
+                crType
+            }
         }
+        fun displayNameOf(u: Uri): String {
+            if (u.scheme == "content") {
+                runCatching {
+                    contentResolver.query(u, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) {
+                            val idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (idx != -1) return c.getString(idx).orEmpty()
+                        }
+                    }
+                }
+            }
+            return u.lastPathSegment.orEmpty()
+        }
+        fun isPdf(u: Uri): Boolean {
+            val t = resolvedMime(u)
+            if (t == "application/pdf" || t == "application/x-pdf" || t == "application/acrobat" || t.endsWith("/pdf")) return true
+            if (intentMime == "application/pdf" || intentMime == "application/x-pdf") return true
+            if (u.toString().endsWith(".pdf", ignoreCase = true)) return true
+            if (displayNameOf(u).endsWith(".pdf", ignoreCase = true)) return true
+            // When launched via ACTION_VIEW / ACTION_EDIT, our manifest only registers for PDF files:
+            // any non-image URI sent to ACTION_VIEW / ACTION_EDIT is a PDF candidate.
+            if ((action == android.content.Intent.ACTION_VIEW || action == android.content.Intent.ACTION_EDIT) && !t.startsWith("image/")) {
+                return true
+            }
+            return false
+        }
+
+        val images = uris.filter { resolvedMime(it).startsWith("image/") }
         val pdf = uris.firstOrNull { isPdf(it) }
-        val images = uris.filter { typeOf(it).startsWith("image/") }
         return when {
-            images.isNotEmpty() -> MainViewModel.IncomingImport.Images(images)
             pdf != null -> MainViewModel.IncomingImport.Pdf(pdf)
+            images.isNotEmpty() -> MainViewModel.IncomingImport.Images(images)
             else -> null
         }
     }
@@ -417,7 +476,7 @@ class MainActivity : AppCompatActivity() {
         val isArabic = resources.configuration.locales[0].language == "ar"
         if (usePin && prefs.hasPin) {
             PinLockScreen(
-                title = if (isArabic) "التطبيق مقفل" else "DocScan Pro Locked",
+                title = if (isArabic) "التطبيق مقفل" else "MS Scanner Locked",
                 subtitle = if (lockoutSeconds > 0) {
                     if (isArabic) "محاولات كثيرة خاطئة. حاول بعد $lockoutSeconds ثانية" else "Too many attempts. Try again in $lockoutSeconds s"
                 } else {
@@ -428,7 +487,8 @@ class MainActivity : AppCompatActivity() {
                     lockoutSeconds = listViewModel.pinLockoutSeconds()
                     ok
                 },
-                onSuccess = { mainViewModel.setAuthenticated(true) }
+                onSuccess = { mainViewModel.setAuthenticated(true) },
+                onUseBiometric = if (prefs.lockType == LockType.BIOMETRIC && canAuthenticate()) ({ usePin = false; showBiometricPrompt() }) else null
             )
             return
         }
@@ -504,9 +564,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 override fun onAuthenticationFailed() { super.onAuthenticationFailed() }
             })
+        val isAr = resources.configuration.locales[0].language == "ar"
         val promptInfo = BiometricPrompt.PromptInfo.Builder()
-            .setTitle("DocScan Pro Lock")
-            .setSubtitle("Authenticate to access your documents")
+            .setTitle(if (isAr) "قفل MS Scanner" else "MS Scanner Lock")
+            .setSubtitle(if (isAr) "تحقق من هويتك للوصول إلى مستنداتك" else "Authenticate to access your documents")
             .setAllowedAuthenticators(authenticators())
             .build()
         try {
@@ -621,31 +682,39 @@ fun DocScanApp(
     }
 
     androidx.compose.runtime.LaunchedEffect(incoming) {
-        when (val item = mainViewModel.consumeIncoming()) {
-            is MainViewModel.IncomingImport.Pdf -> {
-                val local = com.example.engine.pdf.PdfEngine.copyUriToLocalPdf(context, item.uri)
-                if (local != null) {
-                    pdfReading = null
-                    preparePdf(local)
-                } else {
-                    android.widget.Toast.makeText(context, tApp("Could not open the PDF", "تعذر فتح ملف PDF"), android.widget.Toast.LENGTH_SHORT).show()
+        val item = incoming ?: return@LaunchedEffect
+        // Consume immediately ONLY after capturing `item`, and run the suspend work on `coroutineScope`
+        // so that setting `_incomingImport.value = null` (which changes the LaunchedEffect key `incoming`)
+        // NEVER cancels `copyUriToLocalPdf` while it is in progress!
+        mainViewModel.consumeIncoming()
+        coroutineScope.launch {
+            when (item) {
+                is MainViewModel.IncomingImport.Pdf -> {
+                    preparingPdf = true
+                    val local = com.example.engine.pdf.PdfEngine.copyUriToLocalPdf(context, item.uri)
+                    if (local != null) {
+                        pdfReading = null
+                        preparePdf(local)
+                    } else {
+                        preparingPdf = false
+                        android.widget.Toast.makeText(context, tApp("Could not open the PDF", "تعذر فتح ملف PDF"), android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+                is MainViewModel.IncomingImport.Images -> {
+                    cameraViewModel.setImportedUrisPendingEdit(item.uris)
+                    navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L)) { launchSingleTop = true }
+                }
+                MainViewModel.IncomingImport.DefaultAppCheck -> {
+                    val st = DefaultPdfApp.status(context)
+                    android.widget.Toast.makeText(
+                        context,
+                        if (st == DefaultPdfApp.Status.ThisApp) tApp("MS Scanner is now your default PDF app ✓", "أصبح MS Scanner التطبيق الافتراضي لملفات PDF ✓")
+                        else tApp("Opened with MS Scanner. Choose \"Always\" to make it the default.", "تم الفتح بـ MS Scanner. اختر «دائماً» لجعله الافتراضي."),
+                        android.widget.Toast.LENGTH_LONG
+                    ).show()
+                    context.findActivity()?.let { if (!it.isTaskRoot) it.finish() }
                 }
             }
-            is MainViewModel.IncomingImport.Images -> {
-                cameraViewModel.setImportedUrisPendingEdit(item.uris)
-                navController.navigate(Screen.EditSession.createRoute("IMPORT", 0L)) { launchSingleTop = true }
-            }
-            MainViewModel.IncomingImport.DefaultAppCheck -> {
-                val st = DefaultPdfApp.status(context)
-                android.widget.Toast.makeText(
-                    context,
-                    if (st == DefaultPdfApp.Status.ThisApp) tApp("MS Scanner is now your default PDF app ✓", "أصبح MS Scanner التطبيق الافتراضي لملفات PDF ✓")
-                    else tApp("Opened with MS Scanner. Choose \"Always\" to make it the default.", "تم الفتح بـ MS Scanner. اختر «دائماً» لجعله الافتراضي."),
-                    android.widget.Toast.LENGTH_LONG
-                ).show()
-                context.findActivity()?.let { if (!it.isTaskRoot) it.finish() }
-            }
-            null -> Unit
         }
     }
     NavHost(
@@ -707,9 +776,13 @@ fun DocScanApp(
                 }
             }
                        val appPrefs = remember { AppPreferences(context) }
-            // Unified Scan Document entry: CameraScanScreen's own mode selector (Document/Batch/
-            // ID Card/Passport) must always be reachable before any external scanner engine starts.
-            val googleEligible = false
+            // Honour the user's Scan Engine choice in Settings (Google ML Kit Scanner vs Built-in Camera)
+            // for normal/batch document capture, while keeping the built-in camera directly accessible for ID/Passport studio.
+            val googleEligible = remember(backStackEntry.id) {
+                appPrefs.scanEngine == AppPreferences.SCAN_ENGINE_GOOGLE &&
+                    GoogleDocumentScanner.isSupported(context) &&
+                    (cameraMode == ScanCameraMode.DOCUMENT || cameraMode == ScanCameraMode.BATCH)
+            }
             val pageLimit: Int? = remember(backStackEntry.id) {
                 when {
                     replacePageId > 0L || cameraViewModel.peekCaptureTarget() is CaptureTarget.Replace -> 1
@@ -825,8 +898,14 @@ fun DocScanApp(
                     navController.popBackStack()
                 },
                 onDocumentCaptured = { pages -> deliverPages(pages, "CAMERA") },
-                onIdCardCaptured = { _, _ -> },
-                onPassportCaptured = { _, _ -> }
+                onIdCardCaptured = { front, back ->
+                    val list = if (back.isNotBlank() && back != front) listOf(Pair(front, front), Pair(back, back)) else listOf(Pair(front, front))
+                    deliverPages(list, "CAMERA")
+                },
+                onPassportCaptured = { front, back ->
+                    val list = if (back.isNotBlank() && back != front) listOf(Pair(front, front), Pair(back, back)) else listOf(Pair(front, front))
+                    deliverPages(list, "CAMERA")
+                }
             )
         }
         composable(

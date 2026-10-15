@@ -90,8 +90,9 @@ object AnnotationEngine {
         val h = output.height.toFloat()
 
         val cm = ColorMatrix()
-        val scale = contrast
-        val translate = (-0.5f * scale + 0.5f) * 255f + (brightness * 255f / 100f)
+        val scale = contrast.coerceIn(0.5f, 2.5f)
+        val effectiveBrightness = if (kotlin.math.abs(brightness) <= 1.5f) brightness * 55f else brightness.coerceIn(-100f, 100f)
+        val translate = (-0.5f * scale + 0.5f) * 255f + (effectiveBrightness * 255f / 100f)
         val array = FloatArray(20)
         array[0] = scale; array[4] = translate
         array[6] = scale; array[9] = translate

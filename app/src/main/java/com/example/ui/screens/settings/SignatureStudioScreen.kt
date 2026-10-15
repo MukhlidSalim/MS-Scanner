@@ -308,7 +308,7 @@ fun FullScreenSignatureWorkspace(
         onDismissRequest = { if (strokes.isEmpty()) onCancel() else showDiscardConfirm = true },
         properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
     ) {
-        Surface(modifier = Modifier.fillMaxSize(), color = Color(0xFFF4F4F7)) {
+        Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             Column(Modifier.fillMaxSize()) {
                 Row(
                     Modifier
