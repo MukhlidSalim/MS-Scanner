@@ -176,7 +176,7 @@ fun DocumentGridItem(
                                 .align(Alignment.BottomStart)
                                 .padding(8.dp),
                             shape = RoundedCornerShape(50),
-                            color = Color(0xCC122820),
+                            color = EmeraldContainerDark.copy(alpha = 0.8f),
                             border = BorderStroke(0.8.dp, Emerald400.copy(alpha = 0.55f))
                         ) {
                             Text(

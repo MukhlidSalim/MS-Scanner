@@ -655,7 +655,6 @@ private fun ReviewStageContent(
             enabled = !isBusy && !isSaving,
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 10.dp)
                 .height(52.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
@@ -855,7 +854,6 @@ private fun PreviewStageContent(
             enabled = !isBusy && !isSaving && !backgroundProcessing && pages.isNotEmpty(),
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 10.dp)
                 .height(52.dp),
             colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),

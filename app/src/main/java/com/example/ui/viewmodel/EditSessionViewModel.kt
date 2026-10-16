@@ -735,9 +735,17 @@ class EditSessionViewModel(
         placedTexts: List<com.example.engine.annotation.PlacedText>,
         shapes: List<com.example.engine.annotation.DrawShape>,
         brightness: Float,
-        contrast: Float
+        contrast: Float,
+        /**
+         * Page being annotated. ROOT CAUSE of "the signature was saved on another page": the page was taken
+         * from selectedPageIndex, which is not the annotated page when the editor was opened from the edit
+         * session ("Markup") or before the pager synced the index. The annotation screen now passes its id.
+         */
+        pageId: Long? = null
     ) {
-        val page = _uiState.value.activePages.getOrNull(_uiState.value.selectedPageIndex) ?: return
+        val state = _uiState.value
+        val page = (pageId?.let { id -> state.activePages.find { it.id == id } })
+            ?: state.activePages.getOrNull(state.selectedPageIndex) ?: return
         viewModelScope.launch(Dispatchers.Default) {
             _uiState.update { it.copy(isLoading = true) }
             try {

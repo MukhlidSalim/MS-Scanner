@@ -119,4 +119,8 @@ interface DocumentDao {
 
     @Query("DELETE FROM signatures WHERE id = :id")
     suspend fun deleteSignature(id: Long)
+
+    /** Rename / edit a saved signature in place (no schema change). */
+    @Update
+    suspend fun updateSignature(sig: SignatureEntity)
 }

@@ -425,6 +425,11 @@ fun HomeScreen(
                                     filesPickerLauncher.launch(arrayOf("image/*", "application/pdf"))
                                 }
                             )
+                            DropdownMenuItem(
+                                text = { Text(if (isArabic) "فتح ملف PDF (قراءة، توقيع، تعديل)" else "Open a PDF (read, sign, edit)") },
+                                leadingIcon = { Icon(Icons.Default.PictureAsPdf, null) },
+                                onClick = { showImportMenu = false; pdfPickerLauncher.launch(arrayOf("application/pdf")) }
+                            )
                         }
                     }
                     // SINGLE, unified entry point for every capture mode (Normal / Multi-Capture / ID Card /
@@ -458,176 +463,9 @@ fun HomeScreen(
             }
             val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
             if (!selectionMode && uiState.searchQuery.isEmpty()) {
-                // Calm Studio Bento Quick-Action Grid (matches the approved 2.0 design)
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Surface(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(18.dp))
-                                .clickable { onNavigateToScan("DOCUMENT") },
-                            shape = RoundedCornerShape(18.dp),
-                            color = Emerald400.copy(alpha = 0.14f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, Emerald400.copy(alpha = 0.40f))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(Emerald400.copy(alpha = 0.22f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.CameraAlt, contentDescription = null, tint = Emerald400, modifier = Modifier.size(20.dp))
-                                }
-                                Column {
-                                    Text(
-                                        text = if (isArabic) "مسح ذكي" else "Smart Scan",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = if (isArabic) "تلقائي متعدد" else "Auto & Batch",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
-                        }
-                        Surface(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(18.dp))
-                                .clickable { onNavigateToScan("ID_CARD") },
-                            shape = RoundedCornerShape(18.dp),
-                            color = GoldBase.copy(alpha = 0.14f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, GoldBase.copy(alpha = 0.40f))
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(36.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(GoldBase.copy(alpha = 0.22f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.Badge, contentDescription = null, tint = GoldBase, modifier = Modifier.size(20.dp))
-                                }
-                                Column {
-                                    Text(
-                                        text = if (isArabic) "الهوية والجواز" else "ID & Passport",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.Bold
-                                    )
-                                    Text(
-                                        text = if (isArabic) "دمج A4 + MRZ" else "A4 Layout & MRZ",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        Surface(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(18.dp))
-                                .clickable { pdfPickerLauncher.launch(arrayOf("application/pdf")) },
-                            shape = RoundedCornerShape(18.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.75f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(CyanScan.copy(alpha = 0.18f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.PictureAsPdf, contentDescription = null, tint = CyanScan, modifier = Modifier.size(19.dp))
-                                }
-                                Column {
-                                    Text(
-                                        text = if (isArabic) "أدوات PDF" else "PDF Tools",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        text = if (isArabic) "قراءة، توقيع، تعديل" else "Read, Sign & Edit",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
-                        }
-                        Surface(
-                            modifier = Modifier
-                                .weight(1f)
-                                .clip(RoundedCornerShape(18.dp))
-                                .clickable { launchGalleryImport() },
-                            shape = RoundedCornerShape(18.dp),
-                            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.75f),
-                            border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 11.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(Emerald400.copy(alpha = 0.16f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Icon(Icons.Default.PhotoLibrary, contentDescription = null, tint = Emerald400, modifier = Modifier.size(19.dp))
-                                }
-                                Column {
-                                    Text(
-                                        text = if (isArabic) "استيراد و OCR" else "Import & OCR",
-                                        style = MaterialTheme.typography.labelLarge,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                    Text(
-                                        text = if (isArabic) "من المعرض للتحرير" else "Gallery to Studio",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontSize = 10.sp
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
+                // The former quick-action grid repeated the Scan button ("Smart Scan", "ID & Passport" = modes of the
+                // same camera) and the Import menu ("Import & OCR" = gallery, "PDF Tools" = files): every action
+                // now has exactly one entry point — the Scan button and the "+" Import menu.
                 FolderChipsRow(
                     folders = folders,
                     selectedFolder = uiState.selectedFolder,

@@ -105,8 +105,9 @@ data class CropEditorResult(
 
 private enum class DetectionStatus { LOADING, DETECTING, DETECTED, NOT_FOUND, STORED, MANUAL }
 
-private val Accent = Color(0xFF34D399)
-private val CanvasBg = Color(0xFF111418)
+// Theme tokens (the previous hard-coded #34D399 / #111418 came from the old palette).
+private val Accent = com.example.ui.theme.Emerald400
+private val CanvasBg = com.example.ui.theme.StudioCanvasBg
 
 /** Brightness slider range passed to ImageProcessor.adjustEnhancements. Keep in sync with that function. */
 private val BRIGHTNESS_RANGE = -1f..1f

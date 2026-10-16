@@ -30,6 +30,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.input.pointer.pointerInput
@@ -75,7 +78,18 @@ sealed class AnnotationAction {
     data class RedactionAction(val rect: RedactionRect) : AnnotationAction()
     data class SignatureAction(val sig: PlacedSignature) : AnnotationAction()
     data class TextAction(val text: PlacedText) : AnnotationAction()
+    /** Objects removed by the eraser in one stroke (undo puts them back). */
+    data class EraseAction(val removed: List<AnnotationAction>) : AnnotationAction()
 }
+
+/**
+ * Eraser behaviour.
+ *  OBJECTS: removes the added items it touches (strokes, shapes, texts, signatures, black-out boxes); the page
+ *           underneath is shown again exactly as it was — nothing is painted.
+ *  COVER:   hides content of the PAGE itself with the paper colour sampled around the touch point (correction
+ *           tape), so the result blends with the surrounding paper instead of leaving a white patch.
+ */
+enum class EraseMode { OBJECTS, COVER }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AnnotationScreen(
@@ -128,6 +142,12 @@ fun AnnotationScreen(
     // ---------------------------------------------------------------------------------------------
     var selectedSignatureIndex by remember { mutableStateOf<Int?>(null) }
     var selectedTextIndex by remember { mutableStateOf<Int?>(null) }
+    // Eraser: mode, live finger position (drives the magnifier) and the removals of the current stroke.
+    var eraseMode by remember { mutableStateOf(EraseMode.OBJECTS) }
+    var eraserFinger by remember { mutableStateOf<Offset?>(null) }
+    var coverColor by remember { mutableStateOf(android.graphics.Color.WHITE) }
+    val strokeRemovals = remember { mutableStateListOf<AnnotationAction>() }
+    var showFullSignaturePad by remember { mutableStateOf(false) }
     /** Approximate on-screen half-size of a placed signature, for hit-testing and the move gesture. */
     fun placedSignatureHalfSize(sig: PlacedSignature, renderW: Float): Pair<Float, Float> {
         val w = renderW * sig.scale
@@ -153,41 +173,83 @@ fun AnnotationScreen(
         }
     }
 
-    fun undo() {
-        if (undoStack.isNotEmpty()) {
-            val lastAction = undoStack.removeAt(undoStack.size - 1)
-            redoStack.add(lastAction)
-            when (lastAction) {
-                is AnnotationAction.PathAction -> paths.remove(lastAction.path)
-                is AnnotationAction.ShapeAction -> shapes.remove(lastAction.shape)
-                is AnnotationAction.RedactionAction -> redactions.remove(lastAction.rect)
-                is AnnotationAction.SignatureAction -> {
-                    placedSignatures.remove(lastAction.sig)
-                    selectedSignatureIndex = null
-                }
-                is AnnotationAction.TextAction -> {
-                    placedTexts.remove(lastAction.text)
-                    selectedTextIndex = null
-                }
-            }
-        }
-    }
-    fun redo() {
-        if (redoStack.isNotEmpty()) {
-            val action = redoStack.removeAt(redoStack.size - 1)
-            undoStack.add(action)
-            when (action) {
-                is AnnotationAction.PathAction -> paths.add(action.path)
-                is AnnotationAction.ShapeAction -> shapes.add(action.shape)
-                is AnnotationAction.RedactionAction -> redactions.add(action.rect)
-                is AnnotationAction.SignatureAction -> placedSignatures.add(action.sig)
-                is AnnotationAction.TextAction -> placedTexts.add(action.text)
-            }
+    fun applyAction(action: AnnotationAction) {
+        when (action) {
+            is AnnotationAction.PathAction -> paths.add(action.path)
+            is AnnotationAction.ShapeAction -> shapes.add(action.shape)
+            is AnnotationAction.RedactionAction -> redactions.add(action.rect)
+            is AnnotationAction.SignatureAction -> placedSignatures.add(action.sig)
+            is AnnotationAction.TextAction -> placedTexts.add(action.text)
+            is AnnotationAction.EraseAction -> action.removed.forEach { revertAction(it) }
         }
     }
 
+    fun revertAction(action: AnnotationAction) {
+        when (action) {
+            is AnnotationAction.PathAction -> paths.remove(action.path)
+            is AnnotationAction.ShapeAction -> shapes.remove(action.shape)
+            is AnnotationAction.RedactionAction -> redactions.remove(action.rect)
+            is AnnotationAction.SignatureAction -> { placedSignatures.remove(action.sig); selectedSignatureIndex = null }
+            is AnnotationAction.TextAction -> { placedTexts.remove(action.text); selectedTextIndex = null }
+            is AnnotationAction.EraseAction -> action.removed.forEach { applyAction(it) }
+        }
+    }
+
+    fun undo() {
+        val last = undoStack.removeLastOrNull() ?: return
+        redoStack.add(last)
+        revertAction(last)
+    }
+
+    fun redo() {
+        val next = redoStack.removeLastOrNull() ?: return
+        undoStack.add(next)
+        applyAction(next)
+    }
+
+    /**
+     * Placed signatures / texts are immutable values edited with copy(): the undo history must follow the
+     * edited value, otherwise "undo" could no longer find (and remove) a signature after it was resized,
+     * recoloured, rotated or moved.
+     */
+    fun updatePlacedSignature(index: Int, updated: PlacedSignature) {
+        val old = placedSignatures.getOrNull(index) ?: return
+        placedSignatures[index] = updated
+        fun swap(list: MutableList<AnnotationAction>) {
+            for (i in list.indices) {
+                val a = list[i]
+                if (a is AnnotationAction.SignatureAction && a.sig === old) list[i] = AnnotationAction.SignatureAction(updated)
+            }
+        }
+        swap(undoStack); swap(redoStack)
+    }
+
+    fun updatePlacedText(index: Int, updated: PlacedText) {
+        val old = placedTexts.getOrNull(index) ?: return
+        placedTexts[index] = updated
+        fun swap(list: MutableList<AnnotationAction>) {
+            for (i in list.indices) {
+                val a = list[i]
+                if (a is AnnotationAction.TextAction && a.text === old) list[i] = AnnotationAction.TextAction(updated)
+            }
+        }
+        swap(undoStack); swap(redoStack)
+    }
+
+    /** Places a signature (new or saved) and selects it immediately so size / colour / rotation / position can be set. */
+    fun placeNewSignature(bmp: Bitmap, scale: Float = SignatureStore.DEFAULT_PLACEMENT_SCALE) {
+        val ps = PlacedSignature(signatureBitmap = bmp, x = 0.5f, y = 0.75f, scale = scale)
+        placedSignatures.add(ps)
+        undoStack.add(AnnotationAction.SignatureAction(ps))
+        redoStack.clear()
+        selectedSignatureIndex = placedSignatures.lastIndex
+        activeTool = AnnotateTool.SIGNATURE
+        showSignatureDialog = false
+    }
+
+    Box(modifier = modifier.fillMaxSize()) {
     Scaffold(
-        modifier = modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
@@ -219,7 +281,8 @@ fun AnnotationScreen(
                                 placedTexts = placedTexts.toList(),
                                 shapes = shapes.toList(),
                                 brightness = brightness,
-                                contrast = contrast
+                                contrast = contrast,
+                                pageId = pageId
                             )
                             onNavigateBack()
                         },
@@ -264,12 +327,28 @@ fun AnnotationScreen(
                             Slider(
                                 value = selected.scale,
                                 onValueChange = { newScale ->
-                                    placedSignatures[selIdx] = selected.copy(scale = newScale.coerceIn(0.12f, 0.7f))
+                                    updatePlacedSignature(selIdx, selected.copy(scale = newScale.coerceIn(0.12f, 0.7f)))
                                 },
                                 valueRange = 0.12f..0.7f,
                                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
                             )
                             Icon(Icons.Default.PhotoSizeSelectLarge, contentDescription = null, modifier = Modifier.size(22.dp))
+                        }
+                        // Rotate (fine slider + quarter turns). Applied identically on screen and when saving.
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(onClick = {
+                                updatePlacedSignature(selIdx, selected.copy(rotation = normalizeAngle(selected.rotation - 90f)))
+                            }) { Icon(Icons.Default.RotateLeft, contentDescription = if (isArabicLocal) "تدوير لليسار" else "Rotate left") }
+                            Slider(
+                                value = selected.rotation,
+                                onValueChange = { updatePlacedSignature(selIdx, selected.copy(rotation = it)) },
+                                valueRange = -180f..180f,
+                                modifier = Modifier.weight(1f)
+                            )
+                            IconButton(onClick = {
+                                updatePlacedSignature(selIdx, selected.copy(rotation = normalizeAngle(selected.rotation + 90f)))
+                            }) { Icon(Icons.Default.RotateRight, contentDescription = if (isArabicLocal) "تدوير لليمين" else "Rotate right") }
+                            Text("${selected.rotation.toInt()}°", style = MaterialTheme.typography.labelSmall, modifier = Modifier.width(36.dp))
                         }
                         // Recolor — reuses SignatureStore.tinted()
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -282,13 +361,16 @@ fun AnnotationScreen(
                                         .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
                                         .clickable {
                                             val recolored = SignatureStore.tinted(selected.signatureBitmap, colorInt)
-                                            placedSignatures[selIdx] = selected.copy(signatureBitmap = recolored)
+                                            updatePlacedSignature(selIdx, selected.copy(signatureBitmap = recolored))
                                         }
                                 )
                             }
                             Spacer(Modifier.weight(1f))
                             IconButton(onClick = {
+                                val removed = placedSignatures[selIdx]
                                 placedSignatures.removeAt(selIdx)
+                                undoStack.add(AnnotationAction.EraseAction(listOf(AnnotationAction.SignatureAction(removed))))
+                                redoStack.clear()
                                 selectedSignatureIndex = null
                             }) {
                                 Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error)
@@ -324,7 +406,7 @@ fun AnnotationScreen(
                             Slider(
                                 value = selectedTxt.textSize,
                                 onValueChange = { newSize ->
-                                    placedTexts[selTxtIdx] = selectedTxt.copy(textSize = newSize.coerceIn(24f, 120f))
+                                    updatePlacedText(selTxtIdx, selectedTxt.copy(textSize = newSize.coerceIn(24f, 120f)))
                                 },
                                 valueRange = 24f..120f,
                                 modifier = Modifier.weight(1f).padding(horizontal = 8.dp)
@@ -340,13 +422,16 @@ fun AnnotationScreen(
                                         .background(c)
                                         .border(2.dp, if (selectedTxt.color == c.toArgb()) MaterialTheme.colorScheme.primary else Color.Transparent, CircleShape)
                                         .clickable {
-                                            placedTexts[selTxtIdx] = selectedTxt.copy(color = c.toArgb())
+                                            updatePlacedText(selTxtIdx, selectedTxt.copy(color = c.toArgb()))
                                         }
                                 )
                             }
                             Spacer(Modifier.weight(1f))
                             IconButton(onClick = {
+                                val removed = placedTexts[selTxtIdx]
                                 placedTexts.removeAt(selTxtIdx)
+                                undoStack.add(AnnotationAction.EraseAction(listOf(AnnotationAction.TextAction(removed))))
+                                redoStack.clear()
                                 selectedTextIndex = null
                             }) {
                                 Icon(Icons.Default.Delete, contentDescription = stringResource(R.string.action_delete), tint = MaterialTheme.colorScheme.error)
@@ -468,6 +553,34 @@ fun AnnotationScreen(
                             leadingIcon = { Icon(Icons.Default.Contrast, contentDescription = null, modifier = Modifier.size(16.dp)) }
                         )
                     }
+                    if (activeTool == AnnotateTool.ERASER) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            FilterChip(
+                                selected = eraseMode == EraseMode.OBJECTS,
+                                onClick = { eraseMode = EraseMode.OBJECTS },
+                                label = { Text(if (isArabicUi) "حذف الإضافات" else "Remove additions") }
+                            )
+                            FilterChip(
+                                selected = eraseMode == EraseMode.COVER,
+                                onClick = { eraseMode = EraseMode.COVER },
+                                label = { Text(if (isArabicUi) "إخفاء من الصفحة" else "Hide page content") }
+                            )
+                        }
+                        Text(
+                            if (eraseMode == EraseMode.OBJECTS) {
+                                if (isArabicUi) "امسح فوق توقيع أو رسم أو نص مضاف لإزالته — تظهر الصفحة الأصلية تحته"
+                                else "Rub over an added signature, drawing or text to remove it — the original page shows again"
+                            } else {
+                                if (isArabicUi) "يغطي جزءاً من الصفحة بلون الورق المحيط به" else "Covers part of the page with the surrounding paper colour"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     if (activeTool in listOf(AnnotateTool.PEN, AnnotateTool.ARROW, AnnotateTool.RECTANGLE, AnnotateTool.CIRCLE)) {
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -503,11 +616,64 @@ fun AnnotationScreen(
                 val canvasH = containerSize.height.toFloat()
                 val bmpW = bmp.width.toFloat()
                 val bmpH = bmp.height.toFloat()
+                // The page is shown with its real proportions (fit inside the work area, never stretched).
                 val scale = minOf(canvasW / bmpW, canvasH / bmpH) * 0.95f
                 val renderW = bmpW * scale
                 val renderH = bmpH * scale
                 val offsetX = (canvasW - renderW) / 2f
                 val offsetY = (canvasH - renderH) / 2f
+                val density = androidx.compose.ui.platform.LocalDensity.current
+                val eraserRadiusPx = with(density) { 14.dp.toPx() }
+                val imageBitmap = remember(bmp) { bmp.asImageBitmap() }
+
+                /** Paper colour around a page point: the bright (paper) end of the local luminance distribution. */
+                fun samplePaperColor(nx: Float, ny: Float): Int {
+                    val cx = (nx * bmp.width).toInt().coerceIn(0, bmp.width - 1)
+                    val cy = (ny * bmp.height).toInt().coerceIn(0, bmp.height - 1)
+                    val r = (bmp.width / 60).coerceIn(6, 40)
+                    val samples = ArrayList<Int>()
+                    var y = (cy - r).coerceAtLeast(0)
+                    while (y <= (cy + r).coerceAtMost(bmp.height - 1)) {
+                        var x = (cx - r).coerceAtLeast(0)
+                        while (x <= (cx + r).coerceAtMost(bmp.width - 1)) {
+                            samples.add(bmp.getPixel(x, y)); x += 2
+                        }
+                        y += 2
+                    }
+                    if (samples.isEmpty()) return android.graphics.Color.WHITE
+                    fun lum(c: Int) = 0.299 * ((c shr 16) and 0xFF) + 0.587 * ((c shr 8) and 0xFF) + 0.114 * (c and 0xFF)
+                    val sorted = samples.sortedBy { lum(it) }
+                    return sorted[(sorted.size * 0.8).toInt().coerceAtMost(sorted.lastIndex)] or (0xFF shl 24)
+                }
+
+                /** Removes every added item under view point [pt]; removed items are collected for one undo step. */
+                fun eraseObjectsAt(pt: Offset) {
+                    fun near(px: Float, py: Float) = hypot(px - pt.x, py - pt.y) <= eraserRadiusPx
+                    fun vx(n: Float) = offsetX + n * renderW
+                    fun vy(n: Float) = offsetY + n * renderH
+                    paths.filter { dp -> dp.points.any { near(vx(it.x), vy(it.y)) } }.forEach {
+                        paths.remove(it); strokeRemovals.add(AnnotationAction.PathAction(it))
+                    }
+                    shapes.filter { s ->
+                        val l = vx(minOf(s.startX, s.endX)) - eraserRadiusPx; val r = vx(maxOf(s.startX, s.endX)) + eraserRadiusPx
+                        val tp = vy(minOf(s.startY, s.endY)) - eraserRadiusPx; val b = vy(maxOf(s.startY, s.endY)) + eraserRadiusPx
+                        pt.x in l..r && pt.y in tp..b
+                    }.forEach { shapes.remove(it); strokeRemovals.add(AnnotationAction.ShapeAction(it)) }
+                    redactions.filter { rc ->
+                        pt.x in vx(rc.left)..vx(rc.right) && pt.y in vy(rc.top)..vy(rc.bottom)
+                    }.forEach { redactions.remove(it); strokeRemovals.add(AnnotationAction.RedactionAction(it)) }
+                    placedSignatures.filter { sig ->
+                        val (hw, hh) = placedSignatureHalfSize(sig, renderW)
+                        kotlin.math.abs(pt.x - vx(sig.x)) <= hw && kotlin.math.abs(pt.y - vy(sig.y)) <= hh
+                    }.forEach { placedSignatures.remove(it); strokeRemovals.add(AnnotationAction.SignatureAction(it)) }
+                    placedTexts.filter { txt ->
+                        val (hw, hh) = placedTextHalfSize(txt, renderW)
+                        kotlin.math.abs(pt.x - vx(txt.x)) <= hw && kotlin.math.abs(pt.y - vy(txt.y)) <= hh
+                    }.forEach { placedTexts.remove(it); strokeRemovals.add(AnnotationAction.TextAction(it)) }
+                    selectedSignatureIndex = null
+                    selectedTextIndex = null
+                }
+
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
@@ -528,7 +694,7 @@ fun AnnotationScreen(
                                         }
                                     }
                                     selectedSignatureIndex = hit
-                                } else if (activeTool == AnnotateTool.TEXT) {
+                                } else {
                                     var hitTxt: Int? = null
                                     for (i in placedTexts.indices.reversed()) {
                                         val pt = placedTexts[i]
@@ -557,92 +723,131 @@ fun AnnotationScreen(
                                     val current = placedSignatures.getOrNull(sigIdx) ?: return@detectDragGestures
                                     val newX = (current.x + dragAmount.x / renderW).coerceIn(0.05f, 0.95f)
                                     val newY = (current.y + dragAmount.y / renderH).coerceIn(0.05f, 0.95f)
-                                    placedSignatures[sigIdx] = current.copy(x = newX, y = newY)
+                                    updatePlacedSignature(sigIdx, current.copy(x = newX, y = newY))
                                 } else if (canDragTxt && txtIdx != null) {
                                     val current = placedTexts.getOrNull(txtIdx) ?: return@detectDragGestures
                                     val newX = (current.x + dragAmount.x / renderW).coerceIn(0.05f, 0.95f)
                                     val newY = (current.y + dragAmount.y / renderH).coerceIn(0.05f, 0.95f)
-                                    placedTexts[txtIdx] = current.copy(x = newX, y = newY)
+                                    updatePlacedText(txtIdx, current.copy(x = newX, y = newY))
                                 }
                             }
                         }
-                        .pointerInput(activeTool, penColor, renderW, renderH, offsetX, offsetY) {
+                        // Drawing layer: pen, highlighter, shapes, black-out and the eraser (both modes).
+                        .pointerInput(activeTool, penColor, eraseMode, renderW, renderH, offsetX, offsetY) {
                             if (activeTool in listOf(AnnotateTool.SIGNATURE, AnnotateTool.TEXT, AnnotateTool.BRIGHTNESS, AnnotateTool.CONTRAST)) return@pointerInput
+                            val objectEraser = activeTool == AnnotateTool.ERASER && eraseMode == EraseMode.OBJECTS
+                            fun finishEraser() {
+                                if (strokeRemovals.isNotEmpty()) {
+                                    undoStack.add(AnnotationAction.EraseAction(strokeRemovals.toList()))
+                                    redoStack.clear()
+                                }
+                                strokeRemovals.clear()
+                                eraserFinger = null
+                            }
                             detectDragGestures(
                                 onDragStart = { startPt ->
                                     val nx = ((startPt.x - offsetX) / renderW).coerceIn(0f, 1f)
                                     val ny = ((startPt.y - offsetY) / renderH).coerceIn(0f, 1f)
-                                    if (activeTool == AnnotateTool.REDACT) {
-                                        redactStart = Offset(nx, ny)
-                                        redactEnd = Offset(nx, ny)
-                                    } else if (activeTool in listOf(AnnotateTool.ARROW, AnnotateTool.RECTANGLE, AnnotateTool.CIRCLE)) {
-                                        shapeStart = Offset(nx, ny)
-                                        shapeEnd = Offset(nx, ny)
-                                    } else {
-                                        currentPoints.clear()
-                                        currentPoints.add(StrokePoint(nx, ny))
+                                    when {
+                                        objectEraser -> {
+                                            strokeRemovals.clear()
+                                            eraserFinger = startPt
+                                            eraseObjectsAt(startPt)
+                                        }
+                                        activeTool == AnnotateTool.REDACT -> {
+                                            redactStart = Offset(nx, ny)
+                                            redactEnd = Offset(nx, ny)
+                                        }
+                                        activeTool in listOf(AnnotateTool.ARROW, AnnotateTool.RECTANGLE, AnnotateTool.CIRCLE) -> {
+                                            shapeStart = Offset(nx, ny)
+                                            shapeEnd = Offset(nx, ny)
+                                        }
+                                        else -> {
+                                            if (activeTool == AnnotateTool.ERASER) {
+                                                coverColor = samplePaperColor(nx, ny)
+                                                eraserFinger = startPt
+                                            }
+                                            currentPoints.clear()
+                                            currentPoints.add(StrokePoint(nx, ny))
+                                        }
                                     }
                                 },
                                 onDrag = { change, _ ->
                                     change.consume()
                                     val nx = ((change.position.x - offsetX) / renderW).coerceIn(0f, 1f)
                                     val ny = ((change.position.y - offsetY) / renderH).coerceIn(0f, 1f)
-                                    if (activeTool == AnnotateTool.REDACT) {
-                                        redactEnd = Offset(nx, ny)
-                                    } else if (activeTool in listOf(AnnotateTool.ARROW, AnnotateTool.RECTANGLE, AnnotateTool.CIRCLE)) {
-                                        shapeEnd = Offset(nx, ny)
-                                    } else {
-                                        currentPoints.add(StrokePoint(nx, ny))
+                                    when {
+                                        objectEraser -> {
+                                            eraserFinger = change.position
+                                            eraseObjectsAt(change.position)
+                                        }
+                                        activeTool == AnnotateTool.REDACT -> redactEnd = Offset(nx, ny)
+                                        activeTool in listOf(AnnotateTool.ARROW, AnnotateTool.RECTANGLE, AnnotateTool.CIRCLE) -> shapeEnd = Offset(nx, ny)
+                                        else -> {
+                                            if (activeTool == AnnotateTool.ERASER) eraserFinger = change.position
+                                            currentPoints.add(StrokePoint(nx, ny))
+                                        }
                                     }
                                 },
+                                onDragCancel = {
+                                    if (objectEraser) finishEraser()
+                                    currentPoints.clear()
+                                    eraserFinger = null
+                                },
                                 onDragEnd = {
-                                    if (activeTool == AnnotateTool.REDACT) {
-                                        val s = redactStart
-                                        val e = redactEnd
-                                        if (s != null && e != null) {
-                                            val r = RedactionRect(
-                                                minOf(s.x, e.x),
-                                                minOf(s.y, e.y),
-                                                maxOf(s.x, e.x),
-                                                maxOf(s.y, e.y)
-                                            )
-                                            redactions.add(r)
-                                            undoStack.add(AnnotationAction.RedactionAction(r))
-                                            redoStack.clear()
-                                        }
-                                        redactStart = null
-                                        redactEnd = null
-                                    } else if (activeTool in listOf(AnnotateTool.ARROW, AnnotateTool.RECTANGLE, AnnotateTool.CIRCLE)) {
-                                        val s = shapeStart
-                                        val e = shapeEnd
-                                        if (s != null && e != null) {
-                                            val type = when (activeTool) {
-                                                AnnotateTool.ARROW -> ShapeType.ARROW
-                                                AnnotateTool.RECTANGLE -> ShapeType.RECTANGLE
-                                                else -> ShapeType.CIRCLE
+                                    when {
+                                        objectEraser -> finishEraser()
+                                        activeTool == AnnotateTool.REDACT -> {
+                                            val s = redactStart
+                                            val e = redactEnd
+                                            if (s != null && e != null) {
+                                                val r = RedactionRect(minOf(s.x, e.x), minOf(s.y, e.y), maxOf(s.x, e.x), maxOf(s.y, e.y))
+                                                redactions.add(r)
+                                                undoStack.add(AnnotationAction.RedactionAction(r))
+                                                redoStack.clear()
                                             }
-                                            val shape = DrawShape(type, s.x, s.y, e.x, e.y, penColor.toArgb(), 4f)
-                                            shapes.add(shape)
-                                            undoStack.add(AnnotationAction.ShapeAction(shape))
-                                            redoStack.clear()
+                                            redactStart = null
+                                            redactEnd = null
                                         }
-                                        shapeStart = null
-                                        shapeEnd = null
-                                    } else {
-                                        if (currentPoints.size > 1) {
-                                            val color = if (activeTool == AnnotateTool.HIGHLIGHTER) Color(0xFFFFEB3B).toArgb() else if (activeTool == AnnotateTool.ERASER) Color.White.toArgb() else penColor.toArgb()
-                                            val dp = DrawPath(
-                                                points = currentPoints.toList(),
-                                                color = color,
-                                                strokeWidth = if (activeTool == AnnotateTool.HIGHLIGHTER) 14f else if (activeTool == AnnotateTool.ERASER) 20f else 3.5f,
-                                                isHighlighter = activeTool == AnnotateTool.HIGHLIGHTER,
-                                                isEraser = activeTool == AnnotateTool.ERASER
-                                            )
-                                            paths.add(dp)
-                                            undoStack.add(AnnotationAction.PathAction(dp))
-                                            redoStack.clear()
+                                        activeTool in listOf(AnnotateTool.ARROW, AnnotateTool.RECTANGLE, AnnotateTool.CIRCLE) -> {
+                                            val s = shapeStart
+                                            val e = shapeEnd
+                                            if (s != null && e != null) {
+                                                val type = when (activeTool) {
+                                                    AnnotateTool.ARROW -> ShapeType.ARROW
+                                                    AnnotateTool.RECTANGLE -> ShapeType.RECTANGLE
+                                                    else -> ShapeType.CIRCLE
+                                                }
+                                                val shape = DrawShape(type, s.x, s.y, e.x, e.y, penColor.toArgb(), 4f)
+                                                shapes.add(shape)
+                                                undoStack.add(AnnotationAction.ShapeAction(shape))
+                                                redoStack.clear()
+                                            }
+                                            shapeStart = null
+                                            shapeEnd = null
                                         }
-                                        currentPoints.clear()
+                                        else -> {
+                                            if (currentPoints.size > 1) {
+                                                val isCover = activeTool == AnnotateTool.ERASER
+                                                val color = when {
+                                                    activeTool == AnnotateTool.HIGHLIGHTER -> Color(0xFFFFEB3B).toArgb()
+                                                    isCover -> coverColor
+                                                    else -> penColor.toArgb()
+                                                }
+                                                val dp = DrawPath(
+                                                    points = currentPoints.toList(),
+                                                    color = color,
+                                                    strokeWidth = if (activeTool == AnnotateTool.HIGHLIGHTER) 14f else if (isCover) 20f else 3.5f,
+                                                    isHighlighter = activeTool == AnnotateTool.HIGHLIGHTER,
+                                                    isEraser = isCover
+                                                )
+                                                paths.add(dp)
+                                                undoStack.add(AnnotationAction.PathAction(dp))
+                                                redoStack.clear()
+                                            }
+                                            currentPoints.clear()
+                                            eraserFinger = null
+                                        }
                                     }
                                 }
                             )
@@ -665,189 +870,191 @@ fun AnnotationScreen(
                                 )
                             )
                         } else null
-                        drawImage(
-                            image = bmp.asImageBitmap(),
-                            dstOffset = androidx.compose.ui.unit.IntOffset(offsetX.toInt(), offsetY.toInt()),
-                            dstSize = IntSize(renderW.toInt(), renderH.toInt()),
-                            colorFilter = liveColorFilter
-                        )
-                        for (dp in paths) {
-                            if (dp.points.size < 2) continue
-                            val path = Path().apply {
-                                moveTo(offsetX + dp.points[0].x * renderW, offsetY + dp.points[0].y * renderH)
-                                for (i in 1 until dp.points.size) {
-                                    lineTo(offsetX + dp.points[i].x * renderW, offsetY + dp.points[i].y * renderH)
-                                }
-                            }
-                            drawPath(
-                                path = path,
-                                color = if (dp.isEraser) Color.White else Color(dp.color).copy(alpha = if (dp.isHighlighter) 0.45f else 1.0f),
-                                style = Stroke(width = dp.strokeWidth * strokeScale, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                            )
+
+                        fun pathOf(points: List<StrokePoint>) = Path().apply {
+                            moveTo(offsetX + points[0].x * renderW, offsetY + points[0].y * renderH)
+                            for (i in 1 until points.size) lineTo(offsetX + points[i].x * renderW, offsetY + points[i].y * renderH)
                         }
-                        if (currentPoints.size > 1) {
-                            val activeP = Path().apply {
-                                moveTo(offsetX + currentPoints[0].x * renderW, offsetY + currentPoints[0].y * renderH)
-                                for (i in 1 until currentPoints.size) {
-                                    lineTo(offsetX + currentPoints[i].x * renderW, offsetY + currentPoints[i].y * renderH)
-                                }
-                            }
-                            val previewColor = when (activeTool) {
-                                AnnotateTool.HIGHLIGHTER -> Color(0xFFFFEB3B).copy(alpha = 0.45f)
-                                AnnotateTool.ERASER -> Color.White
-                                else -> penColor
-                            }
-                            val previewWidth = when (activeTool) {
-                                AnnotateTool.HIGHLIGHTER -> 14f
-                                AnnotateTool.ERASER -> 20f
-                                else -> 3.5f
-                            } * strokeScale
-                            drawPath(
-                                path = activeP,
-                                color = previewColor,
-                                style = Stroke(width = previewWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round)
-                            )
-                        }
-                        for (s in shapes) {
-                            val sx = offsetX + s.startX * renderW
-                            val sy = offsetY + s.startY * renderH
-                            val ex = offsetX + s.endX * renderW
-                            val ey = offsetY + s.endY * renderH
-                            when (s.type) {
-                                ShapeType.RECTANGLE -> {
-                                    drawRect(
-                                        color = Color(s.color),
-                                        topLeft = Offset(minOf(sx, ex), minOf(sy, ey)),
-                                        size = androidx.compose.ui.geometry.Size(kotlin.math.abs(ex - sx), kotlin.math.abs(ey - sy)),
-                                        style = Stroke(width = s.strokeWidth)
-                                    )
-                                }
-                                ShapeType.CIRCLE -> {
-                                    val cx = (sx + ex) / 2f
-                                    val cy = (sy + ey) / 2f
-                                    val rx = kotlin.math.abs(ex - sx) / 2f
-                                    val ry = kotlin.math.abs(ey - sy) / 2f
-                                    drawOval(
-                                        color = Color(s.color),
-                                        topLeft = Offset(cx - rx, cy - ry),
-                                        size = androidx.compose.ui.geometry.Size(rx * 2, ry * 2),
-                                        style = Stroke(width = s.strokeWidth)
-                                    )
-                                }
-                                ShapeType.ARROW -> {
-                                    drawLine(
-                                        color = Color(s.color),
-                                        start = Offset(sx, sy),
-                                        end = Offset(ex, ey),
-                                        strokeWidth = s.strokeWidth
-                                    )
-                                }
-                            }
-                        }
-                        val ss = shapeStart
-                        val se = shapeEnd
-                        if (ss != null && se != null) {
-                            val sx = offsetX + ss.x * renderW
-                            val sy = offsetY + ss.y * renderH
-                            val ex = offsetX + se.x * renderW
-                            val ey = offsetY + se.y * renderH
-                            when (activeTool) {
-                                AnnotateTool.RECTANGLE -> {
-                                    drawRect(
-                                        color = penColor,
-                                        topLeft = Offset(minOf(sx, ex), minOf(sy, ey)),
-                                        size = androidx.compose.ui.geometry.Size(kotlin.math.abs(ex - sx), kotlin.math.abs(ey - sy)),
-                                        style = Stroke(width = 4f)
-                                    )
-                                }
-                                AnnotateTool.CIRCLE -> {
-                                    val cx = (sx + ex) / 2f
-                                    val cy = (sy + ey) / 2f
-                                    val rx = kotlin.math.abs(ex - sx) / 2f
-                                    val ry = kotlin.math.abs(ey - sy) / 2f
-                                    drawOval(
-                                        color = penColor,
-                                        topLeft = Offset(cx - rx, cy - ry),
-                                        size = androidx.compose.ui.geometry.Size(rx * 2, ry * 2),
-                                        style = Stroke(width = 4f)
-                                    )
-                                }
-                                AnnotateTool.ARROW -> {
-                                    drawLine(
-                                        color = penColor,
-                                        start = Offset(sx, sy),
-                                        end = Offset(ex, ey),
-                                        strokeWidth = 4f
-                                    )
-                                }
-                                else -> {}
-                            }
-                        }
-                        // Placed signatures: the selected one gets a selection outline so the user can
-                        // see what Resize/Recolor/Drag currently applies to.
-                        for ((i, sig) in placedSignatures.withIndex()) {
-                            val sigW = (renderW * sig.scale).toInt()
-                            val sigH = (sigW * (sig.signatureBitmap.height.toFloat() / sig.signatureBitmap.width.toFloat())).toInt()
-                            val cx = offsetX + sig.x * renderW
-                            val cy = offsetY + sig.y * renderH
+
+                        /** Page + every annotation. Drawn once normally and once inside the eraser magnifier. */
+                        fun drawScene() {
                             drawImage(
-                                image = sig.signatureBitmap.asImageBitmap(),
-                                dstOffset = androidx.compose.ui.unit.IntOffset((cx - sigW / 2).toInt(), (cy - sigH / 2).toInt()),
-                                dstSize = IntSize(sigW, sigH)
+                                image = imageBitmap,
+                                dstOffset = androidx.compose.ui.unit.IntOffset(offsetX.toInt(), offsetY.toInt()),
+                                dstSize = IntSize(renderW.toInt(), renderH.toInt()),
+                                colorFilter = liveColorFilter
                             )
-                            if (i == selectedSignatureIndex) {
-                                drawRect(
-                                    color = GoldBase,
-                                    topLeft = Offset(cx - sigW / 2f - 6f, cy - sigH / 2f - 6f),
-                                    size = androidx.compose.ui.geometry.Size(sigW + 12f, sigH + 12f),
-                                    style = Stroke(width = 2.5f)
+                            // Cover strokes belong to the page: same colour filter as the page, under every annotation.
+                            for (dp in paths) {
+                                if (!dp.isEraser || dp.points.size < 2) continue
+                                drawPath(
+                                    pathOf(dp.points), Color(dp.color),
+                                    style = Stroke(width = dp.strokeWidth * strokeScale, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round),
+                                    colorFilter = liveColorFilter
                                 )
                             }
-                        }
-                        for ((idx, pt) in placedTexts.withIndex()) {
-                            val cx = offsetX + pt.x * renderW
-                            val cy = offsetY + pt.y * renderH
-                            drawContext.canvas.nativeCanvas.apply {
-                                val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                    textAlign = android.graphics.Paint.Align.CENTER
-                                    color = pt.color
-                                    textSize = pt.textSize * (renderW / 1080f)
+                            if (activeTool == AnnotateTool.ERASER && eraseMode == EraseMode.COVER && currentPoints.size > 1) {
+                                drawPath(
+                                    pathOf(currentPoints), Color(coverColor),
+                                    style = Stroke(width = 20f * strokeScale, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round),
+                                    colorFilter = liveColorFilter
+                                )
+                            }
+                            for (dp in paths) {
+                                if (dp.isEraser || dp.points.size < 2) continue
+                                drawPath(
+                                    path = pathOf(dp.points),
+                                    color = Color(dp.color).copy(alpha = if (dp.isHighlighter) 0.45f else 1.0f),
+                                    style = Stroke(width = dp.strokeWidth * strokeScale, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+                                )
+                            }
+                            if (activeTool != AnnotateTool.ERASER && currentPoints.size > 1) {
+                                val previewColor = if (activeTool == AnnotateTool.HIGHLIGHTER) Color(0xFFFFEB3B).copy(alpha = 0.45f) else penColor
+                                val previewWidth = (if (activeTool == AnnotateTool.HIGHLIGHTER) 14f else 3.5f) * strokeScale
+                                drawPath(
+                                    path = pathOf(currentPoints),
+                                    color = previewColor,
+                                    style = Stroke(width = previewWidth, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round)
+                                )
+                            }
+                            fun drawShapeOf(type: ShapeType, sx: Float, sy: Float, ex: Float, ey: Float, color: Color, width: Float) {
+                                when (type) {
+                                    ShapeType.RECTANGLE -> drawRect(
+                                        color = color,
+                                        topLeft = Offset(minOf(sx, ex), minOf(sy, ey)),
+                                        size = androidx.compose.ui.geometry.Size(kotlin.math.abs(ex - sx), kotlin.math.abs(ey - sy)),
+                                        style = Stroke(width = width)
+                                    )
+                                    ShapeType.CIRCLE -> drawOval(
+                                        color = color,
+                                        topLeft = Offset(minOf(sx, ex), minOf(sy, ey)),
+                                        size = androidx.compose.ui.geometry.Size(kotlin.math.abs(ex - sx), kotlin.math.abs(ey - sy)),
+                                        style = Stroke(width = width)
+                                    )
+                                    ShapeType.ARROW -> {
+                                        drawLine(color = color, start = Offset(sx, sy), end = Offset(ex, ey), strokeWidth = width)
+                                        // Arrow head, same geometry as AnnotationEngine (what you see is what is saved).
+                                        val angle = atan2((ey - sy).toDouble(), (ex - sx).toDouble())
+                                        val len = 28f * (renderW / 400f)
+                                        val a = Math.toRadians(25.0)
+                                        drawLine(color, Offset(ex, ey), Offset((ex - len * cos(angle - a)).toFloat(), (ey - len * sin(angle - a)).toFloat()), width)
+                                        drawLine(color, Offset(ex, ey), Offset((ex - len * cos(angle + a)).toFloat(), (ey - len * sin(angle + a)).toFloat()), width)
+                                    }
                                 }
-                                drawText(pt.text, cx, cy, paint)
                             }
-                            if (idx == selectedTextIndex) {
-                                val (halfW, halfH) = placedTextHalfSize(pt, renderW)
+                            for (s in shapes) {
+                                drawShapeOf(
+                                    s.type, offsetX + s.startX * renderW, offsetY + s.startY * renderH,
+                                    offsetX + s.endX * renderW, offsetY + s.endY * renderH, Color(s.color), s.strokeWidth * (renderW / 400f)
+                                )
+                            }
+                            val ss = shapeStart
+                            val se = shapeEnd
+                            if (ss != null && se != null) {
+                                val type = when (activeTool) {
+                                    AnnotateTool.RECTANGLE -> ShapeType.RECTANGLE
+                                    AnnotateTool.CIRCLE -> ShapeType.CIRCLE
+                                    else -> ShapeType.ARROW
+                                }
+                                drawShapeOf(
+                                    type, offsetX + ss.x * renderW, offsetY + ss.y * renderH,
+                                    offsetX + se.x * renderW, offsetY + se.y * renderH, penColor, 4f * (renderW / 400f)
+                                )
+                            }
+                            // Placed signatures (rotation applied exactly like when saving); the selected one is outlined.
+                            for ((i, sig) in placedSignatures.withIndex()) {
+                                val sigW = (renderW * sig.scale).toInt().coerceAtLeast(1)
+                                val sigH = (sigW * (sig.signatureBitmap.height.toFloat() / sig.signatureBitmap.width.toFloat())).toInt().coerceAtLeast(1)
+                                val cx = offsetX + sig.x * renderW
+                                val cy = offsetY + sig.y * renderH
+                                rotate(sig.rotation, pivot = Offset(cx, cy)) {
+                                    drawImage(
+                                        image = sig.signatureBitmap.asImageBitmap(),
+                                        dstOffset = androidx.compose.ui.unit.IntOffset((cx - sigW / 2).toInt(), (cy - sigH / 2).toInt()),
+                                        dstSize = IntSize(sigW, sigH)
+                                    )
+                                    if (i == selectedSignatureIndex) {
+                                        drawRect(
+                                            color = GoldBase,
+                                            topLeft = Offset(cx - sigW / 2f - 6f, cy - sigH / 2f - 6f),
+                                            size = androidx.compose.ui.geometry.Size(sigW + 12f, sigH + 12f),
+                                            style = Stroke(width = 2.5f)
+                                        )
+                                    }
+                                }
+                            }
+                            for ((idx, pt) in placedTexts.withIndex()) {
+                                val cx = offsetX + pt.x * renderW
+                                val cy = offsetY + pt.y * renderH
+                                drawContext.canvas.nativeCanvas.drawText(
+                                    pt.text, cx, cy,
+                                    android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                                        textAlign = android.graphics.Paint.Align.CENTER
+                                        color = pt.color
+                                        textSize = pt.textSize * (renderW / 1080f)
+                                    }
+                                )
+                                if (idx == selectedTextIndex) {
+                                    val (halfW, halfH) = placedTextHalfSize(pt, renderW)
+                                    drawRect(
+                                        color = GoldBase,
+                                        topLeft = Offset(cx - halfW - 6f, cy - halfH * 1.4f - 4f),
+                                        size = androidx.compose.ui.geometry.Size(halfW * 2f + 12f, halfH * 2f + 8f),
+                                        style = Stroke(width = 2.2f)
+                                    )
+                                }
+                            }
+                            for (r in redactions) {
                                 drawRect(
-                                    color = GoldBase,
-                                    topLeft = Offset(cx - halfW - 6f, cy - halfH * 1.4f - 4f),
-                                    size = androidx.compose.ui.geometry.Size(halfW * 2f + 12f, halfH * 2f + 8f),
-                                    style = Stroke(width = 2.2f)
+                                    color = Color.Black,
+                                    topLeft = Offset(offsetX + r.left * renderW, offsetY + r.top * renderH),
+                                    size = androidx.compose.ui.geometry.Size((r.right - r.left) * renderW, (r.bottom - r.top) * renderH)
+                                )
+                            }
+                            val rs = redactStart
+                            val re = redactEnd
+                            if (rs != null && re != null) {
+                                drawRect(
+                                    color = Color.Black.copy(alpha = 0.7f),
+                                    topLeft = Offset(offsetX + minOf(rs.x, re.x) * renderW, offsetY + minOf(rs.y, re.y) * renderH),
+                                    size = androidx.compose.ui.geometry.Size(kotlin.math.abs(re.x - rs.x) * renderW, kotlin.math.abs(re.y - rs.y) * renderH)
                                 )
                             }
                         }
-                        for (r in redactions) {
-                            val rx = offsetX + r.left * renderW
-                            val ry = offsetY + r.top * renderH
-                            val rw = (r.right - r.left) * renderW
-                            val rh = (r.bottom - r.top) * renderH
-                            drawRect(
-                                color = Color.Black,
-                                topLeft = Offset(rx, ry),
-                                size = androidx.compose.ui.geometry.Size(rw, rh)
-                            )
-                        }
-                        val rs = redactStart
-                        val re = redactEnd
-                        if (rs != null && re != null) {
-                            val rx = offsetX + minOf(rs.x, re.x) * renderW
-                            val ry = offsetY + minOf(rs.y, re.y) * renderH
-                            val rw = kotlin.math.abs(re.x - rs.x) * renderW
-                            val rh = kotlin.math.abs(re.y - rs.y) * renderH
-                            drawRect(
-                                color = Color.Black.copy(alpha = 0.7f),
-                                topLeft = Offset(rx, ry),
-                                size = androidx.compose.ui.geometry.Size(rw, rh)
-                            )
+
+                        drawScene()
+                        // Hairline page border: separates the real page (any paper colour) from the work area.
+                        drawRect(
+                            color = Color.White.copy(alpha = 0.18f),
+                            topLeft = Offset(offsetX, offsetY),
+                            size = androidx.compose.ui.geometry.Size(renderW, renderH),
+                            style = Stroke(width = 1.dp.toPx())
+                        )
+
+                        // Eraser magnifier: an enlarged view of the area under the finger, shown ABOVE the finger
+                        // (below it near the top edge) so it never hides the spot being erased. Display only:
+                        // erasing always uses the real finger position, never loupe coordinates.
+                        val finger = eraserFinger
+                        if (activeTool == AnnotateTool.ERASER && finger != null) {
+                            val radius = 58.dp.toPx()
+                            val gap = 64.dp.toPx()
+                            val zoom = 2.5f
+                            val lx = finger.x.coerceIn(radius + 8f, size.width - radius - 8f)
+                            var ly = finger.y - gap - radius
+                            if (ly < radius + 8f) ly = finger.y + gap + radius
+                            ly = ly.coerceIn(radius + 8f, size.height - radius - 8f)
+                            val center = Offset(lx, ly)
+                            drawCircle(Color.Black, radius = radius, center = center)
+                            clipPath(Path().apply { addOval(androidx.compose.ui.geometry.Rect(center, radius)) }) {
+                                withTransform({
+                                    translate(lx - finger.x * zoom, ly - finger.y * zoom)
+                                    scale(zoom, zoom, pivot = Offset.Zero)
+                                }) { drawScene() }
+                            }
+                            drawCircle(Color.White, radius = eraserRadiusPx * zoom, center = center, style = Stroke(width = 1.5.dp.toPx()))
+                            drawCircle(GoldBase, radius = radius, center = center, style = Stroke(width = 3.dp.toPx()))
+                            // Footprint at the real finger position.
+                            drawCircle(Color.White, radius = eraserRadiusPx, center = finger, style = Stroke(width = 1.5.dp.toPx()))
                         }
                     }
                 }
@@ -857,6 +1064,23 @@ fun AnnotationScreen(
                 }
             }
         }
+    }
+
+    // Full-screen signature pad (same corrected rendering as "My signatures"); the result is saved to the
+    // vault for reuse and placed on the page.
+    if (showFullSignaturePad) {
+        val isArabicPad = context.resources.configuration.locales[0].language == "ar"
+        com.example.ui.screens.settings.FullScreenSignatureWorkspace(
+            isArabic = isArabicPad,
+            title = if (isArabicPad) "توقيع جديد" else "New signature",
+            onCancel = { showFullSignaturePad = false },
+            onSave = { sigBmp ->
+                viewModel.saveSignatureToVault(if (isArabicPad) "توقيع" else "Signature", sigBmp)
+                showFullSignaturePad = false
+                placeNewSignature(sigBmp)
+            }
+        )
+    }
     }
     if (showTextDialog) {
         val isArabicDialog = context.resources.configuration.locales[0].language == "ar"
@@ -914,14 +1138,11 @@ fun AnnotationScreen(
 
         /** Places a signature bitmap (new or from the vault) and immediately selects it for editing,
          *  so Change Color / Resize / Move are available right away. */
-        fun placeAndSelect(bmp: Bitmap) {
-            val ps = PlacedSignature(signatureBitmap = bmp, x = 0.5f, y = 0.75f, scale = 0.35f)
-            placedSignatures.add(ps)
-            undoStack.add(AnnotationAction.SignatureAction(ps))
-            redoStack.clear()
-            selectedSignatureIndex = placedSignatures.lastIndex
-            activeTool = AnnotateTool.SIGNATURE
-            showSignatureDialog = false
+        fun placeAndSelect(bmp: Bitmap, scale: Float = SignatureStore.DEFAULT_PLACEMENT_SCALE) = placeNewSignature(bmp, scale)
+        // The default signature (chosen in Settings > My signatures) is offered first.
+        val defaultSigId = remember { SignatureStore.defaultSignatureId(context) }
+        val orderedSignatures = remember(uiState.savedSignatures, defaultSigId) {
+            uiState.savedSignatures.sortedByDescending { it.id == defaultSigId }
         }
 
         AlertDialog(
@@ -937,7 +1158,7 @@ fun AnnotationScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(uiState.savedSignatures, key = { it.id }) { sig ->
+                            items(orderedSignatures, key = { it.id }) { sig ->
                                 Box(
                                     modifier = Modifier
                                         .size(76.dp, 46.dp)
@@ -949,7 +1170,7 @@ fun AnnotationScreen(
                                                 val bmp = withContext(Dispatchers.IO) {
                                                     SignatureStore.loadDisplayable(sig.imagePath, 800)
                                                 }
-                                                if (bmp != null) placeAndSelect(bmp)
+                                                if (bmp != null) placeAndSelect(bmp, SignatureStore.placementScale(context, sig.imagePath))
                                             }
                                         }
                                 ) {
@@ -959,17 +1180,12 @@ fun AnnotationScreen(
                                         contentScale = ContentScale.Fit,
                                         modifier = Modifier.fillMaxSize().padding(4.dp)
                                     )
-                                    IconButton(
-                                        onClick = { viewModel.deleteSignatureFromVault(sig.id) },
-                                        modifier = Modifier
-                                            .align(Alignment.TopEnd)
-                                            .size(18.dp)
-                                    ) {
+                                    if (sig.id == defaultSigId) {
                                         Icon(
-                                            Icons.Default.Close,
-                                            contentDescription = if (isArabic) "حذف" else "Delete",
-                                            modifier = Modifier.size(12.dp),
-                                            tint = MaterialTheme.colorScheme.error
+                                            Icons.Default.Star,
+                                            contentDescription = if (isArabic) "التوقيع الافتراضي" else "Default signature",
+                                            tint = GoldBase,
+                                            modifier = Modifier.align(Alignment.TopEnd).padding(2.dp).size(14.dp)
                                         )
                                     }
                                 }
@@ -1034,12 +1250,15 @@ fun AnnotationScreen(
                     ) {
                         Text(stringResource(R.string.txt_clear_signature))
                     }
-                    Text(
-                        if (isArabic) "لرسم توقيع في شاشة كاملة ومريحة، استخدم «توقيعاتي» في الإعدادات."
-                        else "For a full-screen, comfortable drawing area, use \"My Signatures\" in Settings.",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    OutlinedButton(
+                        onClick = { showSignatureDialog = false; showFullSignaturePad = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Icon(Icons.Default.Fullscreen, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(if (isArabic) "رسم في شاشة كاملة" else "Draw full screen")
+                    }
                 }
             },
             confirmButton = {
@@ -1083,3 +1302,10 @@ fun AnnotationScreen(
     }
 }
 
+/** Angle in -180..180 (slider range). */
+private fun normalizeAngle(deg: Float): Float {
+    var d = deg % 360f
+    if (d > 180f) d -= 360f
+    if (d < -180f) d += 360f
+    return d
+}

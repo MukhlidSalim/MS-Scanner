@@ -86,8 +86,10 @@ fun SettingsScreen(
         com.example.data.repository.DocumentRepository(context, com.example.data.db.DocScanDatabase.getInstance(context).documentDao())
     }
     val savedSignatures by signatureRepository.getAllSignatures().collectAsState(initial = emptyList())
+    // Box root: the signature vault is a full-screen layer drawn above the settings (not a Dialog window).
+    Box(modifier = modifier.fillMaxSize()) {
     Scaffold(
-        modifier = modifier.fillMaxSize(),
+        modifier = Modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(
@@ -299,6 +301,15 @@ fun SettingsScreen(
                     }
                 }
             }
+            // Default PDF app (was a separate bar pinned under the settings screen).
+            Card(
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)
+            ) {
+                com.example.ui.components.DefaultPdfAppBanner()
+            }
+
             // ======================================================================= OCR
             SectionHeader(t("OCR Settings", "إعدادات استخراج النص (OCR)"))
             SectionCard {
@@ -645,6 +656,7 @@ fun SettingsScreen(
             repository = signatureRepository,
             onDismiss = { showSignatureStudio = false }
         )
+    }
     }
 }
 @Composable

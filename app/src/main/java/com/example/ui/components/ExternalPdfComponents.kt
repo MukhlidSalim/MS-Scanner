@@ -52,15 +52,14 @@ fun DefaultPdfAppBanner(modifier: Modifier = Modifier) {
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
+    // Shown as a card inside Settings (Documents & PDF), so it no longer pads for the navigation bar itself.
     Surface(
         modifier = modifier.fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        tonalElevation = 3.dp
+        color = Color.Transparent
     ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .navigationBarsPadding()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {

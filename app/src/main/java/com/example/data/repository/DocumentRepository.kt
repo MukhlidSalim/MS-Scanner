@@ -460,6 +460,10 @@ class DocumentRepository(
         documentDao.deleteSignature(id)
     }
 
+    suspend fun updateSignature(sig: SignatureEntity) = withContext(Dispatchers.IO) {
+        documentDao.updateSignature(sig)
+    }
+
     suspend fun getStorageStats(): StorageStats = withContext(Dispatchers.IO) {
         val scansDir = java.io.File(context.filesDir, "scans")
         val exportsDir = java.io.File(context.filesDir, "exports")

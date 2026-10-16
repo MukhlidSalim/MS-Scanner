@@ -184,6 +184,58 @@ object SignatureStore {
         return Bitmap.createScaledBitmap(src, w, h, true)
     }
 
+    /**
+     * Rotated copy (clockwise [degrees]) on an enlarged transparent canvas, so no ink is clipped; the result
+     * is trimmed back to the ink. Returns [src] when [degrees] is 0.
+     */
+    fun rotated(src: Bitmap, degrees: Float): Bitmap {
+        val d = ((degrees % 360f) + 360f) % 360f
+        if (d == 0f) return src
+        val m = android.graphics.Matrix().apply { postRotate(d) }
+        val out = Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+        val argb = if (out.config == Bitmap.Config.ARGB_8888) out else out.copy(Bitmap.Config.ARGB_8888, true).also { out.recycle() }
+        return trimToInk(argb, max(4, min(argb.width, argb.height) / 40))
+    }
+
+    /** Overwrites an existing vault PNG in place (edit colour / rotation keeps the same database row). */
+    suspend fun overwritePng(path: String, bitmap: Bitmap): Boolean = withContext(Dispatchers.IO) {
+        val target = File(path)
+        val tmp = File(target.parentFile, target.name + ".tmp")
+        try {
+            FileOutputStream(tmp).use { out -> bitmap.compress(Bitmap.CompressFormat.PNG, 100, out) }
+            if (target.exists() && !target.delete()) return@withContext false
+            tmp.renameTo(target)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        } finally {
+            tmp.delete()
+        }
+    }
+
+    // ------------------------------------------------------------------ per-signature preferences
+    // Kept outside Room (no schema migration): default placement size per signature file, default signature id.
+
+    private fun prefs(context: Context) =
+        context.applicationContext.getSharedPreferences("signature_prefs", Context.MODE_PRIVATE)
+
+    const val DEFAULT_PLACEMENT_SCALE = 0.35f
+
+    /** Width of the signature on the page when it is placed (fraction of the page width). */
+    fun placementScale(context: Context, path: String): Float =
+        prefs(context).getFloat("scale_" + File(path).name, DEFAULT_PLACEMENT_SCALE).coerceIn(0.12f, 0.7f)
+
+    fun setPlacementScale(context: Context, path: String, scale: Float) {
+        prefs(context).edit().putFloat("scale_" + File(path).name, scale.coerceIn(0.12f, 0.7f)).apply()
+    }
+
+    /** Id of the signature offered first when signing (0 = none). */
+    fun defaultSignatureId(context: Context): Long = prefs(context).getLong("default_id", 0L)
+
+    fun setDefaultSignatureId(context: Context, id: Long) {
+        prefs(context).edit().putLong("default_id", id).apply()
+    }
+
     /** Default swatches offered when placing or drawing a signature (ink-like + brand colours). */
     val DEFAULT_COLORS = listOf(
         Color.BLACK,

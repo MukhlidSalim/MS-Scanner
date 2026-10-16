@@ -808,7 +808,7 @@ fun CameraScanScreen(
                                 else -> Icons.Default.FlashOff
                             },
                             contentDescription = "Flash Mode",
-                            tint = if (isTorchActive || flashMode != ImageCapture.FLASH_MODE_OFF) Color.Yellow else Color.White
+                            tint = if (isTorchActive || flashMode != ImageCapture.FLASH_MODE_OFF) GoldBase else Color.White
                         )
                     }
                     IconButton(

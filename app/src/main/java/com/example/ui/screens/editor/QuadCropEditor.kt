@@ -68,7 +68,7 @@ fun QuadCropEditor(
     onDragStart: () -> Unit,
     onDragEnd: () -> Unit,
     modifier: Modifier = Modifier,
-    accent: Color = Color(0xFF34D399),
+    accent: Color = com.example.ui.theme.Emerald400,
     showLoupe: Boolean = true
 ) {
     val density = LocalDensity.current

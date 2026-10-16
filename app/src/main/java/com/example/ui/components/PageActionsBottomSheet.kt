@@ -35,10 +35,6 @@ fun PageActionsBottomSheet(
     pageIndex: Int,
     totalPages: Int,
     onDismiss: () -> Unit,
-    onMergeClick: () -> Unit,
-    onEditCropClick: () -> Unit,
-    onOcrClick: () -> Unit,
-    onAnnotateClick: () -> Unit,
     onRotateClick: () -> Unit,
     onDuplicateClick: () -> Unit,
     onReplaceClick: () -> Unit,
@@ -95,16 +91,12 @@ fun PageActionsBottomSheet(
                 }
             }
 
-            ActionGroup(t("Edit", "تعديل")) {
-                PageActionItem(Icons.Default.Crop, t("Crop & adjust", "قص وضبط"), Modifier.weight(1f)) { onDismiss(); onEditCropClick() }
+            // Crop, Filter, Text (OCR) and Sign are in the page tool row above the page; Merge is in the
+            // document menu / selection bar. This sheet holds only the remaining page actions (no duplicates).
+            ActionGroup(t("This page", "هذه الصفحة")) {
                 PageActionItem(Icons.Default.RotateRight, t("Rotate 90°", "تدوير 90°"), Modifier.weight(1f)) { onDismiss(); onRotateClick() }
-                PageActionItem(Icons.Default.Draw, t("Sign & annotate", "توقيع وتعليق"), Modifier.weight(1f)) { onDismiss(); onAnnotateClick() }
-                PageActionItem(Icons.Default.TextFields, t("Extract text", "استخراج النص"), Modifier.weight(1f)) { onDismiss(); onOcrClick() }
-            }
-            ActionGroup(t("Organize", "تنظيم")) {
-                PageActionItem(Icons.Default.PhotoLibrary, t("Replace image", "استبدال الصورة"), Modifier.weight(1f)) { onDismiss(); onReplaceClick() }
                 PageActionItem(Icons.Default.FileCopy, t("Duplicate", "تكرار"), Modifier.weight(1f)) { onDismiss(); onDuplicateClick() }
-                PageActionItem(Icons.AutoMirrored.Filled.MergeType, t("Merge pages", "دمج صفحات"), Modifier.weight(1f)) { onDismiss(); onMergeClick() }
+                PageActionItem(Icons.Default.FindReplace, t("Replace", "استبدال"), Modifier.weight(1f)) { onDismiss(); onReplaceClick() }
                 PageActionItem(Icons.Default.Print, t("Print page", "طباعة الصفحة"), Modifier.weight(1f)) { onDismiss(); onPrintClick() }
             }
             ActionGroup(t("Share & export this page", "مشاركة وتصدير هذه الصفحة")) {

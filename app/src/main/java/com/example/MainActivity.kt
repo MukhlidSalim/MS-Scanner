@@ -38,7 +38,6 @@ import com.example.data.repository.DocumentRepository
 import com.example.ui.components.PinLockScreen
 import com.example.ui.components.OpenPdfActionDialog
 import com.example.ui.components.PdfViewerOverlay
-import com.example.ui.components.DefaultPdfAppBanner
 import com.example.ui.components.PdfReaderToolsSheet
 import com.example.ui.components.PdfPasswordDialog
 import com.example.engine.pdf.DefaultPdfApp
@@ -973,16 +972,15 @@ fun DocScanApp(
         }
         composable(Screen.Settings.route) {
             val updateCheckState by mainViewModel.updateCheckState.collectAsState()
-            androidx.compose.foundation.layout.Column(Modifier.fillMaxSize()) {
-                SettingsScreen(
-                    viewModel = listViewModel,
-                    onNavigateBack = { navController.popBackStack() },
-                    modifier = Modifier.weight(1f),
-                    updateCheckState = updateCheckState,
-                    onCheckForUpdates = { mainViewModel.checkForUpdates(manual = true) }
-                )
-                DefaultPdfAppBanner()
-            }
+            // The default-PDF-app banner is now a card inside Settings: one full-screen settings layout, so the
+            // signature vault opened from Settings can cover the whole screen.
+            SettingsScreen(
+                viewModel = listViewModel,
+                onNavigateBack = { navController.popBackStack() },
+                modifier = Modifier.fillMaxSize(),
+                updateCheckState = updateCheckState,
+                onCheckForUpdates = { mainViewModel.checkForUpdates(manual = true) }
+            )
         }
         composable(
             route = Screen.EditSession.route,

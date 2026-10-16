@@ -49,7 +49,9 @@ data class PlacedSignature(
     val signatureBitmap: Bitmap,
     val x: Float, // 0f..1f normalized center
     val y: Float, // 0f..1f normalized center
-    val scale: Float = 0.35f // relative to page width
+    val scale: Float = 0.35f, // relative to page width
+    /** Clockwise rotation in degrees around the signature centre (applied on screen AND when burning). */
+    val rotation: Float = 0f
 )
 
 data class PlacedText(
@@ -99,12 +101,35 @@ object AnnotationEngine {
         array[12] = scale; array[14] = translate
         array[18] = 1f
         cm.set(array)
+        // "Cover" eraser strokes are part of the PAGE (they hide page content with the sampled paper colour),
+        // so they are drawn on the page BEFORE the brightness/contrast filter: the covered area then gets
+        // exactly the same adjustment as the paper around it (no visible patch).
+        val coverStrokes = paths.filter { it.isEraser && it.points.size >= 2 }
+        val page = if (coverStrokes.isEmpty()) baseBitmap else {
+            val composed = baseBitmap.copy(Bitmap.Config.ARGB_8888, true)
+            val c = Canvas(composed)
+            for (dp in coverStrokes) {
+                val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = dp.color
+                    strokeWidth = dp.strokeWidth * (w / 400f)
+                    style = Paint.Style.STROKE
+                    strokeCap = Paint.Cap.ROUND
+                    strokeJoin = Paint.Join.ROUND
+                }
+                val path = Path()
+                path.moveTo(dp.points[0].x * w, dp.points[0].y * h)
+                for (i in 1 until dp.points.size) path.lineTo(dp.points[i].x * w, dp.points[i].y * h)
+                c.drawPath(path, paint)
+            }
+            composed
+        }
         val paintBase = Paint().apply { colorFilter = ColorMatrixColorFilter(cm) }
-        canvas.drawBitmap(baseBitmap, 0f, 0f, paintBase)
+        canvas.drawBitmap(page, 0f, 0f, paintBase)
+        if (page !== baseBitmap) page.recycle()
 
         // 1. Draw pen and highlighter strokes
         for (dp in paths) {
-            if (dp.points.size < 2) continue
+            if (dp.points.size < 2 || dp.isEraser) continue
             val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
                 color = dp.color
                 strokeWidth = dp.strokeWidth * (w / 400f)
@@ -113,9 +138,6 @@ object AnnotationEngine {
                 strokeJoin = Paint.Join.ROUND
                 if (dp.isHighlighter) {
                     alpha = 110
-                }
-                if (dp.isEraser) {
-                    color = Color.WHITE
                 }
             }
             val path = Path()
@@ -189,7 +211,10 @@ object AnnotationEngine {
                 (centerX + targetW / 2).toInt(),
                 (centerY + targetH / 2).toInt()
             )
+            canvas.save()
+            if (ps.rotation != 0f) canvas.rotate(ps.rotation, centerX, centerY)
             canvas.drawBitmap(ps.signatureBitmap, null, rect, sigPaint)
+            canvas.restore()
         }
 
         // 4. Draw permanent blackout redaction boxes

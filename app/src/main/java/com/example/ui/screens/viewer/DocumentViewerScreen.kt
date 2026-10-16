@@ -149,6 +149,7 @@ fun DocumentViewerScreen(
     var showMergeDialog by remember { mutableStateOf(false) }
     var initialMergePageIds by remember { mutableStateOf<List<Long>>(emptyList()) }
     var targetPageForReplace by remember { mutableStateOf<PageEntity?>(null) }
+    var replaceChoiceFor by remember { mutableStateOf<PageEntity?>(null) }
     var pendingPdfForSaveAs by remember { mutableStateOf<File?>(null) }
     var pendingImagesForFolder by remember { mutableStateOf<List<String>>(emptyList()) }
     val docTitle = doc?.title?.ifBlank { null } ?: "Document"
@@ -387,26 +388,9 @@ fun DocumentViewerScreen(
                                 tint = if (selectedPageIds.size == pages.size) Emerald400 else MaterialTheme.colorScheme.onSurface
                             )
                         }
-                        if (selectedPageIds.isNotEmpty()) {
-                            IconButton(onClick = {
-                                shareScope = com.example.ui.screens.viewer.components.ShareScope.SELECTED
-                                showShareSheet = true
-                            }) {
-                                Icon(Icons.Default.Share, contentDescription = t("Save & Share Selected", "حفظ ومشاركة المحدد"), tint = MaterialTheme.colorScheme.primary)
-                            }
-                            IconButton(onClick = { showDeleteSelectedConfirmDialog = true }) {
-                                Icon(Icons.Default.Delete, contentDescription = t("Delete Selected", "حذف المحدد"), tint = MaterialTheme.colorScheme.error)
-                            }
-                        }
+                        // Share / Delete for the selection are in the bottom selection bar (one place each).
                     } else {
-                        // Primary action: one entry point for every Save / Share / Export option.
-                        IconButton(onClick = { doc?.let { viewModel.updateDocumentMetadata(it.id, favorite = !it.isFavorite) } }) {
-                            Icon(
-                                if (doc?.isFavorite == true) Icons.Default.Star else Icons.Default.StarBorder,
-                                contentDescription = t("Favorite", "المفضلة"),
-                                tint = if (doc?.isFavorite == true) GoldBase else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
+                        // Primary action: ONE entry point for every Save / Share / Export / Print option.
                         IconButton(
                             onClick = {
                                 shareScope = com.example.ui.screens.viewer.components.ShareScope.DOCUMENT
@@ -426,9 +410,6 @@ fun DocumentViewerScreen(
                                 )
                             }
                         }
-                        IconButton(onClick = { onNavigateToEditSession("EXISTING", docId) }, enabled = pages.isNotEmpty()) {
-                            Icon(Icons.Default.AutoFixHigh, contentDescription = t("Edit all pages", "تعديل كل الصفحات"), tint = Emerald400)
-                        }
                         Box {
                             IconButton(onClick = { showOverflowMenu = true }) {
                                 Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.txt_options))
@@ -443,6 +424,22 @@ fun DocumentViewerScreen(
                                     text = { Text(t("Document info (title, category, tags)", "معلومات المستند (الاسم، التصنيف، الوسوم)")) },
                                     leadingIcon = { Icon(Icons.Default.Info, null) },
                                     onClick = { showOverflowMenu = false; showDocInfo = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(if (doc?.isFavorite == true) t("Remove from favorites", "إزالة من المفضلة") else t("Add to favorites", "إضافة إلى المفضلة")) },
+                                    leadingIcon = {
+                                        Icon(if (doc?.isFavorite == true) Icons.Default.Star else Icons.Default.StarBorder, null, tint = GoldBase)
+                                    },
+                                    onClick = {
+                                        showOverflowMenu = false
+                                        doc?.let { viewModel.updateDocumentMetadata(it.id, favorite = !it.isFavorite) }
+                                    }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text(t("Edit all pages (crop, filters, order)", "تعديل كل الصفحات (قص، فلاتر، ترتيب)")) },
+                                    leadingIcon = { Icon(Icons.Default.AutoFixHigh, null, tint = Emerald400) },
+                                    enabled = pages.isNotEmpty(),
+                                    onClick = { showOverflowMenu = false; onNavigateToEditSession("EXISTING", docId) }
                                 )
                                 DropdownMenuItem(
                                     text = { Text(t("Select pages", "تحديد صفحات")) },
@@ -470,35 +467,7 @@ fun DocumentViewerScreen(
                                         }
                                     )
                                 }
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text(t("Replace page (Camera)", "استبدال الصفحة (كاميرا)")) },
-                                    leadingIcon = { Icon(Icons.Default.CameraAlt, null) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        pages.getOrNull(pagerState.currentPage)?.let { onNavigateToScan(docId, it.id) }
-                                    }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(t("Replace page (Gallery)", "استبدال الصفحة (المعرض)")) },
-                                    leadingIcon = { Icon(Icons.Default.PhotoLibrary, null) },
-                                    onClick = {
-                                        showOverflowMenu = false
-                                        targetPageForReplace = pages.getOrNull(pagerState.currentPage)
-                                        replacePhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                                    }
-                                )
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text(t("PDF settings & export…", "إعدادات وتصدير PDF…")) },
-                                    leadingIcon = { Icon(Icons.Default.PictureAsPdf, null, tint = MaterialTheme.colorScheme.primary) },
-                                    onClick = { showOverflowMenu = false; showPdfExportDialog = true }
-                                )
-                                DropdownMenuItem(
-                                    text = { Text(stringResource(R.string.txt_print)) },
-                                    leadingIcon = { Icon(Icons.Default.Print, null) },
-                                    onClick = { showOverflowMenu = false; print(pages) }
-                                )
+                                // Replace page -> page "More" sheet; PDF settings and Print -> Save & Share sheet.
                             }
                         }
                     }
@@ -537,8 +506,6 @@ fun DocumentViewerScreen(
                         shareScope = com.example.ui.screens.viewer.components.ShareScope.SELECTED
                         showShareSheet = true
                     },
-                    onExportPdf = { showPdfExportDialog = true },
-                    onPrint = { print(targetPages()) },
                     onDuplicate = {
                         selectedPageIds.forEach { viewModel.duplicatePage(it) }
                         exitSelection()
@@ -612,7 +579,7 @@ fun DocumentViewerScreen(
                     Surface(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
                         shape = RoundedCornerShape(12.dp),
-                        color = Color(0xFF451A03),
+                        color = com.example.ui.theme.WarningContainerDark,
                         border = BorderStroke(0.5.dp, WarningAmber.copy(alpha = 0.5f))
                     ) {
                         Row(
@@ -644,7 +611,7 @@ fun DocumentViewerScreen(
                     ) {
                         val current = pages.getOrNull(pagerState.currentPage)
                         PageTool(Icons.Default.ColorLens, stringResource(R.string.txt_filter)) { if (current != null) showFilterSheet = true }
-                        PageTool(Icons.Default.Crop, t("Edit", "تعديل")) { current?.let { onNavigateToCrop(docId, it.id) } }
+                        PageTool(Icons.Default.Crop, t("Crop", "قص")) { current?.let { onNavigateToCrop(docId, it.id) } }
                         PageTool(Icons.Default.TextFields, stringResource(R.string.txt_ocr)) { current?.let { onNavigateToOcr(docId, it.id) } }
                         PageTool(Icons.Default.Draw, stringResource(R.string.txt_sign)) { current?.let { onNavigateToAnnotate(docId, it.id) } }
                         PageTool(Icons.Default.MoreHoriz, t("More", "المزيد")) {
@@ -1053,20 +1020,11 @@ fun DocumentViewerScreen(
             pageIndex = pageForActionsIndex,
             totalPages = pages.size,
             onDismiss = { pageForActions = null },
-            onMergeClick = {
-                pageForActions = null
-                initialMergePageIds = listOf(targetPage.id)
-                showMergeDialog = true
-            },
-            onEditCropClick = { pageForActions = null; onNavigateToCrop(docId, targetPage.id) },
-            onOcrClick = { pageForActions = null; onNavigateToOcr(docId, targetPage.id) },
-            onAnnotateClick = { pageForActions = null; onNavigateToAnnotate(docId, targetPage.id) },
             onRotateClick = { pageForActions = null; viewModel.rotatePage(targetPage.id) },
             onDuplicateClick = { pageForActions = null; viewModel.duplicatePage(targetPage.id) },
             onReplaceClick = {
                 pageForActions = null
-                targetPageForReplace = targetPage
-                replacePhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                replaceChoiceFor = targetPage
             },
             onPrintClick = { pageForActions = null; print(listOf(targetPage)) },
             onShareClick = { pageForActions = null; shareImages(listOf(targetPage), docTitle) },
@@ -1104,6 +1062,29 @@ fun DocumentViewerScreen(
             }
         )
     }
+    // Replace a page: one entry point, two sources.
+    replaceChoiceFor?.let { target ->
+        AlertDialog(
+            onDismissRequest = { replaceChoiceFor = null },
+            shape = RoundedCornerShape(22.dp),
+            title = { Text(t("Replace page ${pages.indexOfFirst { it.id == target.id } + 1}", "استبدال الصفحة ${pages.indexOfFirst { it.id == target.id } + 1}"), fontWeight = FontWeight.Bold) },
+            text = { Text(t("Choose the new image source.", "اختر مصدر الصورة الجديدة.")) },
+            confirmButton = {
+                TextButton(onClick = {
+                    replaceChoiceFor = null
+                    onNavigateToScan(docId, target.id)
+                }) { Icon(Icons.Default.CameraAlt, null); Spacer(Modifier.width(6.dp)); Text(t("Camera", "الكاميرا")) }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    replaceChoiceFor = null
+                    targetPageForReplace = target
+                    replacePhotoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                }) { Icon(Icons.Default.PhotoLibrary, null); Spacer(Modifier.width(6.dp)); Text(t("Gallery", "المعرض")) }
+            }
+        )
+    }
+
     if (showMergeDialog) {
         MergePagesDialog(
             allPages = pages,

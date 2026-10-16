@@ -19,8 +19,6 @@ fun SelectionActionBar(
     isArabic: Boolean,
     onMerge: () -> Unit,
     onShare: () -> Unit,
-    onExportPdf: () -> Unit,
-    onPrint: () -> Unit,
     onDuplicate: () -> Unit,
     onDelete: () -> Unit
 ) {
@@ -48,25 +46,12 @@ fun SelectionActionBar(
             )
             ActionItem(
                 icon = Icons.Default.Share,
-                label = if (isArabic) "مشاركة" else "Share",
+                label = if (isArabic) "حفظ ومشاركة" else "Save & share",
                 enabled = selectedPageIds.isNotEmpty(),
                 tint = MaterialTheme.colorScheme.primary,
                 onClick = onShare
             )
-            ActionItem(
-                icon = Icons.Default.PictureAsPdf,
-                label = "PDF",
-                enabled = selectedPageIds.isNotEmpty(),
-                tint = MaterialTheme.colorScheme.primary,
-                onClick = onExportPdf
-            )
-            ActionItem(
-                icon = Icons.Default.Print,
-                label = if (isArabic) "طباعة" else "Print",
-                enabled = selectedPageIds.isNotEmpty(),
-                tint = MaterialTheme.colorScheme.primary,
-                onClick = onPrint
-            )
+            // PDF settings and Print are in the Save & Share sheet opened by "Share" (one place for every export).
             ActionItem(
                 icon = Icons.Default.FileCopy,
                 label = if (isArabic) "تكرار" else "Copy",
