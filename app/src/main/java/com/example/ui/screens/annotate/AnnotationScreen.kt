@@ -207,6 +207,22 @@ fun AnnotationScreen(
         if (action is AnnotationAction.EraseAction) action.removed.forEach { addItem(it) } else removeItem(action)
     }
 
+    // FIX (build error "Unresolved reference 'undo' / 'redo'"): the top-bar buttons call undo() and redo(),
+    // but the functions themselves were missing. Declared here, after applyAction / revertAction (local
+    // functions must be declared before they are used) and before the Scaffold that calls them.
+    /** Undo: moves the last action to the redo stack and reverts it. */
+    fun undo() {
+        val last = undoStack.removeLastOrNull() ?: return
+        redoStack.add(last)
+        revertAction(last)
+    }
+
+    /** Redo: moves the last undone action back to the undo stack and applies it again. */
+    fun redo() {
+        val next = redoStack.removeLastOrNull() ?: return
+        undoStack.add(next)
+        applyAction(next)
+    }
 
     /**
      * Placed signatures / texts are immutable values edited with copy(): the undo history must follow the
