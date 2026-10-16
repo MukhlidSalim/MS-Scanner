@@ -344,13 +344,15 @@ class DocumentRepository(
     suspend fun insertPage(page: PageEntity): Long = withContext(Dispatchers.IO) {
         val id = documentDao.insertPage(page)
         val pages = documentDao.getPagesListForDocument(page.documentId)
-        val size = computePagesSize(pages)
+        // computePagesSize returns (bytes, formatted): the previous code assigned the Pair to a Long and
+        // called an undefined formatBytes() — a compile error that broke every "Duplicate page" path.
+        val (totalBytes, formattedSize) = computePagesSize(pages)
         documentDao.getDocumentById(page.documentId)?.let { doc ->
             documentDao.updateDocument(
                 doc.copy(
                     pageCount = pages.size,
-                    sizeBytes = size,
-                    fileSizeFormatted = formatBytes(size),
+                    sizeBytes = totalBytes,
+                    fileSizeFormatted = formattedSize,
                     updatedAt = System.currentTimeMillis()
                 )
             )
@@ -517,3 +519,4 @@ class DocumentRepository(
         return size
     }
 }
+

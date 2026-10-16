@@ -384,10 +384,13 @@ class DocumentListViewModel(
         docIds: List<Long>,
         asPng: Boolean,
         action: ExportPdfAction,
+        /** File name chosen in the export dialog (previously ignored: every export was "MS_Scanner_Export"). */
+        title: String = "MS_Scanner_Export",
         onSuccess: (count: Int) -> Unit,
         onError: (String) -> Unit
     ) {
         if (docIds.isEmpty() || _uiState.value.isLoading) return
+        val baseName = title.trim().ifBlank { "MS_Scanner_Export" }
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             try {
@@ -398,8 +401,8 @@ class DocumentListViewModel(
                 }
                 val paths = pages.map { p -> p.processedImagePath.takeIf { it.isNotBlank() && File(it).exists() } ?: p.rawImagePath }
                 val engine = com.example.engine.pdf.PdfEngine
-                val files = if (asPng) engine.exportPngs(context, paths, "MS_Scanner_Export")
-                else engine.prepareImagesForShare(context, paths, "MS_Scanner_Export")
+                val files = if (asPng) engine.exportPngs(context, paths, baseName)
+                else engine.prepareImagesForShare(context, paths, baseName)
                 val mime = if (asPng) "image/png" else "image/jpeg"
                 when (action) {
                     ExportPdfAction.SAVE_TO_DOWNLOADS -> {
@@ -644,9 +647,31 @@ class DocumentListViewModel(
             _events.trySend(UiEvent.Error(if (isArabic) "يرجى تعيين رمز PIN أولاً" else "Set a PIN first"))
             return
         }
+        // A biometric lock on a device that cannot authenticate (no fingerprint / face / screen lock) and
+        // without a PIN fallback locked the user out of the app for good.
+        if (type == LockType.BIOMETRIC && !canUseDeviceAuthentication(context)) {
+            _events.trySend(UiEvent.Error(
+                if (isArabic) "فعّل البصمة أو قفل الشاشة في إعدادات الجهاز أولاً" else "Set up biometrics or a screen lock in device settings first"
+            ))
+            return
+        }
         prefs.lockType = type
         _uiState.update { it.copy(lockType = type) }
     }
+    private fun canUseDeviceAuthentication(ctx: Context): Boolean {
+        val authenticators = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+            androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        } else {
+            androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_WEAK or
+                androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        }
+        return runCatching {
+            androidx.biometric.BiometricManager.from(ctx).canAuthenticate(authenticators) ==
+                androidx.biometric.BiometricManager.BIOMETRIC_SUCCESS
+        }.getOrDefault(false)
+    }
+
     fun setOcrLanguage(lang: com.example.engine.ocr.OcrLanguage) {
         prefs.ocrLanguage = lang.name
         _uiState.update { it.copy(ocrLanguage = lang) }
@@ -673,6 +698,7 @@ class DocumentListViewModel(
         }
     }
 }
+
 
 
 

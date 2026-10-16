@@ -131,33 +131,36 @@ fun rememberDocumentScanController(context: Context): DocumentScanController {
 }
 
 /**
- * FIX (issue 5 — default orientation must reach the real capture, not just a Settings label):
- * locks the Activity's screen orientation to match the actual shape of what is being captured, so the
- * camera sensor/preview truly rotates, not only a drawn guide overlay. Call once near the top of
- * CameraScanScreen's composable body: `LockOrientationForScanMode(scanMode)`.
+ * Keeps the capture screen in PORTRAIT for every mode, and restores the Activity's own setting on exit.
  *
- * - DOCUMENT / BATCH (a normal page or a multi-page stack): SCREEN_ORIENTATION_PORTRAIT.
- * - ID_CARD / PASSPORT (wide documents): SCREEN_ORIENTATION_LANDSCAPE.
+ * ROOT CAUSE of "ID card / passport mode cannot be selected, the screen flips and the app stays in
+ * landscape": the previous version requested LANDSCAPE for ID_CARD / PASSPORT. MainActivity does not
+ * handle orientation config changes, so the request RECREATED the Activity: the camera screen was
+ * recomposed with its start mode (DOCUMENT -> PORTRAIT -> another recreation), and because the effect
+ * read `requestedOrientation` AFTER the recreation, it saved LANDSCAPE as the "previous" value and
+ * restored LANDSCAPE when the camera was closed — the whole app stayed locked in landscape.
  *
- * The orientation lock is scoped to [mode] (re-applied whenever the user switches mode inside the SAME
- * capture session) and is released automatically when the camera screen is left (onDispose), restoring
- * whatever orientation setting the Activity had before — so this never leaks into Home, the viewer, or
- * any other screen, and never overrides the user's later MANUAL rotation of a captured page (that is a
- * separate, existing per-page edit step and is untouched by this lock).
+ * The camera UI, the guides (the ID / passport guide is a landscape-shaped frame drawn inside the
+ * portrait preview) and the detector (aspect ratio = long side / short side, orientation independent)
+ * are all designed for portrait, and the saved photo is made upright from EXIF, so portrait is correct
+ * for every mode. A forced value found on entry (left by a recreation) is never restored: the Activity
+ * goes back to UNSPECIFIED. [mode] is kept for source compatibility with existing callers.
  */
 @Composable
-fun LockOrientationForScanMode(mode: ScanCameraMode) {
+fun LockOrientationForScanMode(@Suppress("UNUSED_PARAMETER") mode: ScanCameraMode) {
     val context = LocalContext.current
-    DisposableEffect(mode) {
+    DisposableEffect(Unit) {
         val activity = context.findActivity()
-        val previous = activity?.requestedOrientation
-        activity?.requestedOrientation = when (mode) {
-            ScanCameraMode.DOCUMENT, ScanCameraMode.BATCH -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            ScanCameraMode.ID_CARD, ScanCameraMode.PASSPORT -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+        val previous = activity?.requestedOrientation ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        val restore = when (previous) {
+            ActivityInfo.SCREEN_ORIENTATION_PORTRAIT,
+            ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            else -> previous
         }
-        onDispose {
-            activity?.requestedOrientation = previous ?: ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        if (activity != null && activity.requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) {
+            activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         }
+        onDispose { activity?.requestedOrientation = restore }
     }
 }
 
@@ -325,3 +328,4 @@ fun DocumentDetectionOverlay(
         }
     }
 }
+

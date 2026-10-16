@@ -41,6 +41,8 @@ import com.example.data.model.CompressionPreset
 import com.example.data.model.PageSizePreset
 import com.example.BuildConfig
 import com.example.engine.updater.UpdateCheckState
+import com.example.engine.pdf.PdfEngine
+import com.example.util.CrashReporter
 /**
  * Settings, reorganized into clearly labelled sections (same visual language as the rest of the app:
  * rounded 16dp cards, outlineVariant border, titleMedium bold section headers) instead of one long
@@ -479,7 +481,7 @@ fun SettingsScreen(
             // ======================================================================= Diagnostics
             SectionHeader(t("Diagnostics & Error Logs", "التشخيص وسجلات الأخطاء"))
             SectionCard {
-                var reportCount by remember { mutableIntStateOf(CrashReporter.listReports(context).size) }
+                var reportCount by remember { mutableIntStateOf(CrashReporter.reports(context).size) }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -671,3 +673,4 @@ private fun IconBadge(icon: androidx.compose.ui.graphics.vector.ImageVector, tin
         Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
     }
 }
+

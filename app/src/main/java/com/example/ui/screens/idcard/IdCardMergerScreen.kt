@@ -54,6 +54,8 @@ fun IdCardMergerScreen(
     onMerged: (String) -> Unit,
     onCancel: () -> Unit
 ) {
+    // Declared before BackHandler: it was read before its declaration (unresolved reference).
+    var isSaving by remember { mutableStateOf(false) }
     BackHandler(enabled = !isSaving) { onCancel() }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
@@ -68,7 +70,6 @@ fun IdCardMergerScreen(
     var isSwapped by remember { mutableStateOf(false) }
     var spacingFactor by remember { mutableFloatStateOf(1.0f) }
     var hasBorder by remember { mutableStateOf(true) }
-    var isSaving by remember { mutableStateOf(false) }
 
     val hasTwoCards = remember(frontImagePath, backImagePath) {
         backImagePath.isNotBlank() && backImagePath != frontImagePath
@@ -105,10 +106,11 @@ fun IdCardMergerScreen(
                 actions = {
                     Button(
                         onClick = {
+                            if (isSaving) return@Button
                             isSaving = true
                             coroutineScope.launch {
                                 val outPrefix = if (isPassportMode) "passport_proc_" else "idcard_proc_"
-                                val mergedPath = ImageProcessor.createIdCardCollage(
+                                val mergedPath = try { ImageProcessor.createIdCardCollage(
                                     context = context,
                                     frontPath = frontImagePath,
                                     backPath = if (hasTwoCards) backImagePath else "",
@@ -120,11 +122,13 @@ fun IdCardMergerScreen(
                                     isPassport = isPassportMode,
                                     spacingFactor = spacingFactor,
                                     hasBorder = hasBorder
-                                )
-                                isSaving = false
+                                ) } finally {
+                                    isSaving = false
+                                }
                                 onMerged(mergedPath)
                             }
                         },
+                        enabled = !isSaving && frontBitmap != null,
                         shape = RoundedCornerShape(14.dp),
                         colors = ButtonDefaults.buttonColors(containerColor = Emerald400, contentColor = Color.Black),
                         modifier = Modifier.padding(end = 8.dp)
@@ -632,3 +636,4 @@ fun IdCardMergerScreen(
         }
     }
 }
+

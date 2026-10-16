@@ -59,11 +59,52 @@ object SignatureStore {
         while (bounds.outWidth / sample > maxDim || bounds.outHeight / sample > maxDim) sample *= 2
         val opts = BitmapFactory.Options().apply { inSampleSize = sample; inPreferredConfig = Bitmap.Config.ARGB_8888 }
         val decoded = BitmapFactory.decodeFile(path, opts) ?: return@withContext null
-        if (hasRealAlpha(decoded)) return@withContext decoded
-        val fixed = stripBackgroundToAlpha(decoded)
-        if (fixed !== decoded) decoded.recycle()
-        fixed
+        val transparent = if (hasRealAlpha(decoded)) decoded else {
+            val fixed = stripBackgroundToAlpha(decoded)
+            if (fixed !== decoded) decoded.recycle()
+            fixed
+        }
+        // Signatures saved before trimming existed carry the whole drawing canvas: trim them on load too.
+        trimToInk(transparent, max(4, min(transparent.width, transparent.height) / 40))
     }
+
+    /**
+     * Crops [src] to the bounding box of its visible ink plus [padding] px.
+     *
+     * ROOT CAUSE of "the placed signature is tiny / its selection box is huge": a signature was saved with
+     * the full drawing surface (most of it transparent). Placement scales the bitmap WIDTH to a fraction of
+     * the page, so the ink itself ended up a small part of that width. Returns [src] when nothing changes
+     * (or when the bitmap has no ink); otherwise [src] is recycled and the cropped copy returned.
+     */
+    fun trimToInk(src: Bitmap, padding: Int = 8): Bitmap {
+        val w = src.width
+        val h = src.height
+        if (w < 2 || h < 2) return src
+        val row = IntArray(w)
+        var minX = w; var minY = h; var maxX = -1; var maxY = -1
+        for (y in 0 until h) {
+            src.getPixels(row, 0, w, 0, y, w, 1)
+            for (x in 0 until w) {
+                if ((row[x] ushr 24) > ALPHA_INK_THRESHOLD) {
+                    if (x < minX) minX = x
+                    if (x > maxX) maxX = x
+                    if (y < minY) minY = y
+                    if (y > maxY) maxY = y
+                }
+            }
+        }
+        if (maxX < 0) return src
+        val l = (minX - padding).coerceAtLeast(0)
+        val t = (minY - padding).coerceAtLeast(0)
+        val r = (maxX + padding).coerceAtMost(w - 1)
+        val b = (maxY + padding).coerceAtMost(h - 1)
+        if (l == 0 && t == 0 && r == w - 1 && b == h - 1) return src
+        val out = Bitmap.createBitmap(src, l, t, r - l + 1, b - t + 1)
+        if (out !== src) src.recycle()
+        return out
+    }
+
+    private const val ALPHA_INK_THRESHOLD = 8
 
     /** True when at least some pixels are not fully opaque (i.e. the file already has genuine transparency). */
     private fun hasRealAlpha(bmp: Bitmap): Boolean {
@@ -152,3 +193,4 @@ object SignatureStore {
         Color.rgb(0x1B, 0x5E, 0x20)    // dark green
     )
 }
+

@@ -85,7 +85,12 @@ object SignatureCorrection {
             drawTaperedStroke(canvas, resampled, widths, stroke.colorArgb)
             anyDrawn = true
         }
-        return if (anyDrawn) bmp else null
+        if (!anyDrawn) {
+            bmp.recycle()
+            return null
+        }
+        // Keep only the ink (+ a small margin): placement and resizing work on the visible signature.
+        return SignatureStore.trimToInk(bmp, (8 * scale).toInt().coerceAtLeast(4))
     }
 
     // ------------------------------------------------------------------------------------- stage 1
@@ -241,3 +246,4 @@ object SignatureCorrection {
         }
     }
 }
+

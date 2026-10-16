@@ -84,6 +84,10 @@ fun PdfViewerOverlay(
         }
     }
 
+    // Saved file name without the "<timestamp>_" prefix added when an incoming PDF is copied locally.
+    val cleanTitle = remember(pdfFile) {
+        pdfFile.nameWithoutExtension.replace(Regex("^\\d{10,}_"), "").ifBlank { "Document" }
+    }
     val displayMetrics = context.resources.displayMetrics
     val targetWidth = displayMetrics.widthPixels.coerceIn(720, 1440)
 
@@ -554,10 +558,10 @@ fun PdfViewerOverlay(
                                     coroutineScope.launch {
                                         // Public Downloads/MS Scanner first (visible in Files); legacy app folder only on Android 7-9.
                                         val publicUri = withContext(Dispatchers.IO) {
-                                            PdfEngine.savePdfToDownloads(context, pdfFile, pdfFile.nameWithoutExtension)
+                                            PdfEngine.savePdfToDownloads(context, pdfFile, cleanTitle)
                                         }
                                         val where: String? = if (publicUri != null) "Downloads/MS Scanner" else withContext(Dispatchers.IO) {
-                                            PdfEngine.savePdfToStorage(context, pdfFile, pdfFile.nameWithoutExtension).let { (u, p) -> if (u != null) (p ?: "Documents") else null }
+                                            PdfEngine.savePdfToStorage(context, pdfFile, cleanTitle).let { (u, p) -> if (u != null) (p ?: "Documents") else null }
                                         }
                                         if (where != null) {
                                             Toast.makeText(context, context.getString(R.string.export_pdf_success_saved, where), Toast.LENGTH_LONG).show()
@@ -700,6 +704,7 @@ class SafePdfSession(val file: File) {
         pfd = null
     }
 }
+
 
 
 

@@ -458,10 +458,12 @@ class MainActivity : AppCompatActivity() {
         mainViewModel.offerIncoming(parseIncoming(intent))
         if (intent.getBooleanExtra(UpdateCheckWorker.EXTRA_OPEN_UPDATE, false)) mainViewModel.checkForUpdates(manual = true)
     }
+    // BIOMETRIC is only enforced when it can actually be satisfied (device authentication available, or a
+    // PIN as fallback); otherwise the user would be locked out (e.g. screen lock removed later).
     private fun isLockEnabled(): Boolean = when (prefs.lockType) {
         LockType.NONE -> false
         LockType.PIN -> prefs.hasPin
-        else -> true
+        else -> canAuthenticate() || prefs.hasPin
     }
     @Composable
     private fun LockScreen(listViewModel: DocumentListViewModel) {
@@ -1112,3 +1114,4 @@ fun DocScanApp(
         }
     }
 }
+

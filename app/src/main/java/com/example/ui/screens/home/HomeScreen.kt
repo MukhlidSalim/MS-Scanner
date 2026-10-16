@@ -836,7 +836,7 @@ fun HomeScreen(
                         }
                     }
                     ExportFormat.JPG, ExportFormat.PNG -> listViewModel.exportDocumentsAsImages(
-                        context, exportDocIds, asPng = format == ExportFormat.PNG, action = action,
+                        context, exportDocIds, asPng = format == ExportFormat.PNG, action = action, title = config.title,
                         onSuccess = { count ->
                             showExportPdfDialog = false
                             exitSelection()
@@ -941,3 +941,4 @@ fun HomeScreen(
         PdfViewerOverlay(pdfFile = file, onDismiss = { previewPdfFile = null })
     }
 }
+

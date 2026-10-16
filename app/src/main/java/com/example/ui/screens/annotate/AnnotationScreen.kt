@@ -90,9 +90,13 @@ fun AnnotationScreen(
     var baseBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
     val coroutineScope = rememberCoroutineScope()
-    LaunchedEffect(pageId) {
-        if (page != null) {
-            baseBitmap = ImageProcessor.loadBitmapFromFile(page.processedImagePath)
+    // Keyed on the page IMAGE, not only the id: when this screen is opened right after a document is
+    // loaded (e.g. "Sign" from the PDF reader), activePages is still empty on the first composition and the
+    // previous LaunchedEffect(pageId) never ran again -> endless spinner.
+    val pageImagePath = page?.processedImagePath
+    LaunchedEffect(pageId, pageImagePath) {
+        if (pageImagePath != null && baseBitmap == null) {
+            baseBitmap = ImageProcessor.loadBitmapFromFile(pageImagePath)
         }
     }
     var activeTool by remember { mutableStateOf(AnnotateTool.PEN) }
@@ -900,7 +904,12 @@ fun AnnotationScreen(
         )
     }
     if (showSignatureDialog) {
-        val signaturePoints = remember { mutableStateListOf<StrokePoint>() }
+        // One list per finger stroke (the previous single list joined separate strokes with straight lines)
+        // with touch timestamps for SignatureCorrection (smoothing + pen-pressure width), and the real pad
+        // size (the previous fixed 400x200 bitmap clipped everything drawn outside that area).
+        val signatureStrokes = remember { mutableStateListOf<List<SignatureCorrection.TimedPoint>>() }
+        val currentSigStroke = remember { mutableStateListOf<SignatureCorrection.TimedPoint>() }
+        var signaturePadSize by remember { mutableStateOf(IntSize.Zero) }
         val isArabic = context.resources.configuration.locales[0].language == "ar"
 
         /** Places a signature bitmap (new or from the vault) and immediately selects it for editing,
@@ -976,30 +985,51 @@ fun AnnotationScreen(
                             .clip(RoundedCornerShape(12.dp))
                             .background(Color.White)
                             .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+                            .onSizeChanged { signaturePadSize = it }
                             .pointerInput(Unit) {
+                                fun now() = android.os.SystemClock.uptimeMillis()
                                 detectDragGestures(
-                                    onDragStart = { signaturePoints.add(StrokePoint(it.x, it.y)) },
+                                    onDragStart = {
+                                        currentSigStroke.clear()
+                                        currentSigStroke.add(SignatureCorrection.TimedPoint(it.x, it.y, now()))
+                                    },
                                     onDrag = { change, _ ->
                                         change.consume()
-                                        signaturePoints.add(StrokePoint(change.position.x, change.position.y))
+                                        currentSigStroke.add(SignatureCorrection.TimedPoint(change.position.x, change.position.y, now()))
+                                    },
+                                    onDragEnd = {
+                                        if (currentSigStroke.size > 1) signatureStrokes.add(currentSigStroke.toList())
+                                        currentSigStroke.clear()
+                                    },
+                                    onDragCancel = {
+                                        if (currentSigStroke.size > 1) signatureStrokes.add(currentSigStroke.toList())
+                                        currentSigStroke.clear()
                                     }
                                 )
                             }
                     ) {
                         Canvas(modifier = Modifier.fillMaxSize()) {
-                            if (signaturePoints.size > 1) {
+                            fun drawStroke(pts: List<SignatureCorrection.TimedPoint>) {
+                                if (pts.size < 2) return
                                 val p = Path().apply {
-                                    moveTo(signaturePoints[0].x, signaturePoints[0].y)
-                                    for (i in 1 until signaturePoints.size) {
-                                        lineTo(signaturePoints[i].x, signaturePoints[i].y)
-                                    }
+                                    moveTo(pts[0].x, pts[0].y)
+                                    for (i in 1 until pts.size) lineTo(pts[i].x, pts[i].y)
                                 }
-                                drawPath(p, Color.Black, style = Stroke(width = 4f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                                drawPath(
+                                    p, Color.Black,
+                                    style = Stroke(
+                                        width = 4f,
+                                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                                        join = androidx.compose.ui.graphics.StrokeJoin.Round
+                                    )
+                                )
                             }
+                            signatureStrokes.forEach { drawStroke(it) }
+                            drawStroke(currentSigStroke)
                         }
                     }
                     TextButton(
-                        onClick = { signaturePoints.clear() },
+                        onClick = { signatureStrokes.clear(); currentSigStroke.clear() },
                         modifier = Modifier.align(Alignment.End)
                     ) {
                         Text(stringResource(R.string.txt_clear_signature))
@@ -1015,24 +1045,26 @@ fun AnnotationScreen(
             confirmButton = {
                 Button(
                     onClick = {
-                        if (signaturePoints.size > 1) {
-                            val sigBmp = Bitmap.createBitmap(400, 200, Bitmap.Config.ARGB_8888)
-                            val canvas = android.graphics.Canvas(sigBmp)
-                            val paint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
-                                color = android.graphics.Color.BLACK
-                                strokeWidth = 5f
-                                style = android.graphics.Paint.Style.STROKE
-                                strokeCap = android.graphics.Paint.Cap.ROUND
-                            }
-                            val p = android.graphics.Path().apply {
-                                moveTo(signaturePoints[0].x, signaturePoints[0].y)
-                                for (i in 1 until signaturePoints.size) {
-                                    lineTo(signaturePoints[i].x, signaturePoints[i].y)
+                        if (currentSigStroke.size > 1) signatureStrokes.add(currentSigStroke.toList())
+                        currentSigStroke.clear()
+                        val pad = signaturePadSize
+                        val strokes = signatureStrokes.toList()
+                        if (strokes.isNotEmpty() && pad.width > 0 && pad.height > 0) {
+                            coroutineScope.launch {
+                                // Same rendering as "My signatures": smoothed, pressure width, transparent, trimmed.
+                                val sigBmp = withContext(Dispatchers.Default) {
+                                    SignatureCorrection.render(
+                                        strokes.map { SignatureCorrection.CorrectedStroke(it, android.graphics.Color.BLACK) },
+                                        pad.width, pad.height
+                                    )
+                                }
+                                if (sigBmp != null) {
+                                    viewModel.saveSignatureToVault("Signature", sigBmp)
+                                    placeAndSelect(sigBmp)
+                                } else {
+                                    showSignatureDialog = false
                                 }
                             }
-                            canvas.drawPath(p, paint)
-                            viewModel.saveSignatureToVault("Signature", sigBmp)
-                            placeAndSelect(sigBmp)
                         } else {
                             showSignatureDialog = false
                         }
@@ -1050,3 +1082,4 @@ fun AnnotationScreen(
         )
     }
 }
+

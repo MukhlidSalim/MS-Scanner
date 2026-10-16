@@ -34,6 +34,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -61,6 +62,7 @@ import com.example.engine.cv.LiveDetectionPhase
 import com.example.engine.cv.ProcessedPage
 import com.example.engine.cv.QuadStore
 import com.example.ui.screens.camera.components.PermissionRationaleScreen
+import com.example.engine.scanner.findActivity
 import com.example.ui.screens.idcard.IdCardMergerScreen
 import com.example.ui.theme.*
 import kotlinx.coroutines.CancellationException
@@ -93,10 +95,8 @@ enum class ScanCameraMode(val titleEn: String, val titleAr: String) {
  * Multi-page (BATCH): capture is continuous (Page 1 -> Page 2 -> ... -> Finish); the editor is never
  * opened between pages. Auto-capture re-arms only when the page changes (no duplicate shots).
  *
- * FIX (issue 5 — default orientation must reach the real capture): the screen now locks the actual
- * device/sensor orientation to match the mode (Normal Document / Multi-Capture = Portrait; ID Card /
- * Passport = Landscape) via LockOrientationForScanMode(scanMode), instead of only drawing a guide
- * rectangle. See DocumentScanController.kt for that composable and its root-cause explanation.
+ * Orientation: the screen is held in portrait for every mode (LockOrientationForScanMode); the ID card /
+ * passport guide is a landscape-shaped frame inside the portrait preview. See DocumentScanController.kt.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -124,11 +124,10 @@ fun CameraScanScreen(
     // Replacing a single page never makes sense in batch mode.
     val requestedMode = if (useSavedMode && replacePageId == 0L) savedMode else initialMode
     val startMode = if (replacePageId > 0L && requestedMode == ScanCameraMode.BATCH) ScanCameraMode.DOCUMENT else requestedMode
-    var scanMode by remember { mutableStateOf(startMode) }
+    // Saveable: the selected mode survives an Activity recreation (rotation, language change, process restore).
+    var scanMode by rememberSaveable { mutableStateOf(startMode) }
     val isMultiPage = scanMode == ScanCameraMode.BATCH
-    // FIX (issue 5): locks the real screen/sensor orientation to the active capture mode (Portrait for
-    // Normal Document / Multi-Capture, Landscape for ID Card / Passport), and restores the previous
-    // orientation automatically when this screen is left. See DocumentScanController.kt.
+    // Portrait for every mode; the Activity's own orientation setting is restored when the screen is left.
     LockOrientationForScanMode(scanMode)
     // Camera runtime permission state
     var hasCameraPermission by remember {
@@ -136,11 +135,15 @@ fun CameraScanScreen(
             ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         )
     }
+    // After a "Don't ask again" denial the system dialog is never shown again: the button must open the
+    // app settings instead (previously it silently did nothing).
+    var permissionDeniedOnce by rememberSaveable { mutableStateOf(false) }
     val permissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         hasCameraPermission = isGranted
         if (!isGranted) {
+            permissionDeniedOnce = true
             Toast.makeText(
                 context,
                 if (isArabic) "إذن الكاميرا مطلوب لمسح المستندات" else "Camera permission required to scan",
@@ -153,12 +156,34 @@ fun CameraScanScreen(
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
     }
+    val requestCameraPermission: () -> Unit = {
+        val activity = context.findActivity()
+        val canAskAgain = activity == null ||
+            androidx.core.app.ActivityCompat.shouldShowRequestPermissionRationale(activity, Manifest.permission.CAMERA)
+        if (permissionDeniedOnce && !canAskAgain) {
+            runCatching {
+                context.startActivity(
+                    android.content.Intent(
+                        android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.fromParts("package", context.packageName, null)
+                    ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }
+        } else {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
     var cameraProvider by remember { mutableStateOf<ProcessCameraProvider?>(null) }
     // Rebind camera on resume (prevents frozen preview after returning from system camera / picker).
     var resumedCount by remember { mutableStateOf(0) }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) resumedCount++
+            if (event == Lifecycle.Event.ON_RESUME) {
+                resumedCount++
+                // Permission granted from the system settings while the app was in background.
+                hasCameraPermission = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+            }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -273,13 +298,22 @@ fun CameraScanScreen(
     fun deliverPages(pages: List<Pair<String, String>>) {
         if (pages.isEmpty()) return
         when (scanMode) {
-            ScanCameraMode.DOCUMENT -> onDocumentCaptured(listOf(pages.first()))
+            // Several images picked from the gallery in Document mode were silently reduced to the first
+            // one (the others were never shown and their files leaked). All pages are delivered now; only a
+            // single-page replacement keeps one page.
+            ScanCameraMode.DOCUMENT -> if (replacePageId > 0L) {
+                pages.drop(1).forEach { deletePageFiles(it) }
+                onDocumentCaptured(listOf(pages.first()))
+            } else {
+                onDocumentCaptured(pages)
+            }
             ScanCameraMode.BATCH -> batchPages.addAll(pages)
             ScanCameraMode.ID_CARD, ScanCameraMode.PASSPORT -> {
                 val front = frontPage
                 when {
                     pages.size >= 2 -> {
                         frontPage = null
+                        pages.drop(2).forEach { deletePageFiles(it) } // a card / passport has two sides
                         pendingIdCardCollage = Pair(pages[0], pages[1])
                     }
                     front == null -> frontPage = pages[0]
@@ -305,7 +339,10 @@ fun CameraScanScreen(
                 var failed = 0
                 for ((index, uri) in uris.withIndex()) {
                     val page: ProcessedPage? = try {
-                        DocumentPipeline.processUri(context, uri, expectedAspectRatio = aspect, prefix = "import_p${index + 1}")
+                        DocumentPipeline.processUri(
+                            context, uri, expectedAspectRatio = aspect,
+                            filter = DocumentScanController.defaultFilterFor(scanMode), prefix = "import_p${index + 1}"
+                        )
                     } catch (e: CancellationException) {
                         throw e
                     } catch (e: Throwable) {
@@ -348,6 +385,8 @@ fun CameraScanScreen(
                     DocumentPipeline.processFile(
                         context, file.absolutePath,
                         expectedAspectRatio = DocumentScanController.expectedAspectFor(scanMode),
+                        // Same default as the in-app shutter (Original for Document / Batch).
+                        filter = DocumentScanController.defaultFilterFor(scanMode),
                         prefix = "cam"
                     )
                 } catch (e: CancellationException) {
@@ -568,7 +607,7 @@ fun CameraScanScreen(
         if (!hasCameraPermission) {
             PermissionRationaleScreen(
                 isArabic = isArabic,
-                onGrantPermission = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                onGrantPermission = requestCameraPermission,
                 onSelectFromGallery = { launchGalleryImport() },
                 onNavigateBack = onNavigateBack
             )
@@ -1107,3 +1146,4 @@ fun CameraScanScreen(
         }
     }
 }
+

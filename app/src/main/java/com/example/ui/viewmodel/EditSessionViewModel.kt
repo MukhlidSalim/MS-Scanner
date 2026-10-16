@@ -752,11 +752,32 @@ class EditSessionViewModel(
                         if (annotatedBmp !== baseBmp) annotatedBmp.recycle()
                         baseBmp.recycle()
                     }
-                    repository.updatePage(page.copy(processedImagePath = newPath))
+                    // ROOT CAUSE of "the signature disappears after rotating / changing the filter": every later
+                    // edit re-renders the page from its RAW image (warp -> rotate -> filter), and the annotations
+                    // were only burned into the PROCESSED image. The annotated page now becomes the page's new
+                    // source: raw = processed = annotated, full-page quad, rotation 0, no filter, detection
+                    // SKIPPED (already straight). Later rotate / filter / crop keep the signature.
+                    val fullQuad = DocumentQuad.fullQuad()
+                    QuadStore.save(newPath, fullQuad)
+                    QuadStore.saveStatus(newPath, com.example.engine.cv.DetectionStatus.SKIPPED)
                     OcrLayoutStore.copy(page.processedImagePath, newPath)
-                    if (page.processedImagePath != page.rawImagePath) {
-                        runCatching { File(page.processedImagePath).delete() }
-                        OcrLayoutStore.delete(page.processedImagePath)
+                    repository.updatePage(
+                        page.copy(
+                            rawImagePath = newPath,
+                            processedImagePath = newPath,
+                            cropQuadJson = fullQuad.toJson(),
+                            rotationDegrees = 0,
+                            filterType = FilterType.ORIGINAL.name
+                        )
+                    )
+                    val stillUsed = repository.getPagesList(page.documentId)
+                        .flatMap { listOf(it.rawImagePath, it.processedImagePath) }.toSet()
+                    listOf(page.processedImagePath, page.rawImagePath).distinct().forEach { old ->
+                        if (old.isNotBlank() && old != newPath && old !in stillUsed) {
+                            runCatching { File(old).delete() }
+                            OcrLayoutStore.delete(old)
+                            QuadStore.delete(old)
+                        }
                     }
                     qualityCache.remove(page.id)
                     if (page.pageIndex == 0) refreshThumbnail(page.documentId, newPath)
@@ -883,7 +904,8 @@ class EditSessionViewModel(
             } else {
                 repository.addPageToDocument(docId, mergedImagePath, mergedImagePath)
             }
-            refreshThumbnail(docId, outFile.absolutePath)
+            // Thumbnail = first page AFTER the merge (the old code referenced an undefined `outFile`).
+            refreshThumbnail(docId)
             DocumentAnalysisWorker.enqueue(context, docId, generatedTitle = false)
             onComplete()
         }
@@ -914,3 +936,4 @@ class EditSessionViewModel(
         _uiState.update { it.copy(defaultPdfPageSize = size) }
     }
 }
+
