@@ -173,39 +173,40 @@ fun AnnotationScreen(
         }
     }
 
-    fun applyAction(action: AnnotationAction) {
+    // Adds / removes ONE item. An EraseAction only contains simple items, so no mutual recursion is needed
+    // (a Kotlin local function cannot call a local function declared after it).
+    fun addItem(action: AnnotationAction) {
         when (action) {
             is AnnotationAction.PathAction -> paths.add(action.path)
             is AnnotationAction.ShapeAction -> shapes.add(action.shape)
             is AnnotationAction.RedactionAction -> redactions.add(action.rect)
             is AnnotationAction.SignatureAction -> placedSignatures.add(action.sig)
             is AnnotationAction.TextAction -> placedTexts.add(action.text)
-            is AnnotationAction.EraseAction -> action.removed.forEach { revertAction(it) }
+            is AnnotationAction.EraseAction -> Unit
         }
     }
 
-    fun revertAction(action: AnnotationAction) {
+    fun removeItem(action: AnnotationAction) {
         when (action) {
             is AnnotationAction.PathAction -> paths.remove(action.path)
             is AnnotationAction.ShapeAction -> shapes.remove(action.shape)
             is AnnotationAction.RedactionAction -> redactions.remove(action.rect)
             is AnnotationAction.SignatureAction -> { placedSignatures.remove(action.sig); selectedSignatureIndex = null }
             is AnnotationAction.TextAction -> { placedTexts.remove(action.text); selectedTextIndex = null }
-            is AnnotationAction.EraseAction -> action.removed.forEach { applyAction(it) }
+            is AnnotationAction.EraseAction -> Unit
         }
     }
 
-    fun undo() {
-        val last = undoStack.removeLastOrNull() ?: return
-        redoStack.add(last)
-        revertAction(last)
+    /** Re-applies an action (redo): an erase removes its items again, anything else is added back. */
+    fun applyAction(action: AnnotationAction) {
+        if (action is AnnotationAction.EraseAction) action.removed.forEach { removeItem(it) } else addItem(action)
     }
 
-    fun redo() {
-        val next = redoStack.removeLastOrNull() ?: return
-        undoStack.add(next)
-        applyAction(next)
+    /** Reverts an action (undo): an erase restores its items, anything else is removed. */
+    fun revertAction(action: AnnotationAction) {
+        if (action is AnnotationAction.EraseAction) action.removed.forEach { addItem(it) } else removeItem(action)
     }
+
 
     /**
      * Placed signatures / texts are immutable values edited with copy(): the undo history must follow the
