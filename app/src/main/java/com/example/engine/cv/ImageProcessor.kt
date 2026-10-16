@@ -233,8 +233,9 @@ object ImageProcessor {
     suspend fun applyFilter(src: Bitmap, filter: FilterType): Bitmap = withContext(Dispatchers.Default) {
         when (filter) {
             FilterType.ORIGINAL -> src.copy(src.config ?: Bitmap.Config.ARGB_8888, true)
-            FilterType.AUTO -> applyAutoScan(src)
-            FilterType.MAGIC -> applyMagicColor(src)
+            // Real illumination flattening (shadow removal); classic filters remain as a safe fallback.
+            FilterType.AUTO -> applyShadowFreeScan(src, saturation = 1.05f) ?: applyAutoScan(src)
+            FilterType.MAGIC -> applyShadowFreeScan(src, saturation = 1.25f) ?: applyMagicColor(src)
             FilterType.COLOR -> applyColorEnhancement(src)
             FilterType.ENHANCED -> applyEnhanced(src)
             FilterType.GRAYSCALE -> applyGrayscale(src)
@@ -244,6 +245,90 @@ object ImageProcessor {
             FilterType.HIGH_CONTRAST -> applyHighContrast(src)
             FilterType.VIBRANT -> applyVibrant(src)
         }
+    }
+
+    /**
+     * Illumination flattening (shadow / uneven-light removal) that keeps ink and photos intact:
+     *  1. paper level estimated on a <=400 px copy: DILATE removes thin dark ink (text, lines) BEFORE the median
+     *     blur, so the background model is the paper, not paper + text (the old MAGIC filter blurred the text into
+     *     its own background -> faded strokes and halos);
+     *  2. background floored at 60 % of the paper level, so large dark areas (ID photo, logos) are not washed out;
+     *  3. pixel / background * 255, then a gentle black-point stretch (no hard clipping of highlights).
+     * Returns null (caller falls back) when OpenCV is unavailable or memory is insufficient.
+     */
+    private fun applyShadowFreeScan(src: Bitmap, saturation: Float): Bitmap? {
+        if (!OpenCvBootstrap.ensureInitialized() || src.width < 32 || src.height < 32) return null
+        val rgba = org.opencv.core.Mat()
+        val rgb = org.opencv.core.Mat()
+        val small = org.opencv.core.Mat()
+        val bgSmall = org.opencv.core.Mat()
+        val bg = org.opencv.core.Mat()
+        val flat = org.opencv.core.Mat()
+        return try {
+            org.opencv.android.Utils.bitmapToMat(src, rgba)
+            org.opencv.imgproc.Imgproc.cvtColor(rgba, rgb, org.opencv.imgproc.Imgproc.COLOR_RGBA2RGB)
+            val s = min(1.0, 400.0 / max(rgb.cols(), rgb.rows()))
+            org.opencv.imgproc.Imgproc.resize(
+                rgb, small, org.opencv.core.Size(rgb.cols() * s, rgb.rows() * s),
+                0.0, 0.0, org.opencv.imgproc.Imgproc.INTER_AREA
+            )
+            val k = org.opencv.imgproc.Imgproc.getStructuringElement(org.opencv.imgproc.Imgproc.MORPH_RECT, org.opencv.core.Size(9.0, 9.0))
+            org.opencv.imgproc.Imgproc.dilate(small, bgSmall, k)
+            k.release()
+            org.opencv.imgproc.Imgproc.medianBlur(bgSmall, bgSmall, 21)
+
+            // Paper level = 90th percentile of the background luminance.
+            val bgGray = org.opencv.core.Mat()
+            org.opencv.imgproc.Imgproc.cvtColor(bgSmall, bgGray, org.opencv.imgproc.Imgproc.COLOR_RGB2GRAY)
+            val bgBytes = ByteArray(bgGray.rows() * bgGray.cols()); bgGray.get(0, 0, bgBytes); bgGray.release()
+            val paper = percentileOf(bgBytes, 90.0).coerceAtLeast(40.0)
+            val floor = paper * 0.6
+            org.opencv.core.Core.max(bgSmall, org.opencv.core.Scalar(floor, floor, floor), bgSmall)
+
+            // Black point measured on the flattened small copy (1st percentile of luminance).
+            val smallFlat = org.opencv.core.Mat()
+            org.opencv.core.Core.divide(small, bgSmall, smallFlat, 255.0)
+            val sfGray = org.opencv.core.Mat()
+            org.opencv.imgproc.Imgproc.cvtColor(smallFlat, sfGray, org.opencv.imgproc.Imgproc.COLOR_RGB2GRAY)
+            val sfBytes = ByteArray(sfGray.rows() * sfGray.cols()); sfGray.get(0, 0, sfBytes)
+            smallFlat.release(); sfGray.release()
+            val blackPoint = (percentileOf(sfBytes, 1.0) * 0.8).coerceIn(0.0, 60.0)
+
+            org.opencv.imgproc.Imgproc.resize(bgSmall, bg, rgb.size(), 0.0, 0.0, org.opencv.imgproc.Imgproc.INTER_LINEAR)
+            org.opencv.core.Core.divide(rgb, bg, flat, 255.0)
+            val alpha = 255.0 / (255.0 - blackPoint)
+            flat.convertTo(flat, -1, alpha, -blackPoint * alpha)
+
+            val out = org.opencv.core.Mat()
+            org.opencv.imgproc.Imgproc.cvtColor(flat, out, org.opencv.imgproc.Imgproc.COLOR_RGB2RGBA)
+            val result = Bitmap.createBitmap(src.width, src.height, Bitmap.Config.ARGB_8888)
+            org.opencv.android.Utils.matToBitmap(out, result)
+            out.release()
+            if (saturation == 1f) result else {
+                val sat = Bitmap.createBitmap(result.width, result.height, Bitmap.Config.ARGB_8888)
+                Canvas(sat).drawBitmap(result, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG).apply {
+                    colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(saturation) })
+                })
+                result.recycle()
+                sat
+            }
+        } catch (t: Throwable) {
+            // OutOfMemoryError included: the classic filter is used instead of crashing.
+            t.printStackTrace()
+            null
+        } finally {
+            rgba.release(); rgb.release(); small.release(); bgSmall.release(); bg.release(); flat.release()
+        }
+    }
+
+    private fun percentileOf(bytes: ByteArray, p: Double): Double {
+        if (bytes.isEmpty()) return 0.0
+        val hist = IntArray(256)
+        for (b in bytes) hist[b.toInt() and 0xFF]++
+        val target = (bytes.size * p / 100.0).toLong()
+        var acc = 0L
+        for (i in 0 until 256) { acc += hist[i]; if (acc > target) return i.toDouble() }
+        return 255.0
     }
 
     /**

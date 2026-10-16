@@ -73,10 +73,10 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 enum class ScanCameraMode(val titleEn: String, val titleAr: String) {
-    DOCUMENT("Document", "مستند"),
-    BATCH("Batch", "متعدد"),
-    ID_CARD("ID Card", "بطاقة"),
-    PASSPORT("Passport", "جواز")
+    DOCUMENT("Single", "صفحة"),
+    BATCH("Multi-page", "متعدد"),
+    ID_CARD("ID card", "البطاقة"),
+    PASSPORT("Passport", "الجواز")
 }
 /**
  * Camera scanning screen.
@@ -110,7 +110,9 @@ fun CameraScanScreen(
     onPassportCaptured: ((String, String) -> Unit)? = null,
     modifier: Modifier = Modifier,
     /** True for a normal "Scan" entry: the camera opens in the mode the user chose last time. */
-    useSavedMode: Boolean = false
+    useSavedMode: Boolean = false,
+    /** Google scanner offered inside the hub (Single / Multi-page) when chosen in Settings; null = hidden. */
+    onOpenGoogleScanner: ((ScanCameraMode) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -578,16 +580,22 @@ fun CameraScanScreen(
             isPassportMode = scanMode == ScanCameraMode.PASSPORT,
             onMerged = { mergedPath ->
                 pendingIdCardCollage = null
-                if (mergedPath.isNotBlank()) {
-                    if (mergedPath != frontPair.first && mergedPath != frontPair.second) deletePageFiles(frontPair)
-                    if (backPair != null && mergedPath != backPair.first && mergedPath != backPair.second) deletePageFiles(backPair)
+                // createIdCardCollage returns the FRONT path when it fails; treating it as success deleted the back side.
+                val sources = buildSet {
+                    add(frontPair.first); add(frontPair.second); add(frontImg)
+                    backPair?.let { add(it.first); add(it.second) }
+                }
+                if (mergedPath.isNotBlank() && mergedPath !in sources) {
+                    deletePageFiles(frontPair)
+                    backPair?.let { deletePageFiles(it) }
                     onDocumentCaptured(listOf(Pair(mergedPath, mergedPath)))
                 } else {
-                    val fallback = buildList {
-                        add(frontPair)
-                        if (backPair != null) add(backPair)
-                    }
-                    onDocumentCaptured(fallback)
+                    Toast.makeText(
+                        context,
+                        if (isArabic) "تعذر الدمج — تم حفظ الوجهين كصفحتين" else "Merge failed — both sides kept as pages",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    onDocumentCaptured(buildList { add(frontPair); if (backPair != null) add(backPair) })
                 }
             },
             onCancel = {
@@ -1068,76 +1076,75 @@ fun CameraScanScreen(
                             }
                         }
                         else -> {
-                            IconButton(
-                                onClick = { if (!isCapturing) launchSystemCamera() },
-                                modifier = Modifier
-                                    .size(50.dp)
-                                    .background(Color.White.copy(alpha = 0.15f), CircleShape)
-                            ) {
-                                Icon(Icons.Default.PhotoCamera, contentDescription = if (isArabic) "كاميرا النظام" else "System Camera", tint = Color.White)
+                            val google = onOpenGoogleScanner
+                            if (google != null && (scanMode == ScanCameraMode.DOCUMENT || scanMode == ScanCameraMode.BATCH)) {
+                                IconButton(
+                                    onClick = { if (!isCapturing) google(scanMode) },
+                                    modifier = Modifier.size(50.dp).background(Emerald400.copy(alpha = 0.22f), CircleShape)
+                                ) {
+                                    Icon(Icons.Default.DocumentScanner, contentDescription = if (isArabic) "ماسح Google" else "Google scanner", tint = Emerald400)
+                                }
+                            } else {
+                                IconButton(
+                                    onClick = { if (!isCapturing) launchSystemCamera() },
+                                    modifier = Modifier
+                                        .size(50.dp)
+                                        .background(Color.White.copy(alpha = 0.15f), CircleShape)
+                                ) {
+                                    Icon(Icons.Default.PhotoCamera, contentDescription = if (isArabic) "كاميرا النظام" else "System Camera", tint = Color.White)
+                                }
                             }
                         }
                     }
                 }
-                // Mode selector (locked while pages of the current mode are pending or replacing a page)
+                // Capture hub mode bar: equal-width segments, every mode always visible (no horizontal scroll).
                 val modeLocked = hasUnsavedCaptures || replacePageId > 0L
                 Surface(
-                    shape = RoundedCornerShape(28.dp),
-                    color = Color.Black.copy(alpha = 0.75f),
+                    shape = RoundedCornerShape(22.dp),
+                    color = Color.Black.copy(alpha = 0.78f),
                     border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
-                    modifier = Modifier.padding(horizontal = 10.dp)
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 4.dp, vertical = 2.dp),
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         ScanCameraMode.values().forEach { m ->
                             val isSelected = scanMode == m
                             val enabled = !modeLocked || isSelected
-                            Surface(
-                                shape = RoundedCornerShape(22.dp),
-                                color = if (isSelected) Emerald400 else Color.Transparent,
+                            val tint = when { isSelected -> Color.Black; enabled -> Color.White; else -> Color.White.copy(alpha = 0.35f) }
+                            Column(
                                 modifier = Modifier
-                                    .clip(RoundedCornerShape(22.dp))
-                                    .clickable(enabled = enabled && !isCapturing) {
-                                        scanMode = m
-                                        cameraPrefs.cameraLastMode = m.name // user's explicit choice is remembered
-                                    }
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Icon(
-                                        imageVector = when (m) {
-                                            ScanCameraMode.DOCUMENT -> Icons.Default.DocumentScanner
-                                            ScanCameraMode.BATCH -> Icons.Default.LibraryAdd
-                                            ScanCameraMode.ID_CARD -> Icons.Default.Badge
-                                            ScanCameraMode.PASSPORT -> Icons.Default.MenuBook
-                                        },
-                                        contentDescription = null,
-                                        modifier = Modifier.size(17.dp),
-                                        tint = when {
-                                            isSelected -> Color.Black
-                                            enabled -> Color.White.copy(alpha = 0.85f)
-                                            else -> Color.White.copy(alpha = 0.3f)
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(18.dp))
+                                    .background(if (isSelected) Emerald400 else Color.Transparent)
+                                    .clickable(enabled = !isCapturing) {
+                                        when {
+                                            isSelected -> Unit
+                                            !enabled -> Toast.makeText(
+                                                context,
+                                                if (isArabic) "احفظ الصفحات الملتقطة أو تجاهلها قبل تغيير الوضع"
+                                                else "Finish or discard the captured pages before switching mode",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                            else -> { scanMode = m; cameraPrefs.cameraLastMode = m.name }
                                         }
-                                    )
-                                    Text(
-                                        text = if (isArabic) m.titleAr else m.titleEn,
-                                        color = when {
-                                            isSelected -> Color.Black
-                                            enabled -> Color.White
-                                            else -> Color.White.copy(alpha = 0.3f)
-                                        },
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                        fontSize = 13.sp
-                                    )
-                                }
+                                    }
+                                    .padding(vertical = 8.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Icon(
+                                    imageVector = when (m) {
+                                        ScanCameraMode.DOCUMENT -> Icons.Default.DocumentScanner
+                                        ScanCameraMode.BATCH -> Icons.Default.LibraryAdd
+                                        ScanCameraMode.ID_CARD -> Icons.Default.Badge
+                                        ScanCameraMode.PASSPORT -> Icons.Default.MenuBook
+                                    },
+                                    contentDescription = null, modifier = Modifier.size(20.dp), tint = tint
+                                )
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    if (isArabic) m.titleAr else m.titleEn, color = tint, fontSize = 11.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
                             }
                         }
                     }

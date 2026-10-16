@@ -17,7 +17,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed as gridItemsIndexed
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -738,13 +738,15 @@ fun DocumentViewerScreen(
                 } else {
                     var currentPageZoomed by remember { mutableStateOf(false) }
                     LaunchedEffect(pagerState.currentPage) { currentPageZoomed = false }
-                    HorizontalPager(
+                    // Vertical page navigation (swipe up / down), like professional PDF readers.
+                    VerticalPager(
                         state = pagerState,
                         userScrollEnabled = !currentPageZoomed,
                         key = { pages.getOrNull(it)?.id ?: it },
-                        modifier = Modifier.fillMaxWidth().weight(1f).padding(14.dp)
+                        pageSpacing = 12.dp,
+                        modifier = Modifier.fillMaxWidth().weight(1f).padding(horizontal = 14.dp, vertical = 8.dp)
                     ) { index ->
-                        val pageItem = pages.getOrNull(index) ?: return@HorizontalPager
+                        val pageItem = pages.getOrNull(index) ?: return@VerticalPager
                         var scale by remember(pageItem.id, pagerState.currentPage == index) { mutableFloatStateOf(1f) }
                         var offsetX by remember(pageItem.id, pagerState.currentPage == index) { mutableFloatStateOf(0f) }
                         var offsetY by remember(pageItem.id, pagerState.currentPage == index) { mutableFloatStateOf(0f) }

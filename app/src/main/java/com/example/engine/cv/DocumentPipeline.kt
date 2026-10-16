@@ -218,7 +218,10 @@ object DocumentPipeline {
             }
             QuadStore.save(rawPath, quad)
             QuadStore.saveStatus(rawPath, status)
-            val out = renderBitmap(raw, quad, rotationDegrees, filter, 0f, 1f, false, previousStatus != DetectionStatus.SKIPPED)
+            val out = renderBitmap(
+                raw, quad, rotationDegrees, filter, 0f, 1f, false,
+                previousStatus != DetectionStatus.SKIPPED && !QuadStore.isNoStraighten(rawPath)
+            )
             try {
                 val path = ImageProcessor.saveBitmapToFile(context, out, "${prefix}_")
                 ProcessedPage(rawPath, path, quad, detection != null, detection?.confidence ?: 0f, status)
@@ -253,7 +256,7 @@ object DocumentPipeline {
         try {
             val safeQuad = if (DocumentDetector.isPlausible(quad)) quad.clamped() else DocumentQuad.fullQuad()
             QuadStore.save(rawPath, safeQuad)
-            val straighten = QuadStore.loadStatus(rawPath) != DetectionStatus.SKIPPED
+            val straighten = QuadStore.loadStatus(rawPath) != DetectionStatus.SKIPPED && !QuadStore.isNoStraighten(rawPath)
             val out = renderBitmap(raw, safeQuad, rotationDegrees, filter, brightness, contrast, sharpen, straighten)
             try {
                 ImageProcessor.saveBitmapToFile(context, out, "${prefix}_")
@@ -454,8 +457,12 @@ object DocumentPipeline {
         }
         QuadStore.save(rawPath, quad)
         QuadStore.saveStatus(rawPath, status)
+        // ID card / passport: the detected card border IS the crop. Sliver trim + text deskew would cut the card
+        // frame or rotate a photo page, so they are disabled for these modes (persisted for later re-renders).
+        val isCard = expectedAspectRatio != null
+        if (isCard) QuadStore.markNoStraighten(rawPath)
         // Google scanner / PDF pages (SKIPPED) are already straight: no second correction.
-        val out = renderBitmap(upright, quad, 0, filter, 0f, 1f, false, straighten = autoCrop)
+        val out = renderBitmap(upright, quad, 0, filter, 0f, 1f, false, straighten = autoCrop && !isCard)
         val procPath = try {
             ImageProcessor.saveBitmapToFile(context, out, "${prefix}_proc_")
         } finally {
@@ -590,6 +597,14 @@ object DocumentPipeline {
 object QuadStore {
     private fun fileFor(rawPath: String) = File("$rawPath.quad.json")
     private fun statusFileFor(rawPath: String) = File("$rawPath.detect")
+    private fun noStraightenFileFor(rawPath: String) = File("$rawPath.nostraighten")
+
+    /** ID card / passport pages: no automatic trim / deskew on later re-renders. */
+    fun markNoStraighten(rawPath: String) {
+        try { noStraightenFileFor(rawPath).writeText("1") } catch (_: Exception) { }
+    }
+
+    fun isNoStraighten(rawPath: String): Boolean = try { noStraightenFileFor(rawPath).exists() } catch (_: Exception) { false }
 
     fun save(rawPath: String, quad: DocumentQuad) {
         try { fileFor(rawPath).writeText(quad.toJson()) } catch (_: Exception) { }
@@ -613,6 +628,7 @@ object QuadStore {
     fun delete(rawPath: String) {
         try { fileFor(rawPath).delete() } catch (_: Exception) { }
         try { statusFileFor(rawPath).delete() } catch (_: Exception) { }
+        try { noStraightenFileFor(rawPath).delete() } catch (_: Exception) { }
     }
 }
 

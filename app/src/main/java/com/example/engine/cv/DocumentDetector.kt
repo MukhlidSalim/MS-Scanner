@@ -57,6 +57,8 @@ object DocumentDetector {
     private const val LIVE_MAX_SIDE = 500
     private const val STILL_MAX_SIDE = 900
     private const val MIN_AREA_RATIO = 0.10
+    /** ID card / passport mode: a card held at a normal distance covers ~4-8 % of the frame. */
+    private const val MIN_AREA_RATIO_CARD = 0.035
     private const val MAX_AREA_RATIO = 0.995
     private const val RETURN_SCORE = 0.55
 
@@ -205,12 +207,13 @@ object DocumentDetector {
         val grad = buildGrad(gray)
         val w = grad.w; val h = grad.h
         val frameArea = w.toDouble() * h
+        val minArea = if (expectedAspectRatio != null && expectedAspectRatio > 0f) MIN_AREA_RATIO_CARD else MIN_AREA_RATIO
         val scored = ArrayList<Scored>()
-        for (raw in generateCandidates(gray, frameArea)) {
+        for (raw in generateCandidates(gray, frameArea, minArea)) {
             val q = orderCorners(raw)
             if (!isConvexPx(q)) continue
             val area = polyArea(q) / frameArea
-            if (area < MIN_AREA_RATIO || area > MAX_AREA_RATIO) continue
+            if (area < minArea || area > MAX_AREA_RATIO) continue
             val ang = rightAngleScore(q)
             if (ang < 0.70) continue
             val sides = DoubleArray(4) { dist(q[it], q[(it + 1) % 4]) }
@@ -252,7 +255,7 @@ object DocumentDetector {
     }
 
     /** Edge maps (gray + text-removed), each at two sensitivities, plus Otsu paper/background masks. */
-    private fun generateCandidates(gray: Mat, frameArea: Double): List<Array<PointF>> {
+    private fun generateCandidates(gray: Mat, frameArea: Double, minArea: Double): List<Array<PointF>> {
         val out = ArrayList<Array<PointF>>()
         val k = (max(3, (max(gray.cols(), gray.rows()) / 90.0).roundToInt())) or 1
         val kernelBig = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(k.toDouble(), k.toDouble()))
@@ -288,7 +291,7 @@ object DocumentDetector {
             hier.release()
             for (c in contours) {
                 try {
-                    out.addAll(quadsFromContour(c, frameArea))
+                    out.addAll(quadsFromContour(c, frameArea, minArea))
                 } finally {
                     c.release()
                 }
@@ -299,17 +302,17 @@ object DocumentDetector {
         return out
     }
 
-    private fun quadsFromContour(c: MatOfPoint, frameArea: Double): List<Array<PointF>> {
+    private fun quadsFromContour(c: MatOfPoint, frameArea: Double, minArea: Double): List<Array<PointF>> {
         // Cheap reject first (text produces thousands of tiny contours): bounding box area >= hull area.
         val br = Imgproc.boundingRect(c)
-        if (br.width.toDouble() * br.height < 0.10 * frameArea) return emptyList()
+        if (br.width.toDouble() * br.height < minArea * frameArea) return emptyList()
         val idx = MatOfInt()
         Imgproc.convexHull(c, idx)
         val pts = c.toArray(); val ids = idx.toArray(); idx.release()
         if (ids.size < 4) return emptyList()
         val hull = MatOfPoint2f(*ids.map { pts[it] }.map { Point(it.x, it.y) }.toTypedArray())
         try {
-            if (Imgproc.contourArea(hull) < 0.10 * frameArea) return emptyList()
+            if (Imgproc.contourArea(hull) < minArea * frameArea) return emptyList()
             val peri = Imgproc.arcLength(hull, true)
             for (eps in doubleArrayOf(0.01, 0.02, 0.035, 0.05)) {
                 val ap = MatOfPoint2f()

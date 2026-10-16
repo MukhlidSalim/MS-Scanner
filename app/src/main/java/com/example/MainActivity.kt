@@ -777,24 +777,18 @@ fun DocScanApp(
                     }
                 }
             }
-                       val appPrefs = remember { AppPreferences(context) }
-            // Honour the user's Scan Engine choice in Settings (Google ML Kit Scanner vs Built-in Camera)
-            // for normal/batch document capture, while keeping the built-in camera directly accessible for ID/Passport studio.
-            val googleEligible = remember(backStackEntry.id) {
-                appPrefs.scanEngine == AppPreferences.SCAN_ENGINE_GOOGLE &&
-                    GoogleDocumentScanner.isSupported(context) &&
-                    (cameraMode == ScanCameraMode.DOCUMENT || cameraMode == ScanCameraMode.BATCH)
+            val appPrefs = remember { AppPreferences(context) }
+            // ONE capture hub: always the built-in camera screen with its mode bar (Single / Multi-page / ID / Passport).
+            // ROOT CAUSE fixed: with the Google engine selected, this route skipped the hub for Document/Batch, so the
+            // mode bar never appeared. Google is now offered INSIDE the hub instead of replacing it.
+            val googleAvailable = remember(backStackEntry.id) {
+                appPrefs.scanEngine == AppPreferences.SCAN_ENGINE_GOOGLE && GoogleDocumentScanner.isSupported(context)
             }
-            val pageLimit: Int? = remember(backStackEntry.id) {
-                when {
-                    replacePageId > 0L || cameraViewModel.peekCaptureTarget() is CaptureTarget.Replace -> 1
-                    cameraMode == ScanCameraMode.ID_CARD || cameraMode == ScanCameraMode.PASSPORT -> 2
-                    else -> null
-                }
+            val replacingOne = remember(backStackEntry.id) {
+                replacePageId > 0L || cameraViewModel.peekCaptureTarget() is CaptureTarget.Replace
             }
-            var scannerStage by androidx.compose.runtime.saveable.rememberSaveable(backStackEntry.id) {
-                mutableStateOf(if (googleEligible) "PREPARING" else "CAMERA")
-            }
+            var scannerStage by androidx.compose.runtime.saveable.rememberSaveable(backStackEntry.id) { mutableStateOf("CAMERA") }
+            var hubMode by androidx.compose.runtime.saveable.rememberSaveable(backStackEntry.id) { mutableStateOf(cameraMode.name) }
             var preparingProgress by remember { mutableStateOf<Int?>(null) }
             val scannerLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
                 ActivityResultContracts.StartIntentSenderForResult()
@@ -802,14 +796,13 @@ fun DocScanApp(
                 mainViewModel.endExternalFlow()
                 val uris = GoogleDocumentScanner.pageUris(result.resultCode, result.data)
                 if (uris.isEmpty()) {
-                    cameraViewModel.consumeCaptureTarget()
-                    navController.popBackStack()
+                    scannerStage = "CAMERA" // cancelled: back to the hub (previously left the camera entirely)
                 } else {
                     scannerStage = "PROCESSING"
                     cameraViewModel.processScannerResult(uris)
                 }
             }
-            androidx.compose.runtime.LaunchedEffect(backStackEntry.id) {
+            androidx.compose.runtime.LaunchedEffect(scannerStage) {
                 if (scannerStage != "PREPARING") return@LaunchedEffect
                 cameraViewModel.discardStaleScannerPages()
                 val activity = context.findActivity()
@@ -817,9 +810,14 @@ fun DocScanApp(
                     scannerStage = "CAMERA"
                     return@LaunchedEffect
                 }
+                val limit: Int? = when {
+                    replacingOne -> 1
+                    hubMode == ScanCameraMode.DOCUMENT.name -> 1
+                    else -> null
+                }
                 GoogleDocumentScanner.start(
                     activity = activity,
-                    pageLimit = pageLimit,
+                    pageLimit = limit,
                     onPreparing = { preparingProgress = it },
                     onIntent = { sender ->
                         try {
@@ -853,21 +851,15 @@ fun DocScanApp(
                         if (isArabicUi) "تعذر قراءة الصفحات الممسوحة" else "Could not read the scanned pages",
                         android.widget.Toast.LENGTH_LONG
                     ).show()
-                    cameraViewModel.consumeCaptureTarget()
-                    navController.popBackStack()
+                    scannerStage = "CAMERA"
                 } else {
                     deliverPages(pages, "SCANNER")
                 }
             }
             if (scannerStage != "CAMERA") {
                 androidx.activity.compose.BackHandler(enabled = scannerStage == "PROCESSING") { }
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = androidx.compose.ui.Alignment.Center
-                ) {
-                    androidx.compose.foundation.layout.Column(
-                        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
-                    ) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = androidx.compose.ui.Alignment.Center) {
+                    androidx.compose.foundation.layout.Column(horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally) {
                         androidx.compose.material3.CircularProgressIndicator()
                         val label = when (scannerStage) {
                             "PROCESSING" -> if (isArabicUi) "جاري تجهيز الصفحات…" else "Preparing pages…"
@@ -884,17 +876,11 @@ fun DocScanApp(
                 }
                 return@composable
             }
-            // FIX (issue 1 — Normal Document must be the actual default): previously `useSavedMode` reopened
-            // whichever ScanCameraMode (DOCUMENT/BATCH/ID_CARD/PASSPORT) the user used last, even when the
-            // entry point was the main "Scan Document" action. The entry mode (`cameraMode`, derived from the
-            // nav route argument) is now ALWAYS honoured, so "Scan Document" always starts on Normal Document
-            // as requested, regardless of what mode was used previously in the same app session.
-            val useSavedMode = false
             CameraScanScreen(
-                initialMode = cameraMode,
+                initialMode = runCatching { ScanCameraMode.valueOf(hubMode) }.getOrDefault(cameraMode),
                 docId = docId,
                 replacePageId = replacePageId,
-                useSavedMode = useSavedMode,
+                useSavedMode = false,
                 onNavigateBack = {
                     cameraViewModel.consumeCaptureTarget()
                     navController.popBackStack()
@@ -907,7 +893,11 @@ fun DocScanApp(
                 onPassportCaptured = { front, back ->
                     val list = if (back.isNotBlank() && back != front) listOf(Pair(front, front), Pair(back, back)) else listOf(Pair(front, front))
                     deliverPages(list, "CAMERA")
-                }
+                },
+                onOpenGoogleScanner = if (googleAvailable) ({ mode ->
+                    hubMode = mode.name
+                    scannerStage = "PREPARING"
+                }) else null
             )
         }
         composable(
