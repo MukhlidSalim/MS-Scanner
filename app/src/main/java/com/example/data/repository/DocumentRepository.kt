@@ -342,7 +342,20 @@ class DocumentRepository(
     }
 
     suspend fun insertPage(page: PageEntity): Long = withContext(Dispatchers.IO) {
-        documentDao.insertPage(page)
+        val id = documentDao.insertPage(page)
+        val pages = documentDao.getPagesListForDocument(page.documentId)
+        val size = computePagesSize(pages)
+        documentDao.getDocumentById(page.documentId)?.let { doc ->
+            documentDao.updateDocument(
+                doc.copy(
+                    pageCount = pages.size,
+                    sizeBytes = size,
+                    fileSizeFormatted = formatBytes(size),
+                    updatedAt = System.currentTimeMillis()
+                )
+            )
+        }
+        id
     }
 
     suspend fun deletePage(pageId: Long, docId: Long) = withContext(Dispatchers.IO) {
@@ -447,12 +460,14 @@ class DocumentRepository(
 
     suspend fun getStorageStats(): StorageStats = withContext(Dispatchers.IO) {
         val scansDir = java.io.File(context.filesDir, "scans")
+        val exportsDir = java.io.File(context.filesDir, "exports")
         val cacheDir = context.cacheDir
         val scansSize = getFolderSize(scansDir)
-        val cacheSize = getFolderSize(cacheDir)
+        val cacheSize = getFolderSize(cacheDir) + getFolderSize(exportsDir)
         val allDocs = documentDao.getAllDocumentsSync()
-        val totalDocs = allDocs.size
-        val totalPages = allDocs.sumOf { it.pageCount }
+        val activeDocs = allDocs.filter { !it.isTrash }
+        val totalDocs = activeDocs.size
+        val totalPages = activeDocs.sumOf { it.pageCount }
         val trashCount = allDocs.count { it.isTrash }
         StorageStats(
             totalDocumentsCount = totalDocs,
@@ -464,8 +479,33 @@ class DocumentRepository(
     }
 
     suspend fun clearCache() = withContext(Dispatchers.IO) {
-        context.cacheDir.deleteRecursively()
-        File(context.filesDir, "exports").deleteRecursively()
+        context.cacheDir.listFiles()?.forEach { runCatching { it.deleteRecursively() } }
+        File(context.filesDir, "exports").listFiles()?.forEach { runCatching { it.deleteRecursively() } }
+        // Reclaim any orphan files in scans/ older than 1 hour not referenced by any document or page
+        runCatching {
+            val allDocs = documentDao.getAllDocumentsSync()
+            val referenced = HashSet<String>()
+            for (d in allDocs) {
+                d.thumbnailPath?.takeIf { it.isNotBlank() }?.let { referenced.add(File(it).name) }
+                for (p in documentDao.getPagesForDocumentSync(d.id)) {
+                    for (path in listOf(p.rawImagePath, p.processedImagePath)) {
+                        if (path.isNotBlank()) {
+                            val name = File(path).name
+                            referenced.add(name)
+                            referenced.add("$name.quad.json")
+                            referenced.add("$name.detect")
+                            referenced.add("$name.ocr.json")
+                        }
+                    }
+                }
+            }
+            val cutoff = System.currentTimeMillis() - 60L * 60 * 1000
+            File(context.filesDir, "scans").listFiles()?.forEach { f ->
+                if (f.isFile && f.name !in referenced && f.lastModified() < cutoff) {
+                    f.delete()
+                }
+            }
+        }
     }
 
     private fun getFolderSize(dir: File?): Long {

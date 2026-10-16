@@ -622,14 +622,21 @@ class EditSessionViewModel(
         }
     }
     /** Explicit OCR for one page (OCR screen). Background analysis of whole documents uses the Worker. */
-    fun runOcrInBackground(pageId: Long) {
+    fun runOcrInBackground(pageId: Long, force: Boolean = false) {
         viewModelScope.launch(Dispatchers.Default) {
             try {
                 _uiState.update { it.copy(isOcrLoading = true, ocrResult = null) }
                 val page = repository.getPageById(pageId) ?: return@launch
+                if (!force && page.ocrText.isNotBlank() && !page.ocrText.startsWith("OCR Failed")) {
+                    val savedLines = OcrLayoutStore.load(page.processedImagePath).orEmpty()
+                    val cachedResult = DocumentAiEngine.analyzeFromSavedText(page.ocrText, savedLines)
+                    _uiState.update { it.copy(ocrResult = cachedResult) }
+                    return@launch
+                }
                 val language = _uiState.value.ocrLanguage
+                val isAr = context.resources.configuration.locales[0].language == "ar"
                 if (language != OcrLanguage.ENGLISH && !TessDataManager.ensureArabic(context)) {
-                    _events.send(UiEvent.ShowToast("Arabic text model unavailable — connect to the internet once to download it"))
+                    _events.send(UiEvent.ShowToast(if (isAr) "نموذج اللغة العربية غير متوفر — اتصل بالإنترنت مرة واحدة لتنزيله" else "Arabic text model unavailable — connect to the internet once to download it"))
                 }
                 val bmp = ImageProcessor.loadBitmapFromFile(page.processedImagePath, 2000) ?: return@launch
                 val result = try {
@@ -640,7 +647,7 @@ class EditSessionViewModel(
                 _uiState.update { it.copy(ocrResult = result) }
                 if (result.confidence <= 0f && result.fullText.startsWith("OCR Failed")) return@launch
                 val current = repository.getPageById(pageId) ?: return@launch
-                repository.updatePage(current.copy(ocrText = result.fullText))
+                repository.updatePage(current.copy(ocrText = result.fullText, ocrEntitiesJson = DocumentAiEngine.fieldsToJson(result.fields)))
                 if (current.processedImagePath == page.processedImagePath && result.engine != "mlkit-fallback") {
                     OcrLayoutStore.save(page.processedImagePath, result.lines)
                 }
@@ -698,7 +705,9 @@ class EditSessionViewModel(
                 }
                 val r = copyOf(page.rawImagePath)
                 QuadStore.load(page.rawImagePath)?.let { QuadStore.save(r, it) }
+                QuadStore.loadStatus(page.rawImagePath)?.let { QuadStore.saveStatus(r, it) }
                 val p = if (page.processedImagePath == page.rawImagePath) r else copyOf(page.processedImagePath)
+                OcrLayoutStore.copy(page.processedImagePath, p)
                 r to p
             }
             val count = repository.getPagesList(page.documentId).size

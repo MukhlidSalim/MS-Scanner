@@ -195,7 +195,7 @@ object PdfEngine {
                             textSize = 9f
                             textAlign = Paint.Align.CENTER
                         }
-                        canvas.drawText("${i + 1} / ${pagePathsAndOcr.size}", (pageWidth / 2).toFloat(), (pageHeight - 4).toFloat(), numPaint)
+                        canvas.drawText("${renderedPageCount + 1} / ${pagePathsAndOcr.size}", (pageWidth / 2).toFloat(), (pageHeight - 4).toFloat(), numPaint)
                     }
                     pdfDocument.finishPage(page)
                     renderedPageCount++
@@ -264,7 +264,7 @@ object PdfEngine {
         val tmp = File(file.parentFile, file.name + ".opt")
         try {
             var replaced = 0
-            com.tom_roush.pdfbox.pdmodel.PDDocument.load(file).use { doc ->
+            com.tom_roush.pdfbox.pdmodel.PDDocument.load(file, com.tom_roush.pdfbox.io.MemoryUsageSetting.setupMixed(16L * 1024 * 1024)).use { doc ->
                 for (page in doc.pages) {
                     val res = page.resources ?: continue
                     for (name in res.xObjectNames.toList()) {
@@ -299,7 +299,7 @@ object PdfEngine {
         com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context.applicationContext)
         val tmp = File(file.parentFile, file.name + ".enc")
         try {
-            com.tom_roush.pdfbox.pdmodel.PDDocument.load(file).use { doc ->
+            com.tom_roush.pdfbox.pdmodel.PDDocument.load(file, com.tom_roush.pdfbox.io.MemoryUsageSetting.setupMixed(16L * 1024 * 1024)).use { doc ->
                 val policy = com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy(
                     password, password, com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission()
                 ).apply { encryptionKeyLength = 128 }
@@ -357,6 +357,9 @@ object PdfEngine {
         runCatching {
             val now = System.currentTimeMillis()
             exportDir(context).walkBottomUp().forEach { f ->
+                if (f.isFile && now - f.lastModified() > maxAgeMs) f.delete()
+            }
+            File(context.cacheDir, "incoming_pdfs").listFiles()?.forEach { f ->
                 if (f.isFile && now - f.lastModified() > maxAgeMs) f.delete()
             }
         }

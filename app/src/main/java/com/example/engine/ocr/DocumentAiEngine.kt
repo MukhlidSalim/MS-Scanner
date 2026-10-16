@@ -217,6 +217,14 @@ object DocumentAiEngine {
         ),
         DocumentCategory.CONTRACT to listOf(
             Regex("عقد"), Regex("اتفاقي[هة]"), Regex("\\b(contract|agreement)\\b", RegexOption.IGNORE_CASE)
+        ),
+        DocumentCategory.BOOK to listOf(
+            Regex("الفصل\\s+[الأولالثانيالثالثالرابعالخامس0-9١-٩]"), Regex("دار\\s+النشر"), Regex("جميع\\s+الحقوق\\s+محفوظة"),
+            Regex("\\bISBN\\b", RegexOption.IGNORE_CASE), Regex("\\b(chapter|edition|published\\s+by)\\b", RegexOption.IGNORE_CASE)
+        ),
+        DocumentCategory.NOTE to listOf(
+            Regex("ملاحظ[هة]"), Regex("ملاحظات"), Regex("مذكر[هة]"), Regex("محاضر[هة]"), Regex("ملخص"),
+            Regex("\\b(notes|lecture|summary|memo|todo)\\b", RegexOption.IGNORE_CASE)
         )
     )
 
@@ -253,11 +261,12 @@ object DocumentAiEngine {
             headline != null -> headline
             else -> "Document - $dateStr"
         }
+        val structured = if (mrz != null) mrzFields(mrz) else extractStructuredFields(fullText)
         return DocumentAnalysisResult(
             fullText = fullText,
             suggestedTitle = suggestedTitle,
             detectedCategory = category,
-            fields = mrzFields(mrz) + listOf(
+            fields = structured + listOf(
                 ExtractedField("Date Scanned", "تاريخ المسح", dateStr),
                 ExtractedField("Resolution", "الدقة", "${bitmap.width}x${bitmap.height} px"),
                 ExtractedField("OCR Engine", "محرك التعرف", engine)
@@ -281,6 +290,110 @@ object DocumentAiEngine {
             ExtractedField("Sex", "الجنس", mrz.sex).takeIf { mrz.sex.isNotBlank() },
             ExtractedField("Issuing Country", "دولة الإصدار", mrz.issuingCountry)
         )
+    }
+
+
+    /** Builds a DocumentAnalysisResult from already stored/edited OCR text without re-running OCR. */
+    fun analyzeFromSavedText(savedText: String, lines: List<OcrLine> = emptyList()): DocumentAnalysisResult {
+        val fullText = savedText.trim()
+        val dateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
+        val mrz = MrzParser.parse(fullText)
+        val category = if (mrz != null) DocumentCategory.ID_CARD else classify(fullText)
+        val arabicDominant = fullText.count { it in '\u0600'..'\u06FF' } > fullText.count { it in 'A'..'Z' || it in 'a'..'z' }
+        val headline = fullText.lineSequence()
+            .map { it.trim() }
+            .firstOrNull { line -> line.length in 3..60 && line.count { it.isLetter() } >= 3 }
+            ?.take(40)
+        val label = if (arabicDominant) category.displayNameAr else category.displayNameEn
+        val suggestedTitle = when {
+            mrz != null && mrz.fullName.isNotBlank() -> {
+                val kind = when {
+                    mrz.isPassport -> if (arabicDominant) "جواز سفر" else "Passport"
+                    else -> if (arabicDominant) "بطاقة هوية" else "ID Card"
+                }
+                "$kind - ${mrz.fullName}"
+            }
+            headline != null && category != DocumentCategory.OTHER -> "$label - $headline"
+            headline != null -> headline
+            else -> "Document - $dateStr"
+        }
+        val structured = if (mrz != null) mrzFields(mrz) else extractStructuredFields(fullText)
+        return DocumentAnalysisResult(
+            fullText = fullText,
+            suggestedTitle = suggestedTitle,
+            detectedCategory = category,
+            fields = structured + listOf(
+                ExtractedField("Date Scanned", "تاريخ المسح", dateStr),
+                ExtractedField("OCR Engine", "محرك التعرف", "cached")
+            ),
+            confidence = if (fullText.isBlank()) 0.25f else 0.90f,
+            lines = lines,
+            engine = "cached"
+        )
+    }
+
+    /** Extracts structured fields (Total/Amount, Tax/VAT ID, Document Date, Phone, Email, IBAN) from OCR text. */
+    fun extractStructuredFields(text: String): List<ExtractedField> {
+        if (text.isBlank()) return emptyList()
+        val out = ArrayList<ExtractedField>()
+
+        // 1. Total / Currency Amount
+        val amountRegex = Regex(
+            "(?:total|amount|net|الإجمالي|المجموع|المبلغ|الصافي)[^\\d٠-٩]{0,18}([0-9٠-٩]{1,7}(?:[.,][0-9٠-٩]{1,3})?\\s*(?:OMR|SAR|AED|KWD|QAR|BHD|USD|EUR|ر\\.ع|ر\\.س|د\\.إ|ريال|درهم|دينار)?)|([0-9٠-٩]{1,7}(?:[.,][0-9٠-٩]{2,3})\\s*(?:OMR|SAR|AED|KWD|QAR|BHD|USD|EUR|ر\\.ع|ر\\.س|د\\.إ|ريال|درهم|دينار))",
+            RegexOption.IGNORE_CASE
+        )
+        amountRegex.find(text)?.let { m ->
+            val v = (m.groupValues.getOrNull(1)?.takeIf { it.isNotBlank() } ?: m.groupValues.getOrNull(2).orEmpty()).trim()
+            if (v.isNotBlank()) out += ExtractedField("Amount / Total", "المبلغ / الإجمالي", v)
+        }
+
+        // 2. Document Date (YYYY-MM-DD or DD/MM/YYYY)
+        val dateRegex = Regex("\\b((?:20\\d{2}|19\\d{2})[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])|(?:0?[1-9]|[12]\\d|3[01])[-/.](?:0?[1-9]|1[0-2])[-/.](?:20\\d{2}|19\\d{2}))\\b")
+        dateRegex.find(text)?.value?.let { d ->
+            out += ExtractedField("Document Date", "تاريخ المستند", d)
+        }
+
+        // 3. Tax / VAT / Invoice Number
+        val vatRegex = Regex("(?:VAT|TRN|Tax\\s*(?:ID|No)|الرقم\\s*الضريبي|رقم\\s*الفاتورة)[:\\s#-]*([A-Z0-9٠-٩-]{5,20})", RegexOption.IGNORE_CASE)
+        vatRegex.find(text)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.any { c -> c.isDigit() } }?.let { v ->
+            out += ExtractedField("Reference / Tax No.", "الرقم المرجعي / الضريبي", v)
+        }
+
+        // 4. IBAN
+        val ibanRegex = Regex("\\b([A-Z]{2}\\d{2}[A-Z0-9]{11,30})\\b")
+        ibanRegex.find(text)?.groupValues?.getOrNull(1)?.let { iban ->
+            out += ExtractedField("IBAN", "رقم الآيبان (IBAN)", iban)
+        }
+
+        // 5. Email
+        val emailRegex = Regex("\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b")
+        emailRegex.find(text)?.value?.let { email ->
+            out += ExtractedField("Email", "البريد الإلكتروني", email)
+        }
+
+        // 6. Phone Number
+        val phoneRegex = Regex("(?:\\+\\d{1,3}[\\s-]?)?(?:\\(\\d{2,4}\\)[\\s-]?)?\\b\\d{7,12}\\b")
+        phoneRegex.find(text)?.value?.trim()?.takeIf { it.count { c -> c.isDigit() } in 8..14 }?.let { phone ->
+            out += ExtractedField("Phone", "رقم الهاتف", phone)
+        }
+
+        return out
+    }
+
+    fun fieldsToJson(fields: List<ExtractedField>): String {
+        return try {
+            val arr = org.json.JSONArray()
+            fields.forEach { f ->
+                arr.put(org.json.JSONObject().apply {
+                    put("en", f.labelEn)
+                    put("ar", f.labelAr)
+                    put("v", f.value)
+                })
+            }
+            arr.toString()
+        } catch (_: Exception) {
+            ""
+        }
     }
 
     private fun handleOcrFailureSync(e: Exception): DocumentAnalysisResult {

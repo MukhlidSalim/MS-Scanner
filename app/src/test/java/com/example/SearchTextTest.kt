@@ -39,4 +39,22 @@ class SearchTextTest {
     fun caseInsensitiveLatin() {
         assertTrue(SearchText.matches(SearchText.normalize("Tax INVOICE 2026"), "invoice"))
     }
+
+    @Test
+    fun extractsStructuredInvoiceAndContactFields() {
+        val sample = """
+            فاتورة ضريبية
+            الرقم الضريبي: 310123456700003
+            التاريخ: 2026-10-15
+            الإجمالي: 145.500 OMR
+            IBAN: OM120001234567890123456
+            support@ms-scanner.om
+        """.trimIndent()
+        val fields = com.example.engine.ocr.DocumentAiEngine.extractStructuredFields(sample)
+        assertTrue(fields.any { it.value.contains("145.500") })
+        assertTrue(fields.any { it.value == "2026-10-15" })
+        assertTrue(fields.any { it.value == "310123456700003" })
+        assertTrue(fields.any { it.value == "OM120001234567890123456" })
+        assertTrue(fields.any { it.value == "support@ms-scanner.om" })
+    }
 }

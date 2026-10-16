@@ -51,7 +51,7 @@ fun OcrScreen(
     var isTextModified by remember(ocrResult?.fullText) { mutableStateOf(false) }
 
     LaunchedEffect(pageId) {
-        viewModel.runOcrInBackground(pageId)
+        viewModel.runOcrInBackground(pageId, force = false)
     }
 
     var selectedTab by remember { mutableStateOf(0) } // 0: Structured Data, 1: Full Text
@@ -80,7 +80,7 @@ fun OcrScreen(
                 },
                 actions = {
                     IconButton(
-                        onClick = { viewModel.runOcrInBackground(pageId) },
+                        onClick = { viewModel.runOcrInBackground(pageId, force = true) },
                         modifier = Modifier.testTag("ocr_retry_btn")
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.desc_re_analyze))
@@ -107,7 +107,7 @@ fun OcrScreen(
                 Icon(Icons.Default.Translate, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.primary)
                 Text(t("OCR Language:", "لغة القراءة:"), style = MaterialTheme.typography.labelMedium)
                 val langs = listOf(
-                    OcrLanguage.ARABIC_AND_ENGLISH to t("Arabic + English", "عربي + إنجليزي"),
+                    OcrLanguage.AUTO to t("Arabic + English", "عربي + إنجليزي"),
                     OcrLanguage.ARABIC to t("Arabic", "عربي فقط"),
                     OcrLanguage.ENGLISH to t("English", "إنجليزي فقط")
                 )
@@ -117,7 +117,7 @@ fun OcrScreen(
                         onClick = {
                             if (uiState.ocrLanguage != lang && !uiState.isOcrLoading) {
                                 viewModel.setOcrLanguage(lang)
-                                viewModel.runOcrInBackground(pageId)
+                                viewModel.runOcrInBackground(pageId, force = true)
                             }
                         },
                         label = { Text(label, fontSize = 12.sp) },
@@ -395,7 +395,7 @@ fun OcrScreen(
                         Icon(Icons.Default.ErrorOutline, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.error)
                         Text(stringResource(R.string.txt_analysis_failed__please_tr), style = MaterialTheme.typography.bodyMedium)
                         Button(
-                            onClick = { viewModel.runOcrInBackground(pageId) },
+                            onClick = { viewModel.runOcrInBackground(pageId, force = true) },
                             shape = RoundedCornerShape(12.dp)
                         ) {
                             Text(stringResource(R.string.txt_retry_analysis), fontWeight = FontWeight.Bold)

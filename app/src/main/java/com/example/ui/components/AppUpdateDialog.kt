@@ -103,7 +103,7 @@ fun AppUpdateDialog(
                                 fontSize = 16.sp
                             )
                             Text(
-                                text = "v${availableInfo.latestVersion} (الحالي v${BuildConfig.VERSION_NAME})",
+                                text = if (isArabic) "v${availableInfo.latestVersion} (الحالي v${BuildConfig.VERSION_NAME})" else "v${availableInfo.latestVersion} (current v${BuildConfig.VERSION_NAME})",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -213,10 +213,21 @@ fun AppUpdateDialog(
                                     }
                                 }
 
-                                TextButton(
-                                    onClick = { onDismiss(false) }
-                                ) {
-                                    Text(if (isArabic) "لاحقاً" else "Later", fontSize = 12.sp)
+                                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    TextButton(
+                                        onClick = { onDismiss(true) }
+                                    ) {
+                                        Text(
+                                            if (isArabic) "تجاهل هذا الإصدار" else "Skip version",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                    TextButton(
+                                        onClick = { onDismiss(false) }
+                                    ) {
+                                        Text(if (isArabic) "لاحقاً" else "Later", fontSize = 12.sp)
+                                    }
                                 }
                             }
                         }

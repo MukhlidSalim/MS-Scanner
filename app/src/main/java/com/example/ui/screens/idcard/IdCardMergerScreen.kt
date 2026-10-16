@@ -1,6 +1,7 @@
 package com.example.ui.screens.idcard
 
 import android.graphics.Bitmap
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -53,6 +54,7 @@ fun IdCardMergerScreen(
     onMerged: (String) -> Unit,
     onCancel: () -> Unit
 ) {
+    BackHandler(enabled = !isSaving) { onCancel() }
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val isArabic = context.resources.configuration.locales[0].language == "ar"

@@ -504,7 +504,7 @@ fun CameraScanScreen(
     AutoCaptureEffect(
         controller = scanController,
         enabled = isAutoCaptureEnabled && !isCapturing && !captureCooldown &&
-            !isAutoCancelled && scanController.analysisActive && !showDiscardDialog
+            !isAutoCancelled && scanController.analysisActive && !showDiscardDialog && pendingIdCardCollage == null
     ) {
         capturePhoto()
     }

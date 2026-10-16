@@ -506,11 +506,19 @@ object DocumentDetector {
     }
 
     private fun orderCorners(pts: Array<PointF>): Array<PointF> {
-        val tl = pts.minByOrNull { it.x + it.y }!!
-        val br = pts.maxByOrNull { it.x + it.y }!!
-        val tr = pts.minByOrNull { it.y - it.x }!!
-        val bl = pts.maxByOrNull { it.y - it.x }!!
-        return arrayOf(tl, tr, br, bl)
+        val cx = pts.sumOf { it.x.toDouble() } / 4.0
+        val cy = pts.sumOf { it.y.toDouble() } / 4.0
+        val sorted = pts.sortedBy { kotlin.math.atan2(it.y - cy, it.x - cx) }
+        var tlIdx = 0
+        var minSum = Float.MAX_VALUE
+        for (i in sorted.indices) {
+            val sum = sorted[i].x + sorted[i].y
+            if (sum < minSum) {
+                minSum = sum
+                tlIdx = i
+            }
+        }
+        return Array(4) { sorted[(tlIdx + it) % 4] }
     }
 
     private fun rightAngleScore(q: Array<PointF>): Double {

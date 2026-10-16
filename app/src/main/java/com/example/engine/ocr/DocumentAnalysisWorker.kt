@@ -78,7 +78,7 @@ class DocumentAnalysisWorker(
                 // Re-read right before writing: never overwrite a crop/filter the user just changed.
                 val current = repository.getPageById(page.id) ?: continue
                 if (current.processedImagePath != imagePath) continue // edited meanwhile: next run handles it
-                repository.updatePage(current.copy(ocrText = result.fullText))
+                repository.updatePage(current.copy(ocrText = result.fullText, ocrEntitiesJson = DocumentAiEngine.fieldsToJson(result.fields)))
                 if (result.engine == "mlkit-fallback" && arabicNeeded) {
                     // Searchable now (Latin), but not final: keep no layout so Arabic is retried later.
                     waitingForArabic = true

@@ -33,6 +33,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -412,6 +417,15 @@ fun DocumentViewerScreen(
                         ) {
                             Icon(Icons.Default.Share, contentDescription = t("Save & Share", "حفظ ومشاركة"), tint = MaterialTheme.colorScheme.primary)
                         }
+                        if (pages.size > 1) {
+                            IconButton(onClick = { isGridView = !isGridView }) {
+                                Icon(
+                                    if (isGridView) Icons.Default.ViewCarousel else Icons.Default.GridView,
+                                    contentDescription = t("Toggle Grid/Page View", "تبديل عرض الشبكة/الصفحات"),
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
+                        }
                         IconButton(onClick = { onNavigateToEditSession("EXISTING", docId) }, enabled = pages.isNotEmpty()) {
                             Icon(Icons.Default.AutoFixHigh, contentDescription = t("Edit all pages", "تعديل كل الصفحات"), tint = Emerald400)
                         }
@@ -722,26 +736,68 @@ fun DocumentViewerScreen(
                         }
                     }
                 } else {
+                    var currentPageZoomed by remember { mutableStateOf(false) }
+                    LaunchedEffect(pagerState.currentPage) { currentPageZoomed = false }
                     HorizontalPager(
                         state = pagerState,
+                        userScrollEnabled = !currentPageZoomed,
                         key = { pages.getOrNull(it)?.id ?: it },
                         modifier = Modifier.fillMaxWidth().weight(1f).padding(14.dp)
                     ) { index ->
                         val pageItem = pages.getOrNull(index) ?: return@HorizontalPager
+                        var scale by remember(pageItem.id, pagerState.currentPage == index) { mutableFloatStateOf(1f) }
+                        var offsetX by remember(pageItem.id, pagerState.currentPage == index) { mutableFloatStateOf(0f) }
+                        var offsetY by remember(pageItem.id, pagerState.currentPage == index) { mutableFloatStateOf(0f) }
+                        LaunchedEffect(scale) {
+                            if (pagerState.currentPage == index) currentPageZoomed = scale > 1.02f
+                        }
                         Box(
                             modifier = Modifier
                                 .fillMaxSize()
                                 .clip(RoundedCornerShape(16.dp))
-                                .background(Color.Black.copy(alpha = 0.45f))
-                                .border(0.5.dp, Color.White.copy(alpha = 0.15f), RoundedCornerShape(16.dp))
+                                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                                .border(0.5.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f), RoundedCornerShape(16.dp))
                                 .pointerInput(pageItem.id) {
                                     detectTapGestures(
+                                        onDoubleTap = {
+                                            if (scale > 1.05f) {
+                                                scale = 1f; offsetX = 0f; offsetY = 0f
+                                            } else {
+                                                scale = 2.4f
+                                            }
+                                        },
                                         onLongPress = {
-                                            selectionMode = true
-                                            selectedPageIds = setOf(pageItem.id)
-                                            isGridView = true
+                                            if (scale <= 1.05f) {
+                                                selectionMode = true
+                                                selectedPageIds = setOf(pageItem.id)
+                                                isGridView = true
+                                            }
                                         }
                                     )
+                                }
+                                .pointerInput(pageItem.id) {
+                                    awaitEachGesture {
+                                        awaitFirstDown(requireUnconsumed = false)
+                                        do {
+                                            val event = awaitPointerEvent()
+                                            val pressedCount = event.changes.count { it.pressed }
+                                            if (pressedCount >= 2 || scale > 1.02f) {
+                                                val zoomChange = event.calculateZoom()
+                                                val panChange = event.calculatePan()
+                                                val newScale = (scale * zoomChange).coerceIn(1f, 4f)
+                                                scale = newScale
+                                                if (newScale > 1.02f) {
+                                                    val maxX = (size.width * (newScale - 1f)) / 2f
+                                                    val maxY = (size.height * (newScale - 1f)) / 2f
+                                                    offsetX = (offsetX + panChange.x).coerceIn(-maxX, maxX)
+                                                    offsetY = (offsetY + panChange.y).coerceIn(-maxY, maxY)
+                                                    event.changes.forEach { it.consume() }
+                                                } else {
+                                                    offsetX = 0f; offsetY = 0f
+                                                }
+                                            }
+                                        } while (event.changes.any { it.pressed })
+                                    }
                                 },
                             contentAlignment = Alignment.Center
                         ) {
@@ -749,7 +805,14 @@ fun DocumentViewerScreen(
                                 model = File(pageItem.processedImagePath),
                                 contentDescription = stringResource(R.string.page_n, index + 1),
                                 contentScale = ContentScale.Fit,
-                                modifier = Modifier.fillMaxSize()
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer(
+                                        scaleX = scale,
+                                        scaleY = scale,
+                                        translationX = offsetX,
+                                        translationY = offsetY
+                                    )
                             )
                         }
                     }
@@ -1165,10 +1228,16 @@ private fun ExportOptionsDialog(
                         Text(t("Reduce file size", "تقليل حجم الملف"), style = MaterialTheme.typography.labelLarge)
                         Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             CompressionPreset.values().forEach { preset ->
+                                val presetLabel = when (preset) {
+                                    CompressionPreset.LOW -> t("Small", "صغير")
+                                    CompressionPreset.MEDIUM -> t("Medium", "متوسط")
+                                    CompressionPreset.HIGH -> t("High (Print)", "عالي (طباعة)")
+                                    CompressionPreset.MAXIMUM -> t("Maximum", "أقصى دقة")
+                                }
                                 FilterChip(
                                     selected = compression == preset,
                                     onClick = { compression = preset },
-                                    label = { Text(preset.name) }
+                                    label = { Text(presetLabel) }
                                 )
                             }
                         }

@@ -536,15 +536,11 @@ object ImageProcessor {
     suspend fun applySmartEnhance(src: Bitmap): Bitmap = withContext(Dispatchers.Default) {
         val report = analyzeQuality(src)
 
-        var brightness = 0f
-        var contrast = 1.0f
-
-        if (report.isDark) {
-            brightness = 15f
-        }
-
-        if (report.isLowContrast) {
-            contrast = 1.3f
+        val brightness = if (report.isDark) 18f else 4f
+        val contrast = when {
+            report.isLowContrast -> 1.38f
+            report.isBlurry -> 1.25f
+            else -> 1.12f
         }
 
         adjustEnhancements(src, brightness, contrast, sharpen = true)
@@ -644,9 +640,9 @@ object ImageProcessor {
         hasBorder: Boolean = true
     ): String = withContext(Dispatchers.Default) {
         try {
-            val rawFrontBmp = loadBitmapFromFile(frontPath, 1800)
+            val rawFrontBmp = loadBitmapFromFile(frontPath, 2200)
             val rawBackBmp = if (backPath.isNotBlank() && backPath != frontPath) {
-                loadBitmapFromFile(backPath, 1800)
+                loadBitmapFromFile(backPath, 2200)
             } else null
 
             if (rawFrontBmp == null) return@withContext frontPath
@@ -654,8 +650,8 @@ object ImageProcessor {
             val frontBmp = if (swapOrder && rawBackBmp != null) rawBackBmp else rawFrontBmp
             val backBmp = if (swapOrder && rawBackBmp != null) rawFrontBmp else rawBackBmp
 
-            val canvasW = 1240
-            val canvasH = 1754
+            val canvasW = 1654
+            val canvasH = 2339
             val result = Bitmap.createBitmap(canvasW, canvasH, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(result)
             canvas.drawColor(Color.WHITE)
@@ -672,11 +668,28 @@ object ImageProcessor {
             }
             val cornerRadius = if (isPassport) 12f else 18f
 
+            fun drawCard(bmp: Bitmap, rect: RectF, shadow: RectF) {
+                canvas.drawRoundRect(shadow, cornerRadius, cornerRadius, shadowPaint)
+                canvas.save()
+                val clipPath = Path().apply { addRoundRect(rect, cornerRadius, cornerRadius, Path.Direction.CW) }
+                canvas.clipPath(clipPath)
+                canvas.drawBitmap(bmp, null, rect, paint)
+                canvas.restore()
+                if (hasBorder) {
+                    canvas.drawRoundRect(rect, cornerRadius, cornerRadius, borderPaint)
+                }
+            }
+
             if (backBmp == null) {
                 val clampedScale = if (arrangement == CardArrangement.FIT_PAGE) 0.94f else scale.coerceIn(0.40f, 1.10f) * 0.85f
-                val targetW = canvasW * clampedScale
+                var targetW = canvasW * clampedScale
                 val ratio = frontBmp.width.toFloat() / frontBmp.height.toFloat().coerceAtLeast(0.1f)
-                val targetH = (targetW / ratio).coerceAtMost(canvasH * 0.90f)
+                var targetH = targetW / ratio
+                val maxH = canvasH * 0.90f
+                if (targetH > maxH) {
+                    targetH = maxH
+                    targetW = targetH * ratio
+                }
                 val left = (canvasW - targetW) / 2f
                 val top = when (arrangement) {
                     CardArrangement.TOP_PAGE -> canvasH * 0.08f
@@ -684,11 +697,7 @@ object ImageProcessor {
                 }
                 val rect = RectF(left, top, left + targetW, top + targetH)
                 val shadow = RectF(left + 5, top + 5, left + targetW + 5, top + targetH + 5)
-                canvas.drawRoundRect(shadow, cornerRadius, cornerRadius, shadowPaint)
-                canvas.drawBitmap(frontBmp, null, rect, paint)
-                if (hasBorder) {
-                    canvas.drawRoundRect(rect, cornerRadius, cornerRadius, borderPaint)
-                }
+                drawCard(frontBmp, rect, shadow)
             } else when (arrangement) {
                 CardArrangement.SIDE_BY_SIDE -> {
                     val clampedScale = scale.coerceIn(0.40f, 1.10f)
@@ -705,17 +714,13 @@ object ImageProcessor {
                     val frontTop = (canvasH - targetHFront) / 2f
                     val frontRect = RectF(startX, frontTop, startX + targetW, frontTop + targetHFront)
                     val frontShadow = RectF(startX + 5, frontTop + 5, startX + targetW + 5, frontTop + targetHFront + 5)
-                    canvas.drawRoundRect(frontShadow, cornerRadius, cornerRadius, shadowPaint)
-                    canvas.drawBitmap(frontBmp, null, frontRect, paint)
-                    if (hasBorder) canvas.drawRoundRect(frontRect, cornerRadius, cornerRadius, borderPaint)
+                    drawCard(frontBmp, frontRect, frontShadow)
 
                     val backLeft = startX + targetW + gap
                     val backTop = (canvasH - targetHBack) / 2f
                     val backRect = RectF(backLeft, backTop, backLeft + targetW, backTop + targetHBack)
                     val backShadow = RectF(backLeft + 5, backTop + 5, backLeft + targetW + 5, backTop + targetHBack + 5)
-                    canvas.drawRoundRect(backShadow, cornerRadius, cornerRadius, shadowPaint)
-                    canvas.drawBitmap(backBmp, null, backRect, paint)
-                    if (hasBorder) canvas.drawRoundRect(backRect, cornerRadius, cornerRadius, borderPaint)
+                    drawCard(backBmp, backRect, backShadow)
                 }
                 else -> {
                     val scaleMul = if (arrangement == CardArrangement.FIT_PAGE) 0.94f else (scale.coerceIn(0.40f, 1.10f) * 0.82f)
@@ -749,17 +754,13 @@ object ImageProcessor {
                     val frontTop = startY
                     val frontRect = RectF(frontLeft, frontTop, frontLeft + targetW, frontTop + targetHFront)
                     val frontShadow = RectF(frontLeft + 5, frontTop + 5, frontLeft + targetW + 5, frontTop + targetHFront + 5)
-                    canvas.drawRoundRect(frontShadow, cornerRadius, cornerRadius, shadowPaint)
-                    canvas.drawBitmap(frontBmp, null, frontRect, paint)
-                    if (hasBorder) canvas.drawRoundRect(frontRect, cornerRadius, cornerRadius, borderPaint)
+                    drawCard(frontBmp, frontRect, frontShadow)
 
                     val backLeft = (canvasW - targetW) / 2f
                     val backTop = frontTop + targetHFront + gap
                     val backRect = RectF(backLeft, backTop, backLeft + targetW, backTop + targetHBack)
                     val backShadow = RectF(backLeft + 5, backTop + 5, backLeft + targetW + 5, backTop + targetHBack + 5)
-                    canvas.drawRoundRect(backShadow, cornerRadius, cornerRadius, shadowPaint)
-                    canvas.drawBitmap(backBmp, null, backRect, paint)
-                    if (hasBorder) canvas.drawRoundRect(backRect, cornerRadius, cornerRadius, borderPaint)
+                    drawCard(backBmp, backRect, backShadow)
                 }
             }
 
@@ -768,6 +769,8 @@ object ImageProcessor {
 
             val outPath = saveBitmapToFile(context, result, outPrefix)
             result.recycle()
+            QuadStore.save(outPath, DocumentQuad.fullQuad())
+            QuadStore.saveStatus(outPath, DetectionStatus.SKIPPED)
             outPath
         } catch (e: Exception) {
             e.printStackTrace()
@@ -928,6 +931,8 @@ object ImageProcessor {
 
             val outPath = saveBitmapToFile(context, result, outPrefix)
             result.recycle()
+            QuadStore.save(outPath, DocumentQuad.fullQuad())
+            QuadStore.saveStatus(outPath, DetectionStatus.SKIPPED)
             outPath
         } catch (e: Exception) {
             e.printStackTrace()
@@ -1078,10 +1083,16 @@ object ImageProcessor {
             }
         }
         val avgEdgeSharpness = if (edgeCount > 0) edgeSum / edgeCount else 0.0
+        var varianceSum = 0.0
+        for (lum in lums) {
+            val d = lum - avgLum
+            varianceSum += d * d
+        }
+        val lumStdDev = if (lums.isNotEmpty()) sqrt(varianceSum / lums.size) else 0.0
 
-        val isBlurry = avgEdgeSharpness < 6.0
+        val isBlurry = avgEdgeSharpness < 5.0
         val isDark = avgLum < 65.0
-        val isLowContrast = avgEdgeSharpness < 4.0
+        val isLowContrast = lumStdDev < 32.0
 
         val score = when {
             isBlurry && isDark -> 35
@@ -1092,8 +1103,9 @@ object ImageProcessor {
         }
 
         val (en, ar) = when {
-            isBlurry -> Pair("Image appears blurry. Hold steady for best scan.", "الصورة تبدو ضبابية. يرجى تثبيت الهاتف لنتيجة أوضح.")
-            isDark -> Pair("Low lighting detected. Try enabling flash or moving to a brighter spot.", "إضاءة منخفضة. ننصح بتشغيل الفلاش أو الانتقال لمكان مضيء.")
+            isBlurry -> Pair("Image appears blurry. Hold steady or tap Auto Fix.", "الصورة تبدو ضبابية. يرجى تثبيت الهاتف أو الضغط على إصلاح تلقائي.")
+            isDark -> Pair("Low lighting detected. Tap Auto Fix or enable flash.", "إضاءة منخفضة. اضغط على إصلاح تلقائي أو فعّل الفلاش.")
+            isLowContrast -> Pair("Low contrast detected. Tap Auto Fix to sharpen text.", "تباين منخفض. اضغط على إصلاح تلقائي لتوضيح النص.")
             else -> Pair("High quality scan. Sharp edges and high contrast.", "جودة مسح ممتازة. حواف واضحة وتباين ممتاز.")
         }
 
