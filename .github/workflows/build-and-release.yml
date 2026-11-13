@@ -45,7 +45,7 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '9.3.1'
-           - name: Build debug + unit tests
+      - name: Build debug + unit tests
         run: |
           if [ -f gradlew ]; then chmod +x gradlew; G=./gradlew; else G=gradle; fi
           $G assembleDebug testGithubDebugUnitTest testPlayDebugUnitTest --stacktrace
