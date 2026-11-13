@@ -1,16 +1,3 @@
-# Single CI/CD pipeline (replaces build.yml + the old build-and-release.yml).
-#
-#  Pull request          -> debug build + unit tests (no secrets, nothing published)
-#  Push to main          -> signed release APK + GitHub Release v<version> (used by the in-app updater)
-#  Tag v*                -> signed release with the tag's version
-#  Manual (dispatch)     -> signed release
-#
-# Required repository secrets (Settings > Secrets and variables > Actions):
-#   KEYSTORE_BASE64   base64 of the release .jks   (base64 -w0 release.jks)
-#   STORE_PASSWORD    keystore password
-#   KEY_ALIAS         key alias
-#   KEY_PASSWORD      key password
-# A release is NEVER published unsigned or debug-signed: the job fails with a clear message instead.
 name: Build & Release
 
 on:
@@ -48,7 +35,7 @@ jobs:
       - name: Build debug + unit tests
         run: |
           if [ -f gradlew ]; then chmod +x gradlew; G=./gradlew; else G=gradle; fi
-          $G assembleDebug testGithubDebugUnitTest testPlayDebugUnitTest --stacktrace
+          $G assembleDebug testDebugUnitTest --stacktrace
 
   release:
     if: github.event_name != 'pull_request'
@@ -107,15 +94,13 @@ jobs:
       - name: Build signed release APK
         run: |
           if [ -f gradlew ]; then chmod +x gradlew; G=./gradlew; else G=gradle; fi
-          # The project has product flavors (github / play): build ONLY the GitHub flavor.
-          $G assembleGithubRelease --stacktrace
+          $G assembleRelease --stacktrace
 
       - name: Verify APK signature
         run: |
-          APK=$(ls app/build/outputs/apk/github/release/*.apk 2>/dev/null | grep -v unsigned | head -n1 || true)
+          APK=$(find app/build/outputs/apk -type f -name "*-release*.apk" ! -name "*unsigned*" | head -n1)
           if [ -z "$APK" ]; then
-            echo "::error::No signed release APK was produced. Contents of app/build/outputs/apk:"
-            find app/build/outputs/apk -type f | sort || true
+            echo "::error::No signed release APK was produced."
             exit 1
           fi
           APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
