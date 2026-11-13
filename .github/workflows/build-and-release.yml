@@ -48,7 +48,7 @@ jobs:
       - name: Build debug + unit tests
         run: |
           if [ -f gradlew ]; then chmod +x gradlew; G=./gradlew; else G=gradle; fi
-          $G assembleDebug testDebugUnitTest --stacktrace
+          $G assembleDebug testGithubDebugUnitTest testPlayDebugUnitTest --stacktrace
 
   release:
     if: github.event_name != 'pull_request'
