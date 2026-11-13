@@ -107,13 +107,15 @@ jobs:
       - name: Build signed release APK
         run: |
           if [ -f gradlew ]; then chmod +x gradlew; G=./gradlew; else G=gradle; fi
-          $G assembleRelease --stacktrace
+          # The project has product flavors (github / play): build ONLY the GitHub flavor.
+          $G assembleGithubRelease --stacktrace
 
       - name: Verify APK signature
         run: |
-          APK=$(ls app/build/outputs/apk/release/*.apk | grep -v unsigned | head -n1)
+          APK=$(ls app/build/outputs/apk/github/release/*.apk 2>/dev/null | grep -v unsigned | head -n1 || true)
           if [ -z "$APK" ]; then
-            echo "::error::No signed release APK was produced."
+            echo "::error::No signed release APK was produced. Contents of app/build/outputs/apk:"
+            find app/build/outputs/apk -type f | sort || true
             exit 1
           fi
           APKSIGNER=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -n1)
