@@ -17,15 +17,6 @@ import java.io.FileOutputStream
 
 /**
  * "Default app for PDF" support.
- *
- * Android does not let an app make itself the default handler of a MIME type programmatically. The supported
- * path is the system "Open with" dialog: when no default is set, opening a PDF shows the resolver with
- * "Just once / Always". This helper:
- *  - reports whether MS Scanner is currently the default PDF app ([status]);
- *  - opens a tiny probe PDF through a plain ACTION_VIEW (no chooser) so the user can pick MS Scanner + "Always";
- *  - when another app is already the default, opens the system default-apps / app-details settings so the user
- *    can clear it (Android requires that step to be done by the user).
- * The probe file is recognised when it comes back to MainActivity ([isProbeUri]) and is never imported.
  */
 object DefaultPdfApp {
     private const val PROBE_NAME = "ms_scanner_default_check.pdf"
@@ -40,9 +31,9 @@ object DefaultPdfApp {
         data class OtherApp(val packageName: String?, val label: String?) : Status()
     }
 
-    private fun viewPdfIntent(): Intent = Intent(Intent.ACTION_VIEW).apply {
+    private fun viewPdfIntent(context: Context): Intent = Intent(Intent.ACTION_VIEW).apply {
         // Any content:// PDF resolves the same way; the URI is never opened.
-        setDataAndType(Uri.parse("content://com.example.msscanner.probe/document.pdf"), "application/pdf")
+        setDataAndType(Uri.parse("content://${context.packageName}.probe/document.pdf"), "application/pdf")
         addCategory(Intent.CATEGORY_DEFAULT)
     }
 
@@ -66,12 +57,10 @@ object DefaultPdfApp {
 
     fun status(context: Context): Status {
         val pm = context.packageManager
-        val intent = viewPdfIntent()
+        val intent = viewPdfIntent(context)
         val resolved = resolveDefault(pm, intent) ?: return Status.OtherApp(null, null)
         val pkg = resolved.activityInfo?.packageName ?: return Status.NotSet
         if (pkg == context.packageName) return Status.ThisApp
-        // The resolver / chooser itself ("android", "com.android.intentresolver", OEM resolvers) is not a real
-        // handler of the intent: it means "no default, ask every time".
         val realHandlers = handlers(pm, intent).mapNotNull { it.activityInfo?.packageName }.toSet()
         if (pkg !in realHandlers) return Status.NotSet
         val label = runCatching { resolved.loadLabel(pm)?.toString() }.getOrNull()
@@ -107,11 +96,6 @@ object DefaultPdfApp {
         return file
     }
 
-    /**
-     * Starts the "set as default" flow. Returns false when the system dialog could not be shown.
-     * - NotSet / ThisApp: opens the probe PDF with a plain ACTION_VIEW, Android shows "Open with" -> MS Scanner -> Always.
-     * - OtherApp: opens that app's details (Open by default -> Clear defaults) or the default-apps settings.
-     */
     fun launchSetAsDefault(context: Context): Boolean {
         return when (val st = status(context)) {
             is Status.OtherApp -> openClearDefaultsSettings(context, st.packageName)
@@ -128,7 +112,6 @@ object DefaultPdfApp {
         }
     }
 
-    /** Android requires the user to clear another app's default; this opens the closest settings screen. */
     fun openClearDefaultsSettings(context: Context, otherPackage: String?): Boolean {
         val intents = buildList {
             if (!otherPackage.isNullOrBlank()) {

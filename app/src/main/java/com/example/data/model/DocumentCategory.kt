@@ -38,7 +38,3 @@ enum class CompressionPreset(val qualityPercent: Int) {
     MEDIUM(65),
     LOW(40)
 }
-
-enum class SortMode {
-    NEWEST, OLDEST, NAME_AZ, NAME_ZA, SIZE_LARGEST, PAGE_COUNT
-}

@@ -4,7 +4,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
-import androidx.activity.ComponentActivity
+import android.view.WindowManager
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.appcompat.app.AppCompatActivity
@@ -20,14 +20,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.Icons
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -56,7 +53,6 @@ import com.example.ui.screens.camera.ScanCameraMode
 import com.example.ui.screens.editor.DocumentCropEditorScreen
 import com.example.ui.screens.editor.EditSessionScreen
 import com.example.ui.screens.home.HomeScreen
-import com.example.ui.screens.idcard.IdCardMergerScreen
 import com.example.ui.screens.ocr.OcrScreen
 import com.example.ui.screens.settings.SettingsScreen
 import com.example.ui.screens.viewer.DocumentViewerScreen
@@ -166,6 +162,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val updateDownloadState: StateFlow<UpdateDownloadState> = _updateDownloadState.asStateFlow()
     private var downloadJob: Job? = null
     fun checkForUpdates(manual: Boolean = false) {
+        if (!BuildConfig.SELF_UPDATE_ENABLED) return
         val repo = BuildConfig.UPDATE_REPO
         if (repo.isBlank() || _updateCheckState.value is UpdateCheckState.Checking) return
         if (!manual && System.currentTimeMillis() - prefs.lastUpdateCheckAt < UPDATE_INTERVAL_MS) return
@@ -287,8 +284,11 @@ class MainActivity : AppCompatActivity() {
         prefs = AppPreferences(applicationContext)
         mainViewModel = ViewModelProvider(this)[MainViewModel::class.java]
         if (!isLockEnabled()) mainViewModel.setAuthenticated(true)
-        mainViewModel.checkForUpdates(manual = intent?.getBooleanExtra(UpdateCheckWorker.EXTRA_OPEN_UPDATE, false) == true)
-        UpdateCheckWorker.schedule(applicationContext)
+        updateWindowSecurity()
+        if (BuildConfig.SELF_UPDATE_ENABLED) {
+            mainViewModel.checkForUpdates(manual = intent?.getBooleanExtra(UpdateCheckWorker.EXTRA_OPEN_UPDATE, false) == true)
+            UpdateCheckWorker.schedule(applicationContext)
+        }
         if (savedInstanceState == null) mainViewModel.offerIncoming(parseIncoming(intent))
         requestNotificationPermissionOnce()
         lifecycleScope.launch {
@@ -317,6 +317,9 @@ class MainActivity : AppCompatActivity() {
             val listViewModel: DocumentListViewModel = androidx.lifecycle.viewmodel.compose.viewModel(factory = factory)
             val editViewModel: EditSessionViewModel = androidx.lifecycle.viewmodel.compose.viewModel(factory = factory)
             val listUiState by listViewModel.uiState.collectAsState()
+            androidx.compose.runtime.LaunchedEffect(listUiState.lockType) {
+                updateWindowSecurity()
+            }
             val isDarkTheme = when (listUiState.themeMode) {
                 "Light" -> false
                 "Dark" -> true
@@ -334,7 +337,7 @@ class MainActivity : AppCompatActivity() {
                             editViewModel = editViewModel,
                             mainViewModel = mainViewModel
                         )
-                        if (updateCheckState is UpdateCheckState.Available) {
+                        if (BuildConfig.SELF_UPDATE_ENABLED && updateCheckState is UpdateCheckState.Available) {
                             AppUpdateDialog(
                                 checkState = updateCheckState,
                                 downloadState = updateDownloadState,
@@ -394,7 +397,6 @@ class MainActivity : AppCompatActivity() {
                 extracted += list
             }
         }
-        // Fallback: also inspect ClipData (used by Gmail, Files, WhatsApp, and Chrome when sharing/viewing)
         val clip = intent.clipData
         if (clip != null) {
             for (i in 0 until clip.itemCount) {
@@ -435,8 +437,6 @@ class MainActivity : AppCompatActivity() {
             if (intentMime == "application/pdf" || intentMime == "application/x-pdf") return true
             if (u.toString().endsWith(".pdf", ignoreCase = true)) return true
             if (displayNameOf(u).endsWith(".pdf", ignoreCase = true)) return true
-            // When launched via ACTION_VIEW / ACTION_EDIT, our manifest only registers for PDF files:
-            // any non-image URI sent to ACTION_VIEW / ACTION_EDIT is a PDF candidate.
             if ((action == android.content.Intent.ACTION_VIEW || action == android.content.Intent.ACTION_EDIT) && !t.startsWith("image/")) {
                 return true
             }
@@ -455,14 +455,26 @@ class MainActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         mainViewModel.offerIncoming(parseIncoming(intent))
-        if (intent.getBooleanExtra(UpdateCheckWorker.EXTRA_OPEN_UPDATE, false)) mainViewModel.checkForUpdates(manual = true)
+        if (BuildConfig.SELF_UPDATE_ENABLED && intent.getBooleanExtra(UpdateCheckWorker.EXTRA_OPEN_UPDATE, false)) {
+            mainViewModel.checkForUpdates(manual = true)
+        }
     }
-    // BIOMETRIC is only enforced when it can actually be satisfied (device authentication available, or a
-    // PIN as fallback); otherwise the user would be locked out (e.g. screen lock removed later).
     private fun isLockEnabled(): Boolean = when (prefs.lockType) {
         LockType.NONE -> false
         LockType.PIN -> prefs.hasPin
         else -> canAuthenticate() || prefs.hasPin
+    }
+    /** Applies FLAG_SECURE across all API levels (API 24-36) whenever app lock is enabled. */
+    private fun updateWindowSecurity() {
+        val lockActive = isLockEnabled()
+        if (lockActive) {
+            window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            setRecentsScreenshotEnabled(!lockActive)
+        }
     }
     @Composable
     private fun LockScreen(listViewModel: DocumentListViewModel) {
@@ -538,7 +550,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         mainViewModel.onAppForegrounded(isLockEnabled())
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) setRecentsScreenshotEnabled(!isLockEnabled())
+        updateWindowSecurity()
     }
     override fun onResume() {
         super.onResume()
@@ -684,9 +696,6 @@ fun DocScanApp(
 
     androidx.compose.runtime.LaunchedEffect(incoming) {
         val item = incoming ?: return@LaunchedEffect
-        // Consume immediately ONLY after capturing `item`, and run the suspend work on `coroutineScope`
-        // so that setting `_incomingImport.value = null` (which changes the LaunchedEffect key `incoming`)
-        // NEVER cancels `copyUriToLocalPdf` while it is in progress!
         mainViewModel.consumeIncoming()
         coroutineScope.launch {
             when (item) {
@@ -725,7 +734,6 @@ fun DocScanApp(
         composable(Screen.Home.route) {
             HomeScreen(
                 listViewModel = listViewModel,
-                onPagesCaptured = { pages -> cameraViewModel.setPagesPendingEdit(pages) },
                 onImportedUris = { uris -> cameraViewModel.setImportedUrisPendingEdit(uris) },
                 onOpenPdfFile = { file -> preparePdf(file) },
                 onNavigateToSettings = { navController.navigate(Screen.Settings.route) },
@@ -777,9 +785,6 @@ fun DocScanApp(
                 }
             }
             val appPrefs = remember { AppPreferences(context) }
-            // ONE capture hub: always the built-in camera screen with its mode bar (Single / Multi-page / ID / Passport).
-            // ROOT CAUSE fixed: with the Google engine selected, this route skipped the hub for Document/Batch, so the
-            // mode bar never appeared. Google is now offered INSIDE the hub instead of replacing it.
             val googleAvailable = remember(backStackEntry.id) {
                 appPrefs.scanEngine == AppPreferences.SCAN_ENGINE_GOOGLE && GoogleDocumentScanner.isSupported(context)
             }
@@ -795,7 +800,7 @@ fun DocScanApp(
                 mainViewModel.endExternalFlow()
                 val uris = GoogleDocumentScanner.pageUris(result.resultCode, result.data)
                 if (uris.isEmpty()) {
-                    scannerStage = "CAMERA" // cancelled: back to the hub (previously left the camera entirely)
+                    scannerStage = "CAMERA"
                 } else {
                     scannerStage = "PROCESSING"
                     cameraViewModel.processScannerResult(uris)
@@ -972,8 +977,6 @@ fun DocScanApp(
         }
         composable(Screen.Settings.route) {
             val updateCheckState by mainViewModel.updateCheckState.collectAsState()
-            // The default-PDF-app banner is now a card inside Settings: one full-screen settings layout, so the
-            // signature vault opened from Settings can cover the whole screen.
             SettingsScreen(
                 viewModel = listViewModel,
                 onNavigateBack = { navController.popBackStack() },
@@ -1102,4 +1105,3 @@ fun DocScanApp(
         }
     }
 }
-

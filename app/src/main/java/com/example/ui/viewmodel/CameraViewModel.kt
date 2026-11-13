@@ -19,6 +19,7 @@ import com.example.engine.ocr.DocumentAnalysisWorker
 import com.example.ui.screens.editor.CropEditorResult
 import com.example.ui.util.UiEvent
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,17 +31,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import java.io.File
-/**
- * Per-page edit parameters of a page that is not saved yet. Everything is re-rendered from the RAW
- * image with DocumentPipeline (warp(quad) -> rotate -> filter -> brightness/contrast), so edits never
- * stack on an already-processed image and the crop is never lost.
- *
- * Default filter changed from DocumentPipeline.DEFAULT_FILTER to null (Original): a freshly captured or
- * imported document page keeps its true colours by default, and the user applies a filter afterwards if
- * they want one. The actual pixels of a fresh camera capture now also default to null via
- * DocumentScanController.defaultFilterFor(mode) and HomeScreen's system-camera fallback, so both the
- * bookkeeping state here and the rendered image agree for DOCUMENT / BATCH captures.
- */
+
 data class PendingPageEdit(
     val rotation: Int = 0,
     val filter: FilterType? = null,
@@ -139,6 +130,28 @@ class CameraViewModel(
             else s.copy(pageStatuses = s.pageStatuses + (rawPath to status))
         }
     }
+    /** Warns the user off the main thread if any pages in the current batch appear to be visual duplicates. */
+    private fun checkDuplicatePagesAsync(pages: List<Pair<String, String>>) {
+        if (pages.size < 2) return
+        viewModelScope.launch(Dispatchers.Default) {
+            val signatures = pages.map { (_, proc) -> DocumentPipeline.computeLumaSignature(proc) }
+            for (i in signatures.indices) {
+                for (j in i + 1 until signatures.size) {
+                    if (DocumentPipeline.areLikelyDuplicates(signatures[i], signatures[j])) {
+                        _events.trySend(
+                            UiEvent.Error(
+                                t(
+                                    "Page ${j + 1} looks very similar to page ${i + 1} (possible duplicate)",
+                                    "الصفحة ${j + 1} تبدو مطابقة تقريباً للصفحة ${i + 1} (احتمال تكرار)"
+                                )
+                            )
+                        )
+                        return@launch
+                    }
+                }
+            }
+        }
+    }
     /** "Save & Next": the user reviewed this page. A page whose edges were not found stays flagged. */
     fun markPageReviewed(index: Int) {
         val raw = _uiState.value.pagesPendingEdit.getOrNull(index)?.first ?: return
@@ -217,10 +230,13 @@ class CameraViewModel(
                 detectedOcrText = ""
             )
         }
+        checkDuplicatePagesAsync(pages)
     }
     fun appendPendingPages(pages: List<Pair<String, String>>) {
         if (pages.isEmpty()) return
-        setPages(_uiState.value.pagesPendingEdit + pages)
+        val combined = _uiState.value.pagesPendingEdit + pages
+        setPages(combined)
+        checkDuplicatePagesAsync(combined)
     }
     fun replacePendingPage(index: Int, page: Pair<String, String>) {
         val pages = _uiState.value.pagesPendingEdit.toMutableList()
@@ -288,6 +304,7 @@ class CameraViewModel(
                     }
                 }
                 if (failed > 0) _events.trySend(UiEvent.Error(t("Could not import $failed image(s)", "تعذر استيراد $failed صورة")))
+                checkDuplicatePagesAsync(_uiState.value.pagesPendingEdit)
             } finally {
                 _uiState.update { it.copy(isLoading = false, isBackgroundProcessing = false) }
             }
@@ -504,11 +521,6 @@ class CameraViewModel(
         }
     }
     // ------------------------------------------------------------------ Google document scanner
-    /**
-     * Pages returned by the Google scanner are already detected, cropped, perspective-corrected and
-     * cleaned: they enter the SAME pipeline without a second detection or filter (status SKIPPED), and
-     * the scanner's temporary files are removed once copied.
-     */
     fun processScannerResult(uris: List<Uri>) {
         if (uris.isEmpty() || _isProcessingScan.value) return
         _isProcessingScan.value = true
@@ -548,7 +560,6 @@ class CameraViewModel(
         val path = uri.path ?: return
         runCatching {
             val f = File(path).canonicalFile
-            // Only files inside our own cache (where the scanner writes its results) are ever deleted.
             if (f.path.startsWith(context.cacheDir.canonicalPath + File.separator)) f.delete()
         }
     }
@@ -556,7 +567,6 @@ class CameraViewModel(
     fun analyzePendingFirstPage() = Unit
     // ------------------------------------------------------------------ save
     private fun filterNameFor(edit: PendingPageEdit): String = (edit.filter ?: FilterType.ORIGINAL).name
-    /** Pending pages -> PageEntity rows with their final crop / rotation / filter (id = 0: new rows). */
     private fun pendingAsEntities(): List<PageEntity> {
         val state = _uiState.value
         val now = System.currentTimeMillis()
@@ -574,7 +584,6 @@ class CameraViewModel(
             )
         }
     }
-    /** Guards shared by every save entry point. Returns an error message, or null when saving is allowed. */
     private fun saveBlockedReason(): String? {
         val state = _uiState.value
         return when {
@@ -585,10 +594,6 @@ class CameraViewModel(
             else -> null
         }
     }
-    /**
-     * New document from the scan session (camera, gallery, PDF, multi-page). One Room transaction via
-     * DocumentRepository.saveDocument: document + all pages + metadata + thumbnail, or nothing.
-     */
     fun importPagesAsDocument(title: String = "", selectedFolder: String = "Default", onComplete: (Long) -> Unit) {
         saveBlockedReason()?.let { reason ->
             if (reason != "Already saving") _events.trySend(UiEvent.Error(reason))
@@ -615,7 +620,6 @@ class CameraViewModel(
             }
         }
     }
-    /** Adds the session pages to an existing document, through the same transaction. */
     fun commitPendingPagesToDocument(docId: Long, onComplete: () -> Unit) {
         saveBlockedReason()?.let { reason ->
             if (reason != "Already saving") _events.trySend(UiEvent.Error(reason))
@@ -656,10 +660,6 @@ class CameraViewModel(
         _uiState.update { s -> s.copy(pageStatuses = s.pageStatuses.mapValues { PageStatus.SAVED }) }
         clearPendingPages(deleteFiles = false)
     }
-    /**
-     * OCR + classification + suggested title run strictly AFTER save through WorkManager
-     * (DocumentAnalysisWorker): survives navigation / process death and never blocks the scan flow.
-     */
     private fun analyzeDocumentInBackground(docId: Long, generatedTitle: Boolean) {
         DocumentAnalysisWorker.enqueue(context, docId, generatedTitle)
     }

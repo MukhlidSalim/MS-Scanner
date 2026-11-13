@@ -14,7 +14,6 @@ interface DocumentDao {
     @Query("SELECT * FROM pages WHERE documentId = :docId ORDER BY pageIndex ASC")
     fun getPagesForDocumentSync(docId: Long): List<PageEntity>
 
-
     @Query("SELECT * FROM documents WHERE isTrash = 0 ORDER BY updatedAt DESC")
     fun getAllActiveDocuments(): Flow<List<DocumentEntity>>
 
@@ -27,40 +26,17 @@ interface DocumentDao {
     @Query("SELECT * FROM documents WHERE isTrash = 1")
     suspend fun getTrashDocumentsList(): List<DocumentEntity>
 
-    @Query("SELECT * FROM documents WHERE isTrash = 0 AND folderName = :folder ORDER BY updatedAt DESC")
-    fun getDocumentsByFolder(folder: String): Flow<List<DocumentEntity>>
-
-    @Query("SELECT * FROM documents WHERE isTrash = 0 AND category = :category ORDER BY updatedAt DESC")
-    fun getDocumentsByCategory(category: String): Flow<List<DocumentEntity>>
-
-    @Query("""
-        SELECT DISTINCT d.* FROM documents d 
-        LEFT JOIN pages p ON p.documentId = d.id 
-        WHERE d.isTrash = 0 AND (
-            d.title LIKE '%' || :query || '%' 
-            OR d.tagsCsv LIKE '%' || :query || '%' 
-            OR d.ocrText LIKE '%' || :query || '%'
-            OR p.ocrText LIKE '%' || :query || '%'
-        )
-        ORDER BY d.updatedAt DESC
-    """)
-    fun searchDocuments(query: String): Flow<List<DocumentEntity>>
-
     @Query("SELECT DISTINCT folderName FROM documents WHERE isTrash = 0")
     fun getAllFolders(): Flow<List<String>>
 
     @Query("UPDATE documents SET folderName = :newName WHERE folderName = :oldName")
     suspend fun renameFolder(oldName: String, newName: String)
 
-        @Query("UPDATE documents SET folderName = 'Default' WHERE folderName = :folderName")
+    @Query("UPDATE documents SET folderName = 'Default' WHERE folderName = :folderName")
     suspend fun deleteFolder(folderName: String)
-
 
     @Query("SELECT * FROM documents WHERE id = :id LIMIT 1")
     suspend fun getDocumentById(id: Long): DocumentEntity?
-
-    @Query("SELECT * FROM documents WHERE id = :id LIMIT 1")
-    fun observeDocumentById(id: Long): Flow<DocumentEntity?>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertDocument(doc: DocumentEntity): Long
@@ -93,9 +69,6 @@ interface DocumentDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPage(page: PageEntity): Long
-
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertPages(pages: List<PageEntity>)
 
     @Update
     suspend fun updatePage(page: PageEntity)

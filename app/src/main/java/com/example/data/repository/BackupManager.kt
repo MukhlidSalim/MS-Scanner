@@ -3,7 +3,6 @@ package com.example.data.repository
 import android.content.Context
 import android.net.Uri
 import com.example.data.model.PageEntity
-import com.example.engine.annotation.SignatureStore
 import com.example.engine.cv.DocumentQuad
 import com.example.engine.cv.QuadStore
 import com.example.engine.ocr.DocumentAnalysisWorker
@@ -15,32 +14,50 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
+import java.security.SecureRandom
 import java.util.UUID
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipOutputStream
+import javax.crypto.Cipher
+import javax.crypto.CipherInputStream
+import javax.crypto.CipherOutputStream
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
+import javax.crypto.spec.SecretKeySpec
+
+/** Thrown when restoring an encrypted backup without a password or with an incorrect password. */
+class BackupPasswordRequiredException(
+    val wrongPassword: Boolean = false,
+    message: String = if (wrongPassword) "Incorrect backup password" else "Password required to restore encrypted backup"
+) : Exception(message)
 
 /**
- * In-app backup / restore (ZIP).
+ * In-app backup / restore (ZIP, with optional AES-256-GCM password encryption).
  *
  * Format v2 (v1 still restorable):
  *   backup_manifest.json (includes custom folders list)
  *   signatures/sig_<id>.png + signatures/signatures.json
  *   documents/doc_<id>/metadata.json
- *   documents/doc_<id>/pages/p<index>_raw.jpg | p<index>_proc.jpg
- * Pages keep their crop quad, rotation, filter, OCR text, OCR entities, and OCR layout lines,
- * and documents preserve their original creation/modification timestamps, tags, and suggested titles.
+ *   documents/doc_<id>/pages/p<index>_raw.jpg | p<index>_proc.jpg | p<index>_annot.png
+ *
+ * Encrypted container format (when password is provided):
+ *   6-byte magic header "MSBAK1" + 16-byte PBKDF2 salt + 12-byte GCM IV + AES-256-GCM encrypted ZIP stream.
  */
 class BackupManager(
     private val context: Context,
     private val repository: DocumentRepository
 ) {
 
-    suspend fun createBackup(outputUri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun createBackup(outputUri: Uri, password: String? = null): Result<Int> = withContext(Dispatchers.IO) {
         try {
             val docs = repository.getAllDocumentsSync().filter { !it.isTrash }
             val folders = runCatching { repository.observeFolders().first() }.getOrDefault(emptyList())
@@ -50,8 +67,14 @@ class BackupManager(
             var docCount = 0
             val out = context.contentResolver.openOutputStream(outputUri)
                 ?: return@withContext Result.failure(IOException("Cannot open backup destination"))
-            out.use { outStream ->
-                ZipOutputStream(outStream).use { zos ->
+            val cleanPassword = password?.takeIf { it.isNotBlank() }
+            out.use { rawOutStream ->
+                val targetStream = if (cleanPassword != null) {
+                    wrapEncryptedOutputStream(rawOutStream, cleanPassword)
+                } else {
+                    rawOutStream
+                }
+                ZipOutputStream(targetStream).use { zos ->
                     val foldersArray = JSONArray().apply { folders.forEach { put(it) } }
                     val manifest = JSONObject().apply {
                         put("version", FORMAT_VERSION)
@@ -95,6 +118,13 @@ class BackupManager(
                             copyFileToZip(page.rawImagePath, "${docDir}pages/$rawEntry", zos)
                             if (!sameFile) copyFileToZip(page.processedImagePath, "${docDir}pages/$procEntry", zos)
 
+                            val annotFile = File("${page.rawImagePath}.annot.png")
+                            val annotEntry = if (annotFile.isFile) {
+                                val name = "p${i}_annot.png"
+                                copyFileToZip(annotFile.absolutePath, "${docDir}pages/$name", zos)
+                                name
+                            } else ""
+
                             val layoutLines = OcrLayoutStore.load(page.processedImagePath)
                             val layoutArr = JSONArray()
                             layoutLines?.forEach { l ->
@@ -111,6 +141,8 @@ class BackupManager(
                                 put("pageIndex", i)
                                 put("rawEntry", rawEntry)
                                 put("procEntry", procEntry)
+                                if (annotEntry.isNotBlank()) put("annotEntry", annotEntry)
+                                put("noStraighten", QuadStore.isNoStraighten(page.rawImagePath))
                                 put("rotationDegrees", page.rotationDegrees)
                                 put("filterType", page.filterType)
                                 put("cropQuadJson", page.cropQuadJson.ifBlank { QuadStore.load(page.rawImagePath)?.toJson() ?: "" })
@@ -157,12 +189,38 @@ class BackupManager(
         zos.closeEntry()
     }
 
-    suspend fun restoreBackup(inputUri: Uri): Result<Int> = withContext(Dispatchers.IO) {
+    suspend fun restoreBackup(inputUri: Uri, password: String? = null): Result<Int> = withContext(Dispatchers.IO) {
         val tempDir = File(context.cacheDir, "restore_${UUID.randomUUID()}").apply { mkdirs() }
         try {
-            val input = context.contentResolver.openInputStream(inputUri)
+            val rawInput = context.contentResolver.openInputStream(inputUri)
                 ?: return@withContext Result.failure(IOException("Cannot open backup file"))
-            input.use { extractSafely(ZipInputStream(it), tempDir) }
+            rawInput.use { stream ->
+                val buffered = BufferedInputStream(stream, 64 * 1024)
+                buffered.mark(16)
+                val header = ByteArray(ENCRYPTED_MAGIC.size)
+                val readHeader = buffered.read(header)
+                val isEncrypted = readHeader == ENCRYPTED_MAGIC.size && header.contentEquals(ENCRYPTED_MAGIC)
+                val zipSourceStream: InputStream = if (isEncrypted) {
+                    val cleanPwd = password?.takeIf { it.isNotBlank() }
+                        ?: return@withContext Result.failure(BackupPasswordRequiredException(wrongPassword = false))
+                    try {
+                        unwrapEncryptedInputStream(buffered, cleanPwd)
+                    } catch (e: Exception) {
+                        return@withContext Result.failure(BackupPasswordRequiredException(wrongPassword = true))
+                    }
+                } else {
+                    buffered.reset()
+                    buffered
+                }
+                try {
+                    extractSafely(ZipInputStream(zipSourceStream), tempDir)
+                } catch (e: Exception) {
+                    if (isEncrypted) {
+                        return@withContext Result.failure(BackupPasswordRequiredException(wrongPassword = true))
+                    }
+                    throw e
+                }
+            }
 
             val manifestFile = File(tempDir, MANIFEST)
             if (!manifestFile.isFile) return@withContext Result.failure(Exception("Invalid backup: missing manifest"))
@@ -265,8 +323,10 @@ class BackupManager(
                 val p = pagesArray.optJSONObject(i) ?: continue
                 val rawName = File(if (version >= 2) p.optString("rawEntry") else p.optString("rawImagePath")).name
                 val procName = File(if (version >= 2) p.optString("procEntry") else p.optString("processedImagePath")).name
+                val annotName = File(p.optString("annotEntry", "")).name
                 val rawSrc = File(pagesDir, rawName).takeIf { rawName.isNotBlank() && it.isFile }
                 val procSrc = File(pagesDir, procName).takeIf { procName.isNotBlank() && it.isFile }
+                val annotSrc = File(pagesDir, annotName).takeIf { annotName.isNotBlank() && it.isFile }
                 val source = rawSrc ?: procSrc ?: continue
                 val tag = UUID.randomUUID().toString().take(8)
                 val newRaw = File(scansDir, "restored_raw_${tag}.jpg")
@@ -275,6 +335,15 @@ class BackupManager(
                 val newProc = if (procSrc != null && procSrc != source) {
                     File(scansDir, "restored_proc_${tag}.jpg").also { procSrc.copyTo(it, overwrite = true); createdFiles += it }
                 } else newRaw
+
+                if (annotSrc != null) {
+                    val dstAnnot = File("${newRaw.absolutePath}.annot.png")
+                    annotSrc.copyTo(dstAnnot, overwrite = true)
+                    createdFiles += dstAnnot
+                }
+                if (p.optBoolean("noStraighten", false)) {
+                    QuadStore.markNoStraighten(newRaw.absolutePath)
+                }
 
                 val quadJson = p.optString("cropQuadJson", "")
                 DocumentQuad.fromJsonOrNull(quadJson)?.let { QuadStore.save(newRaw.absolutePath, it) }
@@ -354,10 +423,62 @@ class BackupManager(
         }
     }
 
-    private companion object {
-        const val MANIFEST = "backup_manifest.json"
-        const val FORMAT_VERSION = 2
-        const val MAX_ENTRIES = 20_000
-        const val MAX_TOTAL_BYTES = 4L * 1024 * 1024 * 1024 // 4 GB
+    companion object {
+        private const val MANIFEST = "backup_manifest.json"
+        private const val FORMAT_VERSION = 2
+        private const val MAX_ENTRIES = 20_000
+        private const val MAX_TOTAL_BYTES = 4L * 1024 * 1024 * 1024 // 4 GB
+        private val ENCRYPTED_MAGIC = "MSBAK1".toByteArray(Charsets.US_ASCII)
+        private const val PBKDF2_ITERATIONS = 20_000
+        private const val GCM_TAG_BITS = 128
+
+        private fun deriveAesKey(password: String, salt: ByteArray): SecretKeySpec {
+            val spec = PBEKeySpec(password.toCharArray(), salt, PBKDF2_ITERATIONS, 256)
+            return try {
+                val raw = runCatching {
+                    SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).encoded
+                }.getOrElse {
+                    SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1").generateSecret(spec).encoded
+                }
+                SecretKeySpec(raw, "AES")
+            } finally {
+                spec.clearPassword()
+            }
+        }
+
+        /** Writes "MSBAK1" + 16B salt + 12B IV to [out] and returns an AES-256-GCM CipherOutputStream. */
+        internal fun wrapEncryptedOutputStream(out: OutputStream, password: String): OutputStream {
+            val rng = SecureRandom()
+            val salt = ByteArray(16).also { rng.nextBytes(it) }
+            val iv = ByteArray(12).also { rng.nextBytes(it) }
+            out.write(ENCRYPTED_MAGIC)
+            out.write(salt)
+            out.write(iv)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, deriveAesKey(password, salt), GCMParameterSpec(GCM_TAG_BITS, iv))
+            return CipherOutputStream(out, cipher)
+        }
+
+        /** Reads 16B salt + 12B IV from [input] (after "MSBAK1" magic) and returns an AES-256-GCM CipherInputStream. */
+        internal fun unwrapEncryptedInputStream(input: InputStream, password: String): InputStream {
+            val salt = ByteArray(16)
+            val iv = ByteArray(12)
+            if (input.readNBytesCompat(salt) != 16 || input.readNBytesCompat(iv) != 12) {
+                throw IOException("Corrupt encrypted backup header")
+            }
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, deriveAesKey(password, salt), GCMParameterSpec(GCM_TAG_BITS, iv))
+            return CipherInputStream(input, cipher)
+        }
+
+        private fun InputStream.readNBytesCompat(buf: ByteArray): Int {
+            var total = 0
+            while (total < buf.size) {
+                val r = read(buf, total, buf.size - total)
+                if (r < 0) break
+                total += r
+            }
+            return total
+        }
     }
 }

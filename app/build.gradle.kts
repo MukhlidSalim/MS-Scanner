@@ -19,6 +19,9 @@ val updateRepo: String = System.getenv("UPDATE_REPO")?.takeIf { it.isNotBlank() 
   ?: System.getenv("GITHUB_REPOSITORY")?.takeIf { it.isNotBlank() }
   ?: "MukhlidSalim/MS-Scanner"
 
+// Application ID (configurable via APP_ID env var if needed, defaults to com.msscanner.app).
+val resolvedAppId: String = System.getenv("APP_ID")?.takeIf { it.isNotBlank() } ?: "com.msscanner.app"
+
 // ---------------------------------------------------------------------------- release signing
 // Values come from environment variables (CI) or from a local, git-ignored keystore.properties:
 //   storeFile=/absolute/path/release.jks
@@ -45,15 +48,30 @@ android {
   namespace = "com.example"
   compileSdk = 36
   defaultConfig {
-    applicationId = "com.aistudio.docscan.pro"
+    applicationId = resolvedAppId
     minSdk = 24
     targetSdk = 36
     versionCode = appVersionCode
     versionName = appVersionName
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
+    buildConfigField("boolean", "SELF_UPDATE_ENABLED", "true")
     // Real phones (arm) + x86_64 emulator. Drops 32-bit x86 native code (Tesseract, ML Kit) from the APK.
     ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
+  }
+  flavorDimensions += "distribution"
+  productFlavors {
+    create("github") {
+      dimension = "distribution"
+      isDefault = true
+      buildConfigField("boolean", "SELF_UPDATE_ENABLED", "true")
+      buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
+    }
+    create("play") {
+      dimension = "distribution"
+      buildConfigField("boolean", "SELF_UPDATE_ENABLED", "false")
+      buildConfigField("String", "UPDATE_REPO", "\"\"")
+    }
   }
   signingConfigs {
     if (hasReleaseSigning) {
@@ -81,6 +99,7 @@ android {
       versionNameSuffix = "-debug"
       // A debug build must never download/install the release APK (different package): updater disabled.
       buildConfigField("String", "UPDATE_REPO", "\"\"")
+      buildConfigField("boolean", "SELF_UPDATE_ENABLED", "false")
     }
   }
   compileOptions {
@@ -92,7 +111,7 @@ android {
     buildConfig = true
   }
   testOptions { unitTests { isIncludeAndroidResources = true } }
-  // ✅ يُخبر Room بمكان حفظ ملفات الـ schema للتحقق من صحة الـ Migrations وقت التجميع
+  // Room schema export location for compile-time migration verification
   ksp {
     arg("room.schemaLocation", "$projectDir/schemas")
     arg("room.incremental", "true")
@@ -126,7 +145,6 @@ dependencies {
   implementation(libs.androidx.compose.ui.graphics)
   implementation(libs.androidx.compose.ui.tooling.preview)
   implementation(libs.androidx.core.ktx)
-  implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)

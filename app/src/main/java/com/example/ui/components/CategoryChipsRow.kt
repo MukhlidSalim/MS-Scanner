@@ -46,7 +46,7 @@ fun CategoryChipsRow(
                 colors = FilterChipDefaults.filterChipColors(
                     containerColor      = Color.Transparent,
                     labelColor          = MaterialTheme.colorScheme.onSurfaceVariant,
-                    selectedContainerColor = Color.Transparent, // No fill even when selected
+                    selectedContainerColor = GoldBase.copy(alpha = 0.16f),
                     selectedLabelColor  = GoldBase
                 ),
                 border = FilterChipDefaults.filterChipBorder(

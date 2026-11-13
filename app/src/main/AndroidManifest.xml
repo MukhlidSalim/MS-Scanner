@@ -5,11 +5,6 @@
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
-    <!-- In-app updater (GitHub distribution, in-place updates). -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
-    <!-- Android 12+: required for PackageInstaller USER_ACTION_NOT_REQUIRED (UpdateInstaller) to take effect;
-         without it every in-place update still asks for confirmation. Normal permission, granted at install. -->
-    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <!-- Android 13+: "update available" notification from the background update check (optional). -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
@@ -57,10 +52,6 @@
                 <data android:mimeType="application/x-pdf" />
             </intent-filter>
         </activity>
-        <!-- PackageInstaller session results (in-place self update). Not exported. -->
-        <receiver
-            android:name=".engine.updater.UpdateInstallReceiver"
-            android:exported="false" />
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.provider"
@@ -72,4 +63,3 @@
         </provider>
     </application>
 </manifest>
-

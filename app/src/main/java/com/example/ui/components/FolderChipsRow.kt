@@ -86,7 +86,7 @@ fun FolderChipsRow(
                         containerColor      = Color.Transparent,
                         labelColor          = MaterialTheme.colorScheme.onSurfaceVariant,
                         iconColor           = MaterialTheme.colorScheme.onSurfaceVariant,
-                        selectedContainerColor = Color.Transparent,
+                        selectedContainerColor = GoldBase.copy(alpha = 0.16f),
                         selectedLabelColor  = GoldBase,
                         selectedLeadingIconColor = GoldBase,
                         selectedTrailingIconColor = GoldBase

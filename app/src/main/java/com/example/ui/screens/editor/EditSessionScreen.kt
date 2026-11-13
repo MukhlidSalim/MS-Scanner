@@ -814,13 +814,13 @@ private fun PreviewStageContent(
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                         IconButton(onClick = { onMove(index, index - 1) }, enabled = index > 0 && !isBusy, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, t("Move left", "نقل لليسار"))
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, t("Move earlier", "تقديم الصفحة"))
                         }
                         IconButton(onClick = { onDelete(index) }, enabled = canDelete && !isBusy, modifier = Modifier.size(34.dp)) {
                             Icon(Icons.Default.Delete, t("Delete", "حذف"), Modifier.size(18.dp))
                         }
                         IconButton(onClick = { onMove(index, index + 1) }, enabled = index < pages.lastIndex && !isBusy, modifier = Modifier.size(34.dp)) {
-                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, t("Move right", "نقل لليمين"))
+                            Icon(Icons.AutoMirrored.Filled.ArrowForward, t("Move later", "تأخير الصفحة"))
                         }
                     }
                 }

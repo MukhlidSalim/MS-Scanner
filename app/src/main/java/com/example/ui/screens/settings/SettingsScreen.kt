@@ -1,6 +1,7 @@
 package com.example.ui.screens.settings
 import androidx.compose.ui.res.stringResource
 import com.example.R
+import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -13,6 +14,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -30,11 +32,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import kotlinx.coroutines.flow.collectLatest
 import com.example.data.model.LockType
-import com.example.ui.theme.CyanScan
 import com.example.ui.theme.Emerald400
-import com.example.ui.theme.EmeraldLight
 import com.example.ui.theme.GoldBase
 import com.example.ui.viewmodel.DocumentListViewModel
 import com.example.data.model.CompressionPreset
@@ -43,13 +42,7 @@ import com.example.BuildConfig
 import com.example.engine.updater.UpdateCheckState
 import com.example.engine.pdf.PdfEngine
 import com.example.util.CrashReporter
-/**
- * Settings, reorganized into clearly labelled sections (same visual language as the rest of the app:
- * rounded 16dp cards, outlineVariant border, titleMedium bold section headers) instead of one long
- * unlabelled scroll. No existing behaviour was removed — every action below calls the exact same
- * ViewModel / AppPreferences / repository function as before; only the grouping and presentation changed,
- * plus the new "Signatures" section.
- */
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
@@ -69,6 +62,10 @@ fun SettingsScreen(
     var showPinDialog by remember { mutableStateOf(false) }
     var showPrivacyDialog by remember { mutableStateOf(false) }
     var pinInput by remember { mutableStateOf("") }
+    var showBackupPasswordDialog by remember { mutableStateOf(false) }
+    var backupPasswordInput by remember { mutableStateOf("") }
+    var pendingRestoreUri by remember { mutableStateOf<Uri?>(null) }
+    var restorePasswordInput by remember { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(Unit) {
         viewModel.events.collect { event ->
@@ -80,13 +77,25 @@ fun SettingsScreen(
             }
         }
     }
-    // ---------------------------------------------------------------- Signatures (new, reusable vault)
+    val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
+        val pwd = backupPasswordInput.takeIf { it.isNotBlank() }
+        backupPasswordInput = ""
+        uri?.let { viewModel.createBackup(it, pwd) }
+    }
+    val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let {
+            viewModel.restoreBackup(it, password = null) { encryptedUri ->
+                restorePasswordInput = ""
+                pendingRestoreUri = encryptedUri
+            }
+        }
+    }
+    // ---------------------------------------------------------------- Signatures (reusable vault)
     var showSignatureStudio by remember { mutableStateOf(false) }
     val signatureRepository = remember {
         com.example.data.repository.DocumentRepository(context, com.example.data.db.DocScanDatabase.getInstance(context).documentDao())
     }
     val savedSignatures by signatureRepository.getAllSignatures().collectAsState(initial = emptyList())
-    // Box root: the signature vault is a full-screen layer drawn above the settings (not a Dialog window).
     Box(modifier = modifier.fillMaxSize()) {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
@@ -142,24 +151,32 @@ fun SettingsScreen(
             SectionHeader(stringResource(R.string.txt_appearance))
             SectionCard {
                 val currentLocale = androidx.appcompat.app.AppCompatDelegate.getApplicationLocales().toLanguageTags()
-                var isArabicToggle by remember { mutableStateOf(currentLocale.contains("ar")) }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column {
-                        Text(text = stringResource(R.string.txt_app_language), fontWeight = FontWeight.SemiBold)
-                        Text(text = stringResource(R.string.txt_switch_lang_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                val effectiveArabic = if (currentLocale.isNotBlank()) currentLocale.contains("ar") else isArabic
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(text = stringResource(R.string.txt_app_language), fontWeight = FontWeight.SemiBold)
+                    Text(text = stringResource(R.string.txt_switch_lang_desc), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(
+                            selected = effectiveArabic,
+                            onClick = {
+                                androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(
+                                    androidx.core.os.LocaleListCompat.forLanguageTags("ar")
+                                )
+                            },
+                            shape = RoundedCornerShape(50),
+                            label = { Text("العربية") }
+                        )
+                        FilterChip(
+                            selected = !effectiveArabic,
+                            onClick = {
+                                androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(
+                                    androidx.core.os.LocaleListCompat.forLanguageTags("en")
+                                )
+                            },
+                            shape = RoundedCornerShape(50),
+                            label = { Text("English") }
+                        )
                     }
-                    Switch(
-                        checked = isArabicToggle,
-                        onCheckedChange = {
-                            isArabicToggle = it
-                            val newLocales = if (it) androidx.core.os.LocaleListCompat.forLanguageTags("ar") else androidx.core.os.LocaleListCompat.forLanguageTags("en")
-                            androidx.appcompat.app.AppCompatDelegate.setApplicationLocales(newLocales)
-                        }
-                    )
                 }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
                 Text(text = stringResource(R.string.txt_app_theme), fontWeight = FontWeight.SemiBold)
@@ -226,8 +243,27 @@ fun SettingsScreen(
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(t("Auto-straighten pages (Deskew)", "تسوية ميلان الصفحات تلقائياً"), fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                        Text(
+                            t("Trims thin edge slivers and aligns tilted text lines after cropping", "تقليم الحواف الزائدة وتعديل ميلان السطور تلقائياً بعد القص"),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = uiState.autoDeskew,
+                        onCheckedChange = { viewModel.setAutoDeskew(it) }
+                    )
+                }
             }
-            // ======================================================================= Signatures (NEW)
+            // ======================================================================= Signatures
             SectionHeader(t("Signatures", "التوقيعات"))
             SectionCard {
                 Row(
@@ -249,7 +285,7 @@ fun SettingsScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             // ======================================================================= Documents & PDF defaults
@@ -301,7 +337,6 @@ fun SettingsScreen(
                     }
                 }
             }
-            // Default PDF app (was a separate bar pinned under the settings screen).
             Card(
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -377,75 +412,71 @@ fun SettingsScreen(
                     }
                 }
             }
-            // ======================================================================= App Updates
-            SectionHeader(t("App Updates", "تحديثات التطبيق"))
-            SectionCard {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text((t("Current version: ", "الإصدار الحالي: ")) + BuildConfig.VERSION_NAME, fontWeight = FontWeight.SemiBold)
-                        Text(
-                            t("Checked automatically on launch and every 12 h", "يتم التحقق تلقائياً عند الفتح وكل 12 ساعة"),
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Button(
-                        onClick = onCheckForUpdates,
-                        enabled = updateCheckState !is UpdateCheckState.Checking,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.testTag("check_updates_btn")
+            // ======================================================================= App Updates (GitHub flavor only)
+            if (BuildConfig.SELF_UPDATE_ENABLED) {
+                SectionHeader(t("App Updates", "تحديثات التطبيق"))
+                SectionCard {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        if (updateCheckState is UpdateCheckState.Checking) {
-                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        } else {
-                            Text(t("Check now", "التحقق الآن"))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text((t("Current version: ", "الإصدار الحالي: ")) + BuildConfig.VERSION_NAME, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                t("Checked automatically on launch and every 12 h", "يتم التحقق تلقائياً عند الفتح وكل 12 ساعة"),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Button(
+                            onClick = onCheckForUpdates,
+                            enabled = updateCheckState !is UpdateCheckState.Checking,
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier.testTag("check_updates_btn")
+                        ) {
+                            if (updateCheckState is UpdateCheckState.Checking) {
+                                CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            } else {
+                                Text(t("Check now", "التحقق الآن"))
+                            }
                         }
                     }
-                }
-                when (val st = updateCheckState) {
-                    is UpdateCheckState.UpToDate -> if (st.isManual) Text(
-                        t("You have the latest version ✓", "لديك أحدث إصدار ✓"),
-                        color = Emerald400, fontSize = 13.sp
-                    )
-                    is UpdateCheckState.Error -> if (st.isManual) Text(
-                        if (isArabic) st.messageAr else st.messageEn,
-                        color = MaterialTheme.colorScheme.error, fontSize = 13.sp
-                    )
-                    is UpdateCheckState.Available -> Text(
-                        (t("Version available: ", "يتوفر الإصدار ")) + st.updateInfo.latestVersion,
-                        color = MaterialTheme.colorScheme.primary, fontSize = 13.sp
-                    )
-                    else -> Unit
+                    when (val st = updateCheckState) {
+                        is UpdateCheckState.UpToDate -> if (st.isManual) Text(
+                            t("You have the latest version ✓", "لديك أحدث إصدار ✓"),
+                            color = Emerald400, fontSize = 13.sp
+                        )
+                        is UpdateCheckState.Error -> if (st.isManual) Text(
+                            if (isArabic) st.messageAr else st.messageEn,
+                            color = MaterialTheme.colorScheme.error, fontSize = 13.sp
+                        )
+                        is UpdateCheckState.Available -> Text(
+                            (t("Version available: ", "يتوفر الإصدار ")) + st.updateInfo.latestVersion,
+                            color = MaterialTheme.colorScheme.primary, fontSize = 13.sp
+                        )
+                        else -> Unit
+                    }
                 }
             }
             // ======================================================================= Backup & Restore
             SectionHeader(stringResource(R.string.txt_backup_restore))
             SectionCard {
-                val backupLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
-                    uri?.let { viewModel.createBackup(it) }
-                }
-                val restoreLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-                    uri?.let { viewModel.restoreBackup(it) }
-                }
                 if (uiState.isLoading) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Button(
                         onClick = {
-                            val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
-                            backupLauncher.launch("MS_Scanner_Backup_$dateStr.zip")
+                            backupPasswordInput = ""
+                            showBackupPasswordDialog = true
                         },
                         enabled = !uiState.isLoading,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp)
                     ) { Text(t("Backup", "نسخ احتياطي")) }
                     OutlinedButton(
-                        onClick = { restoreLauncher.launch(arrayOf("application/zip")) },
+                        onClick = { restoreLauncher.launch(arrayOf("application/zip", "application/octet-stream", "*/*")) },
                         enabled = !uiState.isLoading,
                         modifier = Modifier.weight(1f),
                         shape = RoundedCornerShape(12.dp)
@@ -566,6 +597,92 @@ fun SettingsScreen(
             Spacer(Modifier.height(8.dp))
         }
     }
+    if (showBackupPasswordDialog) {
+        AlertDialog(
+            onDismissRequest = { showBackupPasswordDialog = false; backupPasswordInput = "" },
+            shape = RoundedCornerShape(22.dp),
+            title = { Text(t("Create Backup", "إنشاء نسخة احتياطية"), fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        t(
+                            "Leave the password empty for a standard ZIP backup, or enter a password to encrypt the backup with AES-256.",
+                            "اترك حقل كلمة المرور فارغاً لإنشاء ملف ZIP قياسي، أو أدخل كلمة مرور لتشفير النسخة الاحتياطية بمعيار AES-256."
+                        ),
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = backupPasswordInput,
+                        onValueChange = { backupPasswordInput = it },
+                        label = { Text(t("Password (optional)", "كلمة المرور (اختياري)")) },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showBackupPasswordDialog = false
+                        val dateStr = SimpleDateFormat("yyyyMMdd_HHmm", Locale.getDefault()).format(Date())
+                        backupLauncher.launch("MS_Scanner_Backup_$dateStr.zip")
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(t("Continue", "متابعة"), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBackupPasswordDialog = false; backupPasswordInput = "" }) {
+                    Text(stringResource(R.string.txt_cancel))
+                }
+            }
+        )
+    }
+    pendingRestoreUri?.let { encryptedUri ->
+        AlertDialog(
+            onDismissRequest = { pendingRestoreUri = null; restorePasswordInput = "" },
+            shape = RoundedCornerShape(22.dp),
+            title = { Text(t("Encrypted Backup", "نسخة احتياطية مشفرة"), fontWeight = FontWeight.Bold) },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        t("Enter the password used to encrypt this backup:", "أدخل كلمة المرور المستخدمة لتشفير هذه النسخة الاحتياطية:"),
+                        fontSize = 13.sp
+                    )
+                    OutlinedTextField(
+                        value = restorePasswordInput,
+                        onValueChange = { restorePasswordInput = it },
+                        label = { Text(t("Password", "كلمة المرور")) },
+                        singleLine = true,
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = restorePasswordInput.isNotBlank(),
+                    onClick = {
+                        val pwd = restorePasswordInput
+                        pendingRestoreUri = null
+                        restorePasswordInput = ""
+                        viewModel.restoreBackup(encryptedUri, password = pwd)
+                    },
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(t("Restore", "استعادة"), fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingRestoreUri = null; restorePasswordInput = "" }) {
+                    Text(stringResource(R.string.txt_cancel))
+                }
+            }
+        )
+    }
     if (showPrivacyDialog) {
         AlertDialog(
             onDismissRequest = { showPrivacyDialog = false },
@@ -589,8 +706,8 @@ fun SettingsScreen(
                     )
                     Text(
                         t(
-                            "• Local Security & Backups: PIN hashes (SHA-256), biometric locks, and ZIP backups stay strictly under your control.",
-                            "• حماية محلية ونسخ احتياطي آمن: يتم حفظ رمز القفل (مشفر بـ SHA-256) وقفل البصمة والنسخ الاحتياطية تحت تحكمك الكامل فقط."
+                            "• Local Security & Backups: PIN hashes (PBKDF2-SHA256), biometric locks, and optional AES-256 encrypted ZIP backups stay strictly under your control.",
+                            "• حماية محلية ونسخ احتياطي آمن: يتم حفظ رمز القفل (مشفر بـ PBKDF2-SHA256) وقفل البصمة والنسخ الاحتياطية المشفرة (AES-256) تحت تحكمك الكامل فقط."
                         ),
                         fontSize = 13.sp
                     )
@@ -614,7 +731,6 @@ fun SettingsScreen(
                     onValueChange = { if (it.length <= 4 && it.all { c -> c.isDigit() }) pinInput = it },
                     label = { Text(stringResource(R.string.txt_enter_4_digits)) },
                     singleLine = true,
-                    // Digits are never shown on screen.
                     visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
                     keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
                         keyboardType = androidx.compose.ui.text.input.KeyboardType.NumberPassword
@@ -685,4 +801,3 @@ private fun IconBadge(icon: androidx.compose.ui.graphics.vector.ImageVector, tin
         Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(24.dp))
     }
 }
-

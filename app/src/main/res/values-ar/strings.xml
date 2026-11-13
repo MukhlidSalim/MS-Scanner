@@ -126,7 +126,6 @@
     <string name="txt_document_scans_storage">مساحة تخزين المسوحات</string>
     <string name="txt_export___temp_cache">ذاكرة التصدير المؤقتة</string>
     <string name="txt_clear_cache">مسح الذاكرة المؤقتة</string>
-    <string name="txt_docscan_pro_v1_0">MS Scanner النسخة 1.0</string>
     <string name="txt_professional_document_scan">ماسح مستندات احترافي مع اكتشاف ذكي للحدود، تصحيح منظور رباعي النقاط، استخراج نصوص بالذكاء الاصطناعي، واستوديو PDF متعدد الصفحات.</string>
     <string name="txt_configure_4_digit_pin">إعداد رمز PIN من 4 أرقام</string>
     <string name="txt_enter_4_digits">أدخل 4 أرقام</string>
@@ -184,13 +183,6 @@
     <string name="txt_default_pdf_settings">إعدادات PDF الافتراضية</string>
     <string name="txt_page_size">حجم الصفحة</string>
     <string name="txt_compression_quality">الجودة والضغط</string>
-    <string name="txt_cloud_sync">المزامنة السحابية والنسخ الاحتياطي</string>
-    <string name="txt_auto_save_gallery">حفظ تلقائي في المعرض</string>
-    <string name="txt_auto_save_desc">حفظ نسخة من الصفحات الممسوحة في الصور</string>
-    <string name="txt_gdrive_sync">مزامنة Google Drive</string>
-    <string name="txt_gdrive_desc">نسخ احتياطي آمن لمستنداتك</string>
-    <string name="txt_connect">ربط</string>
-    <string name="txt_coming_soon">قريباً</string>
     <string name="txt_language">اللغة</string>
     <string name="txt_app_language">لغة التطبيق</string>
     <string name="txt_switch_lang_desc">التبديل بين العربية والإنجليزية</string>

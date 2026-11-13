@@ -62,12 +62,6 @@ object DocumentAiEngine {
 
     private class Recognized(val text: String, val lines: List<OcrLine>, val confidence: Float)
 
-    /** Kept for source compatibility (no Context -> ML Kit only). Prefer [analyze]. */
-    suspend fun performOfflineOcr(
-        bitmap: Bitmap,
-        language: OcrLanguage = OcrLanguage.AUTO,
-        retryCount: Int = 0
-    ): DocumentAnalysisResult = analyze(null, bitmap, language, retryCount)
 
     suspend fun analyze(
         context: Context?,

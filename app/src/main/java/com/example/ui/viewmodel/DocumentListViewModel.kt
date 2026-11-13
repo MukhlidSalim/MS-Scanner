@@ -1,7 +1,7 @@
-
 package com.example.ui.viewmodel
 import android.content.Context
 import java.io.File
+import java.util.concurrent.ConcurrentHashMap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.model.DocumentCategory
@@ -54,6 +54,7 @@ data class DocumentListUiState(
     val defaultPdfCompression: com.example.data.model.CompressionPreset = com.example.data.model.CompressionPreset.HIGH,
     val lockType: com.example.data.model.LockType = com.example.data.model.LockType.NONE,
     val ocrLanguage: com.example.engine.ocr.OcrLanguage = com.example.engine.ocr.OcrLanguage.AUTO,
+    val autoDeskew: Boolean = true,
     val isLoading: Boolean = false,
     /** Arabic OCR model present on the device (bundled or downloaded once). */
     val arabicModelReady: Boolean = false,
@@ -72,12 +73,11 @@ class DocumentListViewModel(
         defaultPdfPageSize = prefs.pdfPageSize,
         defaultPdfCompression = prefs.pdfCompression,
         lockType = prefs.lockType,
-        // A stored value that no longer exists must not crash the app at startup.
         ocrLanguage = runCatching { com.example.engine.ocr.OcrLanguage.valueOf(prefs.ocrLanguage) }
-            .getOrDefault(com.example.engine.ocr.OcrLanguage.AUTO)
+            .getOrDefault(com.example.engine.ocr.OcrLanguage.AUTO),
+        autoDeskew = prefs.autoDeskew
     ))
     val uiState: StateFlow<DocumentListUiState> = _uiState.asStateFlow()
-    // Buffered: sending an event can never suspend (block) a delete / restore / export coroutine.
     private val _events = Channel<UiEvent>(Channel.BUFFERED)
     val events = _events.receiveAsFlow()
     private val backupManager = com.example.data.repository.BackupManager(this.context, repository)
@@ -89,8 +89,8 @@ class DocumentListViewModel(
         val showFavorites: Boolean = false
     )
     private val filterTrigger = MutableStateFlow(FilterState())
-    /** Normalized search text per document, recomputed only when the document changes (id -> updatedAt, text). */
-    private val searchIndex = HashMap<Long, Pair<Long, String>>()
+    /** Thread-safe normalized search text per document, recomputed only when the document changes (id -> updatedAt, text). */
+    private val searchIndex = ConcurrentHashMap<Long, Pair<Long, String>>()
     init {
         _uiState.update { it.copy(arabicModelReady = TessDataManager.isArabicReady(this.context)) }
         setupDocumentStream()
@@ -111,11 +111,14 @@ class DocumentListViewModel(
                 repository.getAllDocuments(),
                 filterTrigger
             ) { docs, filter ->
+                // Prune stale deleted document IDs from the in-memory search index
+                val activeIds = docs.asSequence().map { it.id }.toHashSet()
+                searchIndex.keys.retainAll(activeIds)
+
                 var filtered = docs
                 if (filter.folder != "ALL") {
                     filtered = filtered.filter { it.folderName == filter.folder }
                 }
-                // Previously the category chip was stored but never applied.
                 if (filter.category != DocumentCategory.ALL) {
                     filtered = filtered.filter { it.category == filter.category.name }
                 }
@@ -127,7 +130,7 @@ class DocumentListViewModel(
                     filtered = filtered.filter { SearchText.matches(searchableText(it), filter.query) }
                 }
                 applySorting(filtered, filter.sort)
-            }.flowOn(Dispatchers.Default) // filtering / normalization never on the main thread
+            }.flowOn(Dispatchers.Default)
                 .collectLatest { sortedAndFiltered ->
                     _uiState.update { it.copy(documents = sortedAndFiltered) }
                 }
@@ -201,10 +204,6 @@ class DocumentListViewModel(
     }
     private val isArabic: Boolean get() = context.resources.configuration.locales[0].language == "ar"
 
-    /**
-     * Delete = move to Trash + "Undo" snackbar. Nothing is ever deleted permanently from here
-     * (the previous version permanently deleted the files 5 seconds later: data loss if Undo was missed).
-     */
     fun deleteDocument(docId: Long) = moveToTrashWithUndo(listOf(docId))
 
     fun moveToTrashWithUndo(docIds: List<Long>) {
@@ -230,7 +229,6 @@ class DocumentListViewModel(
         }
     }
 
-    /** Favorite for several documents: if any is not favorite, all become favorite; otherwise all are removed. */
     fun setFavorite(docIds: List<Long>) {
         if (docIds.isEmpty()) return
         viewModelScope.launch {
@@ -259,7 +257,6 @@ class DocumentListViewModel(
             refreshStorageStats()
         }
     }
-    /** Several documents get numbered titles ("Title 1", "Title 2"…) instead of identical names. */
     fun renameDocuments(docIds: List<Long>, newTitle: String) {
         val clean = newTitle.trim()
         if (clean.isBlank() || docIds.isEmpty()) return
@@ -276,7 +273,6 @@ class DocumentListViewModel(
             repository.updateDocument(doc.copy(folderName = folder))
         }
     }
-    /** Prints the WHOLE document (previously only the first page was printed). [context] must be an Activity. */
     fun printDocumentById(context: Context, docId: Long) {
         viewModelScope.launch {
             val doc = repository.getDocumentById(docId) ?: return@launch
@@ -332,7 +328,6 @@ class DocumentListViewModel(
                         onSuccess(pdfFile, uri, "Shared")
                     }
                     ExportPdfAction.SAVE_TO_DOWNLOADS -> {
-                        // Visible to the user (Downloads/MS Scanner); legacy app-private folder only as fallback.
                         val publicUri = com.example.engine.pdf.PdfEngine.savePdfToDownloads(context, pdfFile, config.title)
                         if (publicUri != null) {
                             onSuccess(pdfFile, publicUri, "Downloads/MS Scanner")
@@ -378,13 +373,11 @@ class DocumentListViewModel(
             }
         }
     }
-    /** JPG / PNG export of the selected documents' pages (previously the dialog always produced a PDF). */
     fun exportDocumentsAsImages(
         context: Context,
         docIds: List<Long>,
         asPng: Boolean,
         action: ExportPdfAction,
-        /** File name chosen in the export dialog (previously ignored: every export was "MS_Scanner_Export"). */
         title: String = "MS_Scanner_Export",
         onSuccess: (count: Int) -> Unit,
         onError: (String) -> Unit
@@ -424,7 +417,6 @@ class DocumentListViewModel(
         }
     }
 
-    /** TXT / Word (.docx) export of the OCR text (previously the dialog always produced a PDF). */
     fun exportDocumentsAsText(
         context: Context,
         docIds: List<Long>,
@@ -493,7 +485,6 @@ class DocumentListViewModel(
             refreshStorageStats()
         }
     }
-    /** Creates an (empty) folder and opens it, so the next scan is saved there. */
     fun createFolder(name: String) {
         viewModelScope.launch {
             val clean = name.trim()
@@ -536,11 +527,6 @@ class DocumentListViewModel(
             }
         }
     }
-    /**
-     * Merges documents into a NEW document with its OWN copies of the page files (the previous code
-     * shared the same files, so deleting one document broke the other). Crop, rotation and filter are
-     * kept; the merge is written through the single save transaction.
-     */
     fun mergeDocuments(docIds: List<Long>) {
         if (docIds.size < 2) return
         viewModelScope.launch {
@@ -561,7 +547,7 @@ class DocumentListViewModel(
                                 return dst.absolutePath
                             }
                             val raw = copy(page.rawImagePath)
-                            QuadStore.load(page.rawImagePath)?.let { QuadStore.save(raw, it) }
+                            QuadStore.copySidecars(page.rawImagePath, raw)
                             val proc = if (page.processedImagePath == page.rawImagePath) raw else copy(page.processedImagePath)
                             page.copy(id = 0L, documentId = 0L, pageIndex = index, rawImagePath = raw, processedImagePath = proc)
                         }
@@ -591,7 +577,6 @@ class DocumentListViewModel(
             _uiState.update { it.copy(isAppLocked = true) }
         }
     }
-    /** Hashed comparison with rate limiting (see AppPreferences.verifyPin). */
     fun verifyPin(entered: String): Boolean {
         val ok = prefs.verifyPin(entered)
         if (ok) {
@@ -599,7 +584,6 @@ class DocumentListViewModel(
         }
         return ok
     }
-    /** Seconds before the next PIN attempt is allowed (0 = now). */
     fun pinLockoutSeconds(): Int = ((prefs.pinLockoutRemainingMs() + 999) / 1000).toInt()
     fun setThemeMode(mode: String) {
         prefs.themeMode = mode
@@ -613,42 +597,46 @@ class DocumentListViewModel(
         prefs.pdfCompression = comp
         _uiState.update { it.copy(defaultPdfCompression = comp) }
     }
-    fun createBackup(uri: android.net.Uri) {
+    fun setAutoDeskew(enabled: Boolean) {
+        prefs.autoDeskew = enabled
+        _uiState.update { it.copy(autoDeskew = enabled) }
+    }
+    fun createBackup(uri: android.net.Uri, password: String? = null) {
         if (_uiState.value.isLoading) return
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
-            val result = backupManager.createBackup(uri)
+            val result = backupManager.createBackup(uri, password)
             val msg = if (result.isSuccess) (if (isArabic) "تم إنشاء النسخة الاحتياطية: ${result.getOrNull()} مستند" else "Backup created: ${result.getOrNull()} documents") else (if (isArabic) "فشل النسخ الاحتياطي: ${result.exceptionOrNull()?.message}" else "Backup failed: ${result.exceptionOrNull()?.message}")
             _uiState.update { it.copy(isLoading = false) }
             _events.send(UiEvent.ShowSnackbar(msg))
         }
     }
-    fun restoreBackup(uri: android.net.Uri) {
+    fun restoreBackup(uri: android.net.Uri, password: String? = null, onPasswordRequired: ((android.net.Uri) -> Unit)? = null) {
         if (_uiState.value.isLoading) return
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
-            val result = backupManager.restoreBackup(uri)
-            val msg = if (result.isSuccess) (if (isArabic) "تمت استعادة ${result.getOrNull()} مستند بنجاح" else "Restored ${result.getOrNull()} documents") else (if (isArabic) "فشلت الاستعادة: ${result.exceptionOrNull()?.message}" else "Restore failed: ${result.exceptionOrNull()?.message}")
+            val result = backupManager.restoreBackup(uri, password)
             _uiState.update { it.copy(isLoading = false) }
+            val ex = result.exceptionOrNull()
+            if (ex is com.example.data.repository.BackupPasswordRequiredException && onPasswordRequired != null) {
+                onPasswordRequired(uri)
+                return@launch
+            }
+            val msg = if (result.isSuccess) (if (isArabic) "تمت استعادة ${result.getOrNull()} مستند بنجاح" else "Restored ${result.getOrNull()} documents") else (if (isArabic) "فشلت الاستعادة: ${ex?.message}" else "Restore failed: ${ex?.message}")
             _events.send(UiEvent.ShowSnackbar(msg))
-            // Room Flows update the lists automatically (re-subscribing here leaked a collector per restore).
             refreshStorageStats()
         }
     }
-    /** Saving a PIN also activates the PIN lock (previously the PIN was stored but the lock stayed off). */
     fun setPin(pin: String) {
         prefs.setPin(pin)
         prefs.lockType = LockType.PIN
         _uiState.update { it.copy(userPin = "", hasPinConfigured = prefs.hasPin, lockType = LockType.PIN) }
     }
     fun setLockType(type: com.example.data.model.LockType) {
-        // A PIN lock without a PIN could never be unlocked: require the PIN dialog first.
         if (type == LockType.PIN && !prefs.hasPin) {
             _events.trySend(UiEvent.Error(if (isArabic) "يرجى تعيين رمز PIN أولاً" else "Set a PIN first"))
             return
         }
-        // A biometric lock on a device that cannot authenticate (no fingerprint / face / screen lock) and
-        // without a PIN fallback locked the user out of the app for good.
         if (type == LockType.BIOMETRIC && !canUseDeviceAuthentication(context)) {
             _events.trySend(UiEvent.Error(
                 if (isArabic) "فعّل البصمة أو قفل الشاشة في إعدادات الجهاز أولاً" else "Set up biometrics or a screen lock in device settings first"
@@ -678,7 +666,6 @@ class DocumentListViewModel(
         if (lang != com.example.engine.ocr.OcrLanguage.ENGLISH && !_uiState.value.arabicModelReady) downloadArabicModel()
     }
 
-    /** One-time provisioning of the Arabic OCR model (bundled asset or ~1.4 MB download). */
     fun downloadArabicModel() {
         if (_uiState.value.isDownloadingArabicModel) return
         viewModelScope.launch {
@@ -698,7 +685,3 @@ class DocumentListViewModel(
         }
     }
 }
-
-
-
-

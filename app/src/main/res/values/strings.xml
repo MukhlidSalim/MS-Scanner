@@ -126,7 +126,6 @@
     <string name="txt_document_scans_storage">Document Scans Storage</string>
     <string name="txt_export___temp_cache">Export / Temp Cache</string>
     <string name="txt_clear_cache">Clear Cache</string>
-    <string name="txt_docscan_pro_v1_0">DocScan Pro v1.0</string>
     <string name="txt_professional_document_scan">Professional Document Scanner with Intelligent Boundary Detection, 4-Corner Homography Perspective Correction, Deep OCR AI, and Searchable Multi-Page PDF Studio.</string>
     <string name="txt_configure_4_digit_pin">Configure 4-Digit PIN</string>
     <string name="txt_enter_4_digits">Enter 4 digits</string>
@@ -184,13 +183,6 @@
     <string name="txt_default_pdf_settings">Default PDF Export Settings</string>
     <string name="txt_page_size">Page Size</string>
     <string name="txt_compression_quality">Compression &amp; Quality</string>
-    <string name="txt_cloud_sync">Cloud Sync &amp; Backup</string>
-    <string name="txt_auto_save_gallery">Auto-save to Gallery</string>
-    <string name="txt_auto_save_desc">Save a copy of scanned pages to photos</string>
-    <string name="txt_gdrive_sync">Google Drive Sync</string>
-    <string name="txt_gdrive_desc">Securely backup your documents</string>
-    <string name="txt_connect">Connect</string>
-    <string name="txt_coming_soon">Coming soon</string>
     <string name="txt_language">Language / اللغة</string>
     <string name="txt_app_language">App Language</string>
     <string name="txt_switch_lang_desc">Switch between English and Arabic</string>

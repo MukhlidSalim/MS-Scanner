@@ -473,8 +473,8 @@ fun IdCardMergerScreen(
                         }
                     } else when (arrangement) {
                         CardArrangement.SIDE_BY_SIDE -> {
-                            // Side by Side Layout (Interactive Scale)
-                            val sideWidthFraction = (cardScale * 0.44f).coerceIn(0.20f, 0.46f)
+                            // Symmetric Side by Side Layout: equal weight(1f) slots guarantee identical sizing for both cards
+                            val perSlotWidthFraction = (cardScale * 0.92f).coerceIn(0.45f, 0.98f)
                             Row(
                                 modifier = Modifier.fillMaxSize(),
                                 horizontalArrangement = Arrangement.Center,
@@ -482,32 +482,37 @@ fun IdCardMergerScreen(
                             ) {
                                 // Card 1
                                 Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(sideWidthFraction)
-                                        .aspectRatio(firstRatio)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .then(
-                                            if (hasBorder) Modifier.border(1.dp, Color.LightGray.copy(alpha = 0.8f), RoundedCornerShape(6.dp))
-                                            else Modifier
-                                        )
+                                    modifier = Modifier.weight(1f),
+                                    contentAlignment = Alignment.Center
                                 ) {
-                                    androidx.compose.foundation.Image(
-                                        bitmap = firstBmp.asImageBitmap(),
-                                        contentDescription = firstLabel,
-                                        modifier = Modifier.fillMaxSize()
-                                    )
-                                    Surface(
-                                        color = Color.Black.copy(alpha = 0.60f),
-                                        shape = RoundedCornerShape(bottomEnd = 6.dp),
-                                        modifier = Modifier.align(Alignment.TopStart)
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(perSlotWidthFraction)
+                                            .aspectRatio(firstRatio)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .then(
+                                                if (hasBorder) Modifier.border(1.dp, Color.LightGray.copy(alpha = 0.8f), RoundedCornerShape(6.dp))
+                                                else Modifier
+                                            )
                                     ) {
-                                        Text(
-                                            text = firstLabel,
-                                            color = Color.White,
-                                            fontSize = 9.sp,
-                                            fontWeight = FontWeight.Bold,
-                                            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                        androidx.compose.foundation.Image(
+                                            bitmap = firstBmp.asImageBitmap(),
+                                            contentDescription = firstLabel,
+                                            modifier = Modifier.fillMaxSize()
                                         )
+                                        Surface(
+                                            color = Color.Black.copy(alpha = 0.60f),
+                                            shape = RoundedCornerShape(bottomEnd = 6.dp),
+                                            modifier = Modifier.align(Alignment.TopStart)
+                                        ) {
+                                            Text(
+                                                text = firstLabel,
+                                                color = Color.White,
+                                                fontSize = 9.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                                            )
+                                        }
                                     }
                                 }
 
@@ -515,15 +520,19 @@ fun IdCardMergerScreen(
 
                                 // Card 2
                                 Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(sideWidthFraction / (1f - sideWidthFraction).coerceAtLeast(0.1f))
-                                        .aspectRatio(secondRatio)
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .then(
-                                            if (hasBorder) Modifier.border(1.dp, Color.LightGray.copy(alpha = 0.8f), RoundedCornerShape(6.dp))
-                                            else Modifier
-                                        )
+                                    modifier = Modifier.weight(1f),
+                                    contentAlignment = Alignment.Center
                                 ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth(perSlotWidthFraction)
+                                            .aspectRatio(secondRatio)
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .then(
+                                                if (hasBorder) Modifier.border(1.dp, Color.LightGray.copy(alpha = 0.8f), RoundedCornerShape(6.dp))
+                                                else Modifier
+                                            )
+                                    ) {
                                     androidx.compose.foundation.Image(
                                         bitmap = secondBmp.asImageBitmap(),
                                         contentDescription = secondLabel,
@@ -542,6 +551,7 @@ fun IdCardMergerScreen(
                                             modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
                                         )
                                     }
+                                }
                                 }
                             }
                         }

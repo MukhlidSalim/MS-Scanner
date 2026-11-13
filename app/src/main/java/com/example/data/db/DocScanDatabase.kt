@@ -6,7 +6,6 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 import androidx.room.migration.Migration
-import androidx.room.ColumnInfo
 
 import com.example.data.model.DocumentEntity
 import com.example.data.model.PageEntity
@@ -21,7 +20,7 @@ import com.example.data.model.FavoriteFolderEntity
         FavoriteFolderEntity::class
     ],
     version = 6,
-    exportSchema = false
+    exportSchema = true
 )
 abstract class DocScanDatabase : RoomDatabase() {
 

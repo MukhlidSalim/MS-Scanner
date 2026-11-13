@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit
 class UpdateCheckWorker(appContext: Context, params: WorkerParameters) : CoroutineWorker(appContext, params) {
 
     override suspend fun doWork(): Result {
+        if (!BuildConfig.SELF_UPDATE_ENABLED) return Result.success()
         val repo = BuildConfig.UPDATE_REPO
         if (repo.isBlank()) return Result.success()
         val prefs = AppPreferences(applicationContext)
@@ -100,7 +101,7 @@ class UpdateCheckWorker(appContext: Context, params: WorkerParameters) : Corouti
 
         /** Idempotent: keeps the existing schedule (KEEP), so calling it on every launch is safe. */
         fun schedule(context: Context) {
-            if (BuildConfig.UPDATE_REPO.isBlank()) return
+            if (!BuildConfig.SELF_UPDATE_ENABLED || BuildConfig.UPDATE_REPO.isBlank()) return
             val request = PeriodicWorkRequestBuilder<UpdateCheckWorker>(12, TimeUnit.HOURS)
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
                 .build()

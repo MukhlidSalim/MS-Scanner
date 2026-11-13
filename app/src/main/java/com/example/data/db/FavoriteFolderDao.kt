@@ -14,7 +14,4 @@ interface FavoriteFolderDao {
 
     @Delete
     suspend fun deleteFolder(folder: FavoriteFolderEntity)
-
-    @Query("SELECT EXISTS(SELECT 1 FROM favorite_folders WHERE folderName = :name)")
-    suspend fun isFolderFavorite(name: String): Boolean
 }

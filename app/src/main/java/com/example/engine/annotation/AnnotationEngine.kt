@@ -1,13 +1,6 @@
 package com.example.engine.annotation
 
-import android.content.Context
 import android.graphics.*
-import com.example.engine.cv.ImageProcessor
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileOutputStream
-import java.util.UUID
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
@@ -64,17 +57,8 @@ data class PlacedText(
 
 object AnnotationEngine {
 
-    suspend fun saveSignatureBitmap(context: Context, signatureBitmap: Bitmap): String = withContext(Dispatchers.IO) {
-        val dir = File(context.filesDir, "signatures").apply { if (!exists()) mkdirs() }
-        val file = File(dir, "sig_${System.currentTimeMillis()}_${UUID.randomUUID().toString().take(6)}.png")
-        FileOutputStream(file).use { out ->
-            signatureBitmap.compress(Bitmap.CompressFormat.PNG, 100, out)
-        }
-        file.absolutePath
-    }
-
     /**
-     * Permanently burns all annotations, signatures, shapes, and redaction boxes into the image bitmap
+     * Permanently burns all annotations, signatures, shapes, and redaction boxes into the image bitmap.
      */
     fun burnAnnotationsIntoBitmap(
         baseBitmap: Bitmap,
@@ -127,6 +111,68 @@ object AnnotationEngine {
         canvas.drawBitmap(page, 0f, 0f, paintBase)
         if (page !== baseBitmap) page.recycle()
 
+        drawOverlayElements(canvas, w, h, paths, redactions, placedSignatures, placedTexts, shapes)
+        return output
+    }
+
+    /**
+     * Renders a transparent ARGB_8888 overlay containing all non-destructive annotations (pen/highlighter
+     * strokes, shapes, signatures, redaction boxes, and placed texts) so they can be persisted alongside
+     * the untouched RAW image and re-composited after any later rotation, filter, or re-crop.
+     */
+    fun renderAnnotationsOverlay(
+        width: Int,
+        height: Int,
+        paths: List<DrawPath>,
+        redactions: List<RedactionRect>,
+        placedSignatures: List<PlacedSignature>,
+        placedTexts: List<PlacedText> = emptyList(),
+        shapes: List<DrawShape> = emptyList(),
+        existingOverlay: Bitmap? = null
+    ): Bitmap? {
+        val hasStrokes = paths.any { it.points.size >= 2 }
+        if (existingOverlay == null && !hasStrokes && redactions.isEmpty() &&
+            placedSignatures.isEmpty() && placedTexts.isEmpty() && shapes.isEmpty()
+        ) {
+            return null
+        }
+        val overlay = Bitmap.createBitmap(width.coerceAtLeast(1), height.coerceAtLeast(1), Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(overlay)
+        val w = overlay.width.toFloat()
+        val h = overlay.height.toFloat()
+        if (existingOverlay != null) {
+            val dst = Rect(0, 0, overlay.width, overlay.height)
+            canvas.drawBitmap(existingOverlay, null, dst, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+        }
+        // Include cover strokes on the overlay as well so re-renders from RAW keep covered areas hidden.
+        for (dp in paths) {
+            if (!dp.isEraser || dp.points.size < 2) continue
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = dp.color
+                strokeWidth = dp.strokeWidth * (w / 400f)
+                style = Paint.Style.STROKE
+                strokeCap = Paint.Cap.ROUND
+                strokeJoin = Paint.Join.ROUND
+            }
+            val path = Path()
+            path.moveTo(dp.points[0].x * w, dp.points[0].y * h)
+            for (i in 1 until dp.points.size) path.lineTo(dp.points[i].x * w, dp.points[i].y * h)
+            canvas.drawPath(path, paint)
+        }
+        drawOverlayElements(canvas, w, h, paths, redactions, placedSignatures, placedTexts, shapes)
+        return overlay
+    }
+
+    private fun drawOverlayElements(
+        canvas: Canvas,
+        w: Float,
+        h: Float,
+        paths: List<DrawPath>,
+        redactions: List<RedactionRect>,
+        placedSignatures: List<PlacedSignature>,
+        placedTexts: List<PlacedText>,
+        shapes: List<DrawShape>
+    ) {
         // 1. Draw pen and highlighter strokes
         for (dp in paths) {
             if (dp.points.size < 2 || dp.isEraser) continue
@@ -177,7 +223,6 @@ object AnnotationEngine {
                 }
                 ShapeType.ARROW -> {
                     canvas.drawLine(sx, sy, ex, ey, paint)
-                    // Draw arrowhead
                     val angle = atan2((ey - sy).toDouble(), (ex - sx).toDouble())
                     val arrowLen = 28f * (w / 400f)
                     val arrowAngle = Math.toRadians(25.0)
@@ -236,7 +281,5 @@ object AnnotationEngine {
             textPaint.textSize = pt.textSize * (w / 1080f)
             canvas.drawText(pt.text, pt.x * w, pt.y * h, textPaint)
         }
-
-        return output
     }
 }

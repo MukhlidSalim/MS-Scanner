@@ -41,6 +41,16 @@ class SearchTextTest {
     }
 
     @Test
+    fun findsNormalizedMatchRangesInOriginalText() {
+        val text = "فاتورة ضريبية رقم ١٢٣ باسم أحمد"
+        val ranges = SearchText.findMatchRanges(text, "فاتوره 123 احمد")
+        assertEquals(3, ranges.size)
+        assertEquals("فاتورة", text.substring(ranges[0]))
+        assertEquals("١٢٣", text.substring(ranges[1]))
+        assertEquals("أحمد", text.substring(ranges[2]))
+    }
+
+    @Test
     fun extractsStructuredInvoiceAndContactFields() {
         val sample = """
             فاتورة ضريبية

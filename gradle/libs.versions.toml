@@ -25,7 +25,6 @@ cameraCamera2 = "1.6.2"
 cameraLifecycle = "1.6.2"
 cameraView = "1.6.2"
 cameraCore = "1.6.2"
-datastorePreferences = "1.1.7"
 robolectric = "4.16.1"
 mlkitTextRecognition = "16.0.1"
 biometric = "1.1.0"
@@ -64,7 +63,6 @@ androidx-camera-camera2 = { group = "androidx.camera", name = "camera-camera2", 
 androidx-camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "cameraLifecycle" }
 androidx-camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "cameraView" }
 androidx-camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "cameraCore" }
-androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastorePreferences" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 mlkit-text-recognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric" }

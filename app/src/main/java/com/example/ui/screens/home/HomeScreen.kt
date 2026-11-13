@@ -5,24 +5,15 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.DriveFileMove
-import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.automirrored.filled.MergeType
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Folder
@@ -31,29 +22,18 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import coil.compose.AsyncImage
 import java.io.File
 import com.example.R
-import com.example.data.model.DocumentEntity
-import com.example.engine.cv.DocumentPipeline
 import com.example.ui.components.CategoryChipsRow
 import com.example.ui.components.FolderChipsRow
 import com.example.ui.components.PdfViewerOverlay
-import com.example.ui.components.ScanActionButton
-import com.example.data.repository.AppPreferences
 import com.example.engine.pdf.PdfEngine
 import com.example.ui.screens.home.components.DocumentGridItem
-import com.example.ui.screens.home.components.FolderGridItem
 import com.example.ui.screens.home.components.ExportFormat
 import com.example.ui.screens.home.components.ExportPdfDialog
 import com.example.ui.screens.home.components.NewFolderDialog
@@ -62,16 +42,12 @@ import com.example.ui.viewmodel.ExportPdfAction
 import com.example.ui.theme.Emerald400
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.DocumentListViewModel
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     listViewModel: DocumentListViewModel,
-    onPagesCaptured: (List<Pair<String, String>>) -> Unit = {},
     onImportedUris: (List<Uri>) -> Unit = {},
     onOpenPdfFile: (File) -> Unit = {},
     onNavigateToSettings: () -> Unit,
@@ -83,25 +59,17 @@ fun HomeScreen(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val isArabic = context.resources.configuration.locales[0].language == "ar"
-    val prefs = remember { AppPreferences(context) }
     var selectionMode by remember { mutableStateOf(false) }
     var isCompactListView by remember { mutableStateOf(false) }
     var selectedDocIds by remember { mutableStateOf(setOf<Long>()) }
     var showRenameDialog by remember { mutableStateOf(false) }
-    var renameBaseName by remember { mutableStateOf("") }
     var renameDocIds by remember { mutableStateOf(listOf<Long>()) }
-    var docToMove by remember { mutableStateOf<Long?>(null) }
     var showSearch by remember { mutableStateOf(false) }
     var showExportPdfDialog by remember { mutableStateOf(false) }
     var pendingExportConfig by remember { mutableStateOf<com.example.engine.pdf.PdfExportConfig?>(null) }
     var previewPdfFile by remember { mutableStateOf<File?>(null) }
     var showNewFolderDialog by remember { mutableStateOf(false) }
-    var newFolderNameInput by remember { mutableStateOf("") }
-    var renameFolderTarget by remember { mutableStateOf<String?>(null) }
-    var newFolderRename by remember { mutableStateOf("") }
     var showSortSheet by remember { mutableStateOf(false) }
-    var tempCameraFile by remember { mutableStateOf<File?>(null) }
-    var isProcessingCapture by remember { mutableStateOf(false) }
     var showMoveDialog by remember { mutableStateOf(false) }
     var exportDocIds by remember { mutableStateOf(listOf<Long>()) }
     var moveDocIds by remember { mutableStateOf(listOf<Long>()) }
@@ -120,7 +88,7 @@ fun HomeScreen(
                         it,
                         android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
                     )
-                } catch (e: Exception) {}
+                } catch (_: Exception) {}
                 val localPdf = PdfEngine.copyUriToLocalPdf(context, it)
                 if (localPdf != null) {
                     onOpenPdfFile(localPdf)
@@ -141,7 +109,7 @@ fun HomeScreen(
                 config = config,
                 action = ExportPdfAction.SAVE_AS,
                 targetSaveUri = uri,
-                onSuccess = { _, _, path ->
+                onSuccess = { _, _, _ ->
                     showExportPdfDialog = false
                     selectionMode = false
                     selectedDocIds = emptySet()
@@ -187,47 +155,6 @@ fun HomeScreen(
     }
     val launchGalleryImport = {
         photoPickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-    }
-    val takePictureLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success ->
-        val file = tempCameraFile
-        tempCameraFile = null
-        if (!success || file == null || !file.exists()) {
-            file?.delete()
-            return@rememberLauncherForActivityResult
-        }
-        coroutineScope.launch {
-            isProcessingCapture = true
-            try {
-                val page = DocumentPipeline.processFile(context, file.absolutePath, prefix = "scan", filter = null)
-                if (page != null) {
-                    onPagesCaptured(listOf(Pair(page.rawPath, page.processedPath)))
-                    onNavigateToEditSession("CAMERA", 0L)
-                } else {
-                    Toast.makeText(context, if (isArabic) "تعذر معالجة الصورة" else "Could not process the photo", Toast.LENGTH_SHORT).show()
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                e.printStackTrace()
-                Toast.makeText(context, if (isArabic) "تعذر معالجة الصورة" else "Could not process the photo", Toast.LENGTH_SHORT).show()
-            } finally {
-                file.delete()
-                isProcessingCapture = false
-            }
-        }
-    }
-    val launchCameraCapture = {
-        try {
-            val file = File(context.cacheDir, "camera_${System.currentTimeMillis()}.jpg")
-            tempCameraFile = file
-            val uri = androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
-            takePictureLauncher.launch(uri)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            launchGalleryImport()
-        }
     }
     BackHandler(enabled = selectionMode || uiState.selectedFolder != "ALL" || showSearch || uiState.showFavoritesOnly) {
         if (selectionMode) {
@@ -392,13 +319,6 @@ fun HomeScreen(
         floatingActionButton = {
             if (!selectionMode) {
                 Column(horizontalAlignment = Alignment.End) {
-                    // FIX (issue 2 — Scan Document is the single entry point): the "+" button is now
-                    // ONLY for importing existing files (Gallery / Files). Multi-page, ID card and
-                    // Passport are no longer reachable from here: they are selected INSIDE the capture
-                    // experience itself (the mode switcher already present in CameraScanScreen), which is
-                    // reached exclusively through the "Scan" action below. This matches the requested
-                    // architecture: Scan Document -> capture experience -> mode switcher (Normal / Multi /
-                    // ID Card / Passport), instead of two separate, disconnected entry points.
                     Box(modifier = Modifier.padding(bottom = 12.dp)) {
                         SmallFloatingActionButton(
                             onClick = { showImportMenu = true },
@@ -432,9 +352,6 @@ fun HomeScreen(
                             )
                         }
                     }
-                    // SINGLE, unified entry point for every capture mode (Normal / Multi-Capture / ID Card /
-                    // Passport). Always navigates with mode = "DOCUMENT"; the mode switcher inside
-                    // CameraScanScreen lets the user move to any other mode from there, as requested.
                     ExtendedFloatingActionButton(
                         onClick = { onNavigateToScan("DOCUMENT") },
                         containerColor = Emerald400,
@@ -448,105 +365,95 @@ fun HomeScreen(
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
-            if (showSearch) {
-                OutlinedTextField(
-                    value = uiState.searchQuery,
-                    onValueChange = { listViewModel.onSearchQueryChanged(it) },
-                    placeholder = { Text(if (isArabic) "ابحث في العناوين ونص المستندات..." else "Search titles and document text...") },
-                    modifier = Modifier.fillMaxWidth().padding(16.dp),
-                    leadingIcon = { Icon(Icons.Default.Search, null) },
-                    trailingIcon = { IconButton(onClick = { showSearch = false; listViewModel.onSearchQueryChanged("") }) { Icon(Icons.Default.Close, null) } },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp)
-                )
-            }
-            val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
-            if (!selectionMode && uiState.searchQuery.isEmpty()) {
-                // The former quick-action grid repeated the Scan button ("Smart Scan", "ID & Passport" = modes of the
-                // same camera) and the Import menu ("Import & OCR" = gallery, "PDF Tools" = files): every action
-                // now has exactly one entry point — the Scan button and the "+" Import menu.
-                FolderChipsRow(
-                    folders = folders,
-                    selectedFolder = uiState.selectedFolder,
-                    onFolderSelected = { listViewModel.filterByFolder(it) },
-                    onCreateFolderClick = { showNewFolderDialog = true },
-                    onRenameFolder = { old, new -> listViewModel.renameFolder(old, new) },
-                    onDeleteFolder = { folderToDelete = it }
-                )
-                CategoryChipsRow(
-                    selectedCategory = uiState.selectedCategory,
-                    onCategorySelected = { listViewModel.filterByCategory(it) }
-                )
-            }
-            val docs = uiState.documents
-            if (docs.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
-                        Icon(Icons.Default.Description, null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.outline)
-                        Spacer(Modifier.height(12.dp))
-                        val filtered = uiState.searchQuery.isNotBlank() || uiState.showFavoritesOnly ||
-                            uiState.selectedFolder != "ALL" || uiState.selectedCategory != com.example.data.model.DocumentCategory.ALL
-                        Text(
-                            if (filtered) stringResource(R.string.txt_no_matching) else stringResource(R.string.txt_no_documents),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold
-                        )
-                        if (!filtered) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                if (showSearch) {
+                    OutlinedTextField(
+                        value = uiState.searchQuery,
+                        onValueChange = { listViewModel.onSearchQueryChanged(it) },
+                        placeholder = { Text(if (isArabic) "ابحث في العناوين ونص المستندات..." else "Search titles and document text...") },
+                        modifier = Modifier.fillMaxWidth().padding(16.dp),
+                        leadingIcon = { Icon(Icons.Default.Search, null) },
+                        trailingIcon = { IconButton(onClick = { showSearch = false; listViewModel.onSearchQueryChanged("") }) { Icon(Icons.Default.Close, null) } },
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp)
+                    )
+                }
+                val folders = uiState.folders.filter { it != "Default" && it != "ALL" }
+                if (!selectionMode && uiState.searchQuery.isEmpty()) {
+                    FolderChipsRow(
+                        folders = folders,
+                        selectedFolder = uiState.selectedFolder,
+                        onFolderSelected = { listViewModel.filterByFolder(it) },
+                        onCreateFolderClick = { showNewFolderDialog = true },
+                        onRenameFolder = { old, new -> listViewModel.renameFolder(old, new) },
+                        onDeleteFolder = { folderToDelete = it }
+                    )
+                    CategoryChipsRow(
+                        selectedCategory = uiState.selectedCategory,
+                        onCategorySelected = { listViewModel.filterByCategory(it) }
+                    )
+                }
+                val docs = uiState.documents
+                if (docs.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(32.dp)) {
+                            Icon(Icons.Default.Description, null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.outline)
+                            Spacer(Modifier.height(12.dp))
+                            val filtered = uiState.searchQuery.isNotBlank() || uiState.showFavoritesOnly ||
+                                uiState.selectedFolder != "ALL" || uiState.selectedCategory != com.example.data.model.DocumentCategory.ALL
                             Text(
-                                stringResource(R.string.txt_no_documents_body),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                if (filtered) stringResource(R.string.txt_no_matching) else stringResource(R.string.txt_no_documents),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            if (!filtered) {
+                                Text(
+                                    stringResource(R.string.txt_no_documents_body),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Fixed(if (isCompactListView) 1 else 2),
+                        contentPadding = PaddingValues(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(if (isCompactListView) 10.dp else 16.dp)
+                    ) {
+                        items(docs, key = { it.id }) { doc ->
+                            DocumentGridItem(
+                                doc = doc,
+                                searchQuery = uiState.searchQuery,
+                                isSelected = selectedDocIds.contains(doc.id),
+                                selectionMode = selectionMode,
+                                isCompactListView = isCompactListView,
+                                onClick = {
+                                    if (selectionMode) {
+                                        selectedDocIds = if (selectedDocIds.contains(doc.id)) selectedDocIds - doc.id else selectedDocIds + doc.id
+                                        if (selectedDocIds.isEmpty()) selectionMode = false
+                                    } else {
+                                        onNavigateToDocument(doc.id)
+                                    }
+                                },
+                                onEditClick = { onNavigateToEditSession("EXISTING", doc.id) },
+                                onLongClick = {
+                                    selectionMode = true
+                                    selectedDocIds = selectedDocIds + doc.id
+                                },
+                                onDeleteClick = { listViewModel.moveToTrashWithUndo(listOf(doc.id)) },
+                                onRenameClick = { renameDocIds = listOf(doc.id); showRenameDialog = true },
+                                onExportClick = { exportDocIds = listOf(doc.id); showExportPdfDialog = true },
+                                onShareClick = { listViewModel.shareDocumentsAsPdf(context, listOf(doc.id)) },
+                                onMoveClick = { moveDocIds = listOf(doc.id); showMoveDialog = true },
+                                onFavoriteClick = { listViewModel.toggleFavorite(doc.id) }
                             )
                         }
                     }
                 }
-            } else {
-                LazyVerticalGrid(
-                    columns = GridCells.Fixed(if (isCompactListView) 1 else 2),
-                    contentPadding = PaddingValues(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
-                ) {
-                    items(docs, key = { it.id }) { doc ->
-                        DocumentGridItem(
-                            doc = doc,
-                            searchQuery = uiState.searchQuery,
-                            isSelected = selectedDocIds.contains(doc.id),
-                            selectionMode = selectionMode,
-                            onClick = {
-                                if (selectionMode) {
-                                    selectedDocIds = if (selectedDocIds.contains(doc.id)) selectedDocIds - doc.id else selectedDocIds + doc.id
-                                    if (selectedDocIds.isEmpty()) selectionMode = false
-                                } else {
-                                    onNavigateToDocument(doc.id)
-                                }
-                            },
-                            onEditClick = { onNavigateToEditSession("EXISTING", doc.id) },
-                            onLongClick = {
-                                selectionMode = true
-                                selectedDocIds = selectedDocIds + doc.id
-                            },
-                            onDeleteClick = { listViewModel.moveToTrashWithUndo(listOf(doc.id)) },
-                            onRenameClick = { renameDocIds = listOf(doc.id); showRenameDialog = true },
-                            onExportClick = { exportDocIds = listOf(doc.id); showExportPdfDialog = true },
-                            onShareClick = { listViewModel.shareDocumentsAsPdf(context, listOf(doc.id)) },
-                            onMoveClick = { moveDocIds = listOf(doc.id); showMoveDialog = true },
-                            onFavoriteClick = { listViewModel.toggleFavorite(doc.id) }
-                        )
-                    }
-                }
             }
-        }
-        if (isProcessingCapture) {
-            Box(
-                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.4f)),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(color = Emerald400)
-            }
-        }
         }
     }
     if (showNewFolderDialog) {
@@ -779,4 +686,3 @@ fun HomeScreen(
         PdfViewerOverlay(pdfFile = file, onDismiss = { previewPdfFile = null })
     }
 }
-

@@ -62,7 +62,6 @@ class EditSessionViewModel(
     private val _uiState = MutableStateFlow(EditSessionUiState(
         defaultPdfPageSize = prefs.pdfPageSize,
         defaultPdfCompression = prefs.pdfCompression,
-        // Previously always AUTO here: the language chosen in Settings was ignored by the OCR screen.
         ocrLanguage = runCatching { OcrLanguage.valueOf(prefs.ocrLanguage) }.getOrDefault(OcrLanguage.AUTO)
     ))
     val uiState: StateFlow<EditSessionUiState> = _uiState.asStateFlow()
@@ -95,6 +94,19 @@ class EditSessionViewModel(
         doc.thumbnailPath?.let { runCatching { File(it).delete() } }
         val thumb = firstPagePath?.let { ImageProcessor.createThumbnail(context, it) }
         repository.updateDocument(doc.copy(thumbnailPath = thumb))
+    }
+    /** Deletes an intermediate session processed file if it is not one of the original session files or a raw file. */
+    private fun cleanupIntermediateSessionFile(oldProcessed: String, rawPath: String) {
+        if (oldProcessed.isBlank() || oldProcessed == rawPath) return
+        val protectedPaths = originalSessionPages.flatMap { listOf(it.rawImagePath, it.processedImagePath) }.toSet()
+        if (oldProcessed in protectedPaths) return
+        val stillReferenced = _uiState.value.editingSessionPages.any {
+            it.rawImagePath == oldProcessed || it.processedImagePath == oldProcessed
+        }
+        if (!stillReferenced) {
+            runCatching { File(oldProcessed).delete() }
+            OcrLayoutStore.delete(oldProcessed)
+        }
     }
     fun updateActivePageProcessedImage(newPath: String) {
         val pages = _uiState.value.activePages
@@ -268,14 +280,19 @@ class EditSessionViewModel(
         }
     }
     fun updateEditingSessionPageProcessedImage(index: Int, newPath: String) {
+        val prev = _uiState.value.editingSessionPages.getOrNull(index)
         _uiState.update { s ->
             val pages = s.editingSessionPages.toMutableList()
             if (index !in pages.indices) return@update s
             pages[index] = pages[index].copy(processedImagePath = newPath)
             s.copy(editingSessionPages = pages)
         }
+        if (prev != null && prev.processedImagePath != newPath) {
+            cleanupIntermediateSessionFile(prev.processedImagePath, rawOf(prev))
+        }
     }
     fun updateEditingSessionPageCrop(index: Int, result: CropEditorResult) {
+        val prev = _uiState.value.editingSessionPages.getOrNull(index)
         _uiState.update { s ->
             val pages = s.editingSessionPages.toMutableList()
             if (index !in pages.indices) return@update s
@@ -286,6 +303,9 @@ class EditSessionViewModel(
                 filterType = (result.filter ?: FilterType.ORIGINAL).name
             )
             s.copy(editingSessionPages = pages)
+        }
+        if (prev != null && prev.processedImagePath != result.processedPath) {
+            cleanupIntermediateSessionFile(prev.processedImagePath, rawOf(prev))
         }
         sessionAdjust.remove(result.rawPath)
     }
@@ -301,6 +321,7 @@ class EditSessionViewModel(
                 try {
                     for (page in targets) {
                         val raw = rawOf(page)
+                        val oldProcessed = page.processedImagePath
                         val (rot, filter, adj) = transform(page.rotationDegrees, filterOf(page), sessionAdjust[raw] ?: (0f to 1f))
                         val newPath = DocumentPipeline.render(
                             context, raw, quadFor(page), rot, filter,
@@ -315,6 +336,9 @@ class EditSessionViewModel(
                                     filterType = (filter ?: FilterType.ORIGINAL).name
                                 ) else it
                             })
+                        }
+                        if (oldProcessed != newPath) {
+                            cleanupIntermediateSessionFile(oldProcessed, raw)
                         }
                         qualityCache.remove(page.id)
                     }
@@ -339,11 +363,15 @@ class EditSessionViewModel(
         }
     }
     fun deleteSessionPage(index: Int) {
+        val prev = _uiState.value.editingSessionPages.getOrNull(index)
         _uiState.update { s ->
             val pages = s.editingSessionPages.toMutableList()
             if (index !in pages.indices) return@update s
             pages.removeAt(index)
             s.copy(editingSessionPages = pages)
+        }
+        if (prev != null) {
+            cleanupIntermediateSessionFile(prev.processedImagePath, rawOf(prev))
         }
     }
     fun moveSessionPage(from: Int, to: Int) {
@@ -364,14 +392,19 @@ class EditSessionViewModel(
             try {
                 for (page in pages) {
                     val raw = rawOf(page)
+                    val oldProcessed = page.processedImagePath
                     val result = DocumentPipeline.redetect(
                         context, raw, rotationDegrees = page.rotationDegrees, filter = filterOf(page), prefix = "batch_recrop"
                     ) ?: continue
                     val updated = page.copy(processedImagePath = result.processedPath, cropQuadJson = result.quad.toJson())
                     if (inSession) {
                         _uiState.update { s -> s.copy(editingSessionPages = s.editingSessionPages.map { if (rawOf(it) == raw) updated else it }) }
+                        if (oldProcessed != result.processedPath) cleanupIntermediateSessionFile(oldProcessed, raw)
                     } else {
                         repository.updatePage(updated)
+                        if (oldProcessed != raw && oldProcessed != result.processedPath) {
+                            runCatching { File(oldProcessed).delete() }
+                        }
                     }
                     qualityCache.remove(page.id)
                 }
@@ -704,8 +737,7 @@ class EditSessionViewModel(
                     return dst.absolutePath
                 }
                 val r = copyOf(page.rawImagePath)
-                QuadStore.load(page.rawImagePath)?.let { QuadStore.save(r, it) }
-                QuadStore.loadStatus(page.rawImagePath)?.let { QuadStore.saveStatus(r, it) }
+                QuadStore.copySidecars(page.rawImagePath, r)
                 val p = if (page.processedImagePath == page.rawImagePath) r else copyOf(page.processedImagePath)
                 OcrLayoutStore.copy(page.processedImagePath, p)
                 r to p
@@ -736,16 +768,12 @@ class EditSessionViewModel(
         shapes: List<com.example.engine.annotation.DrawShape>,
         brightness: Float,
         contrast: Float,
-        /**
-         * Page being annotated. ROOT CAUSE of "the signature was saved on another page": the page was taken
-         * from selectedPageIndex, which is not the annotated page when the editor was opened from the edit
-         * session ("Markup") or before the pager synced the index. The annotation screen now passes its id.
-         */
         pageId: Long? = null
     ) {
         val state = _uiState.value
-        val page = (pageId?.let { id -> state.activePages.find { it.id == id } })
-            ?: state.activePages.getOrNull(state.selectedPageIndex) ?: return
+        val page = (pageId?.let { id ->
+            state.editingSessionPages.find { it.id == id } ?: state.activePages.find { it.id == id }
+        }) ?: state.activePages.getOrNull(state.selectedPageIndex) ?: return
         viewModelScope.launch(Dispatchers.Default) {
             _uiState.update { it.copy(isLoading = true) }
             try {
@@ -758,34 +786,72 @@ class EditSessionViewModel(
                         ImageProcessor.saveBitmapToFile(context, annotatedBmp, "annotated_")
                     } finally {
                         if (annotatedBmp !== baseBmp) annotatedBmp.recycle()
+                    }
+                    // Persist a cumulative transparent annotation overlay next to the untouched RAW image
+                    // (un-rotated back to 0° so any future rotation / filter / re-crop composites it cleanly
+                    // without destroying rawImagePath, cropQuadJson, rotationDegrees, or filterType).
+                    val rawPath = rawOf(page)
+                    val prevOverlay = QuadStore.loadAnnotationOverlay(rawPath)
+                    val prevOverlayRotated = prevOverlay?.let { DocumentPipeline.rotate(it, page.rotationDegrees) }
+                    try {
+                        val combinedOverlay = AnnotationEngine.renderAnnotationsOverlay(
+                            width = baseBmp.width,
+                            height = baseBmp.height,
+                            paths = paths,
+                            redactions = redactions,
+                            placedSignatures = signatures,
+                            placedTexts = placedTexts,
+                            shapes = shapes,
+                            existingOverlay = prevOverlayRotated
+                        )
+                        if (combinedOverlay != null) {
+                            try {
+                                val unrotated = DocumentPipeline.rotate(combinedOverlay, (360 - page.rotationDegrees) % 360)
+                                try {
+                                    QuadStore.saveAnnotationOverlay(rawPath, unrotated)
+                                } finally {
+                                    if (unrotated !== combinedOverlay) unrotated.recycle()
+                                }
+                            } finally {
+                                combinedOverlay.recycle()
+                            }
+                        }
+                    } finally {
+                        if (prevOverlayRotated != null && prevOverlayRotated !== prevOverlay) prevOverlayRotated.recycle()
+                        prevOverlay?.recycle()
                         baseBmp.recycle()
                     }
-                    // ROOT CAUSE of "the signature disappears after rotating / changing the filter": every later
-                    // edit re-renders the page from its RAW image (warp -> rotate -> filter), and the annotations
-                    // were only burned into the PROCESSED image. The annotated page now becomes the page's new
-                    // source: raw = processed = annotated, full-page quad, rotation 0, no filter, detection
-                    // SKIPPED (already straight). Later rotate / filter / crop keep the signature.
-                    val fullQuad = DocumentQuad.fullQuad()
-                    QuadStore.save(newPath, fullQuad)
-                    QuadStore.saveStatus(newPath, com.example.engine.cv.DetectionStatus.SKIPPED)
+
                     OcrLayoutStore.copy(page.processedImagePath, newPath)
-                    repository.updatePage(
-                        page.copy(
-                            rawImagePath = newPath,
-                            processedImagePath = newPath,
-                            cropQuadJson = fullQuad.toJson(),
-                            rotationDegrees = 0,
-                            filterType = FilterType.ORIGINAL.name
-                        )
+                    // Preserve rawImagePath, cropQuadJson, rotationDegrees, and filterType!
+                    val updatedPage = page.copy(
+                        rawImagePath = rawPath,
+                        processedImagePath = newPath
                     )
-                    val stillUsed = repository.getPagesList(page.documentId)
-                        .flatMap { listOf(it.rawImagePath, it.processedImagePath) }.toSet()
-                    listOf(page.processedImagePath, page.rawImagePath).distinct().forEach { old ->
-                        if (old.isNotBlank() && old != newPath && old !in stillUsed) {
-                            runCatching { File(old).delete() }
-                            OcrLayoutStore.delete(old)
-                            QuadStore.delete(old)
-                        }
+                    repository.updatePage(updatedPage)
+
+                    // Keep editingSessionPages and originalSessionPages synchronized if an editing session is active
+                    // so committing or cancelling the editing session never overwrites or deletes the annotated page.
+                    if (_uiState.value.isEditingSession) {
+                        originalSessionPages = originalSessionPages.map { if (it.id == page.id) updatedPage else it }
+                    }
+                    _uiState.update { s ->
+                        s.copy(
+                            activePages = s.activePages.map { if (it.id == page.id) updatedPage else it },
+                            editingSessionPages = if (s.isEditingSession) {
+                                s.editingSessionPages.map { if (it.id == page.id) updatedPage else it }
+                            } else s.editingSessionPages
+                        )
+                    }
+
+                    val stillUsed = (
+                        repository.getPagesList(page.documentId).flatMap { listOf(it.rawImagePath, it.processedImagePath) } +
+                        _uiState.value.editingSessionPages.flatMap { listOf(it.rawImagePath, it.processedImagePath) }
+                    ).toSet()
+                    val oldProc = page.processedImagePath
+                    if (oldProc.isNotBlank() && oldProc != rawPath && oldProc != newPath && oldProc !in stillUsed) {
+                        runCatching { File(oldProc).delete() }
+                        OcrLayoutStore.delete(oldProc)
                     }
                     qualityCache.remove(page.id)
                     if (page.pageIndex == 0) refreshThumbnail(page.documentId, newPath)
@@ -801,9 +867,7 @@ class EditSessionViewModel(
         }
     }
     /**
-     * Saves a drawn signature to the vault as a lossless PNG (SignatureStore), not the old JPEG path
-     * (ImageProcessor.saveBitmapToFile), which silently filled every transparent pixel with opaque white
-     * and is the actual root cause of signatures showing as a white rectangle on the page.
+     * Saves a drawn signature to the vault as a lossless PNG (SignatureStore).
      */
     fun saveSignatureToVault(title: String, bitmap: android.graphics.Bitmap) {
         viewModelScope.launch {
@@ -821,11 +885,6 @@ class EditSessionViewModel(
         val page = _uiState.value.activePages.find { it.id == pageId } ?: return
         viewModelScope.launch {
             repository.deletePage(pageId, page.documentId)
-            runCatching {
-                QuadStore.delete(page.rawImagePath)
-                File(page.rawImagePath).delete()
-                if (page.processedImagePath != page.rawImagePath) File(page.processedImagePath).delete()
-            }
             qualityCache.remove(pageId)
         }
     }
@@ -912,7 +971,6 @@ class EditSessionViewModel(
             } else {
                 repository.addPageToDocument(docId, mergedImagePath, mergedImagePath)
             }
-            // Thumbnail = first page AFTER the merge (the old code referenced an undefined `outFile`).
             refreshThumbnail(docId)
             DocumentAnalysisWorker.enqueue(context, docId, generatedTitle = false)
             onComplete()
@@ -922,21 +980,31 @@ class EditSessionViewModel(
         _uiState.update { it.copy(selectedCompression = preset) }
     }
     fun setOcrLanguage(language: com.example.engine.ocr.OcrLanguage) {
+        prefs.ocrLanguage = language.name
         _uiState.update { it.copy(ocrLanguage = language) }
     }
     fun saveEditedOcrText(pageId: Long, newText: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val page = repository.getPageById(pageId) ?: return@launch
-            repository.updatePage(page.copy(ocrText = newText))
+            // Clear stale positional layout so exported searchable PDFs embed the user's edited text
+            OcrLayoutStore.delete(page.processedImagePath)
+            val updatedAnalysis = DocumentAiEngine.analyzeFromSavedText(newText, emptyList())
+            val entitiesJson = DocumentAiEngine.fieldsToJson(updatedAnalysis.fields)
+            repository.updatePage(page.copy(ocrText = newText, ocrEntitiesJson = entitiesJson))
             _uiState.update { state ->
-                state.copy(ocrResult = state.ocrResult?.copy(fullText = newText))
+                state.copy(ocrResult = updatedAnalysis)
             }
             val doc = repository.getDocumentById(page.documentId)
             if (doc != null) {
                 val allText = repository.getPagesList(doc.id).map { it.ocrText }
                     .filter { it.isNotBlank() && !it.startsWith("OCR Failed") }
                     .joinToString("\n")
-                repository.updateDocument(doc.copy(ocrText = allText))
+                repository.updateDocument(
+                    doc.copy(
+                        ocrText = allText,
+                        suggestedTitle = updatedAnalysis.suggestedTitle.ifBlank { doc.suggestedTitle }
+                    )
+                )
             }
         }
     }
@@ -944,4 +1012,3 @@ class EditSessionViewModel(
         _uiState.update { it.copy(defaultPdfPageSize = size) }
     }
 }
-

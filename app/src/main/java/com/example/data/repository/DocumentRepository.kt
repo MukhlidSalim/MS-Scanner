@@ -61,18 +61,10 @@ class DocumentRepository(
         documentDao.getPagesForDocumentSync(docId)
     }
 
-    suspend fun insertDocumentForRestore(doc: DocumentEntity): Long = withContext(Dispatchers.IO) {
-        documentDao.insertDocument(doc)
-    }
-
     fun getAllDocuments(): Flow<List<DocumentEntity>> = documentDao.getAllActiveDocuments()
     fun getFavoriteDocuments(): Flow<List<DocumentEntity>> = documentDao.getFavoriteDocuments()
     fun getTrashDocuments(): Flow<List<DocumentEntity>> = documentDao.getTrashDocuments()
-    fun getDocumentsByFolder(folder: String): Flow<List<DocumentEntity>> = documentDao.getDocumentsByFolder(folder)
-    fun getDocumentsByCategory(category: String): Flow<List<DocumentEntity>> = documentDao.getDocumentsByCategory(category)
-    fun searchDocuments(query: String): Flow<List<DocumentEntity>> = documentDao.searchDocuments(query)
     fun getAllFolders(): Flow<List<String>> = documentDao.getAllFolders()
-    fun observeDocument(id: Long): Flow<DocumentEntity?> = documentDao.observeDocumentById(id)
     fun getPagesForDocument(docId: Long): Flow<List<PageEntity>> = documentDao.getPagesForDocument(docId)
     fun getAllSignatures(): Flow<List<SignatureEntity>> = documentDao.getAllSignatures()
 
@@ -202,40 +194,6 @@ class DocumentRepository(
         }
     }
 
-    /**
-     * Legacy entry point kept for existing callers: delegates to [saveDocument] (one save path).
-     */
-    suspend fun createDocumentWithPages(
-        title: String,
-        folderName: String = "Default",
-        category: String = "OTHER",
-        ocrText: String = "",
-        pages: List<Pair<String, String>> // (rawImagePath, processedImagePath)
-    ): Long {
-        val now = System.currentTimeMillis()
-        val id = saveDocument(
-            DocumentSaveRequest(
-                existingDocId = null,
-                title = title,
-                folderName = folderName,
-                category = category,
-                pages = pages.mapIndexed { index, pair ->
-                    PageEntity(
-                        documentId = 0L,
-                        pageIndex = index,
-                        rawImagePath = pair.first,
-                        processedImagePath = pair.second,
-                        createdAt = now
-                    )
-                }
-            )
-        )
-        if (ocrText.isNotBlank()) {
-            getDocumentById(id)?.let { updateDocument(it.copy(ocrText = ocrText)) }
-        }
-        return id
-    }
-
     suspend fun addPageToDocument(docId: Long, rawPath: String, processedPath: String): Long = withContext(Dispatchers.IO) {
         database.withTransaction {
             val existingPages = documentDao.getPagesListForDocument(docId)
@@ -337,15 +295,9 @@ class DocumentRepository(
         }
     }
 
-    suspend fun updatePagesIndices(pages: List<PageEntity>) = withContext(Dispatchers.IO) {
-        documentDao.updatePages(pages)
-    }
-
     suspend fun insertPage(page: PageEntity): Long = withContext(Dispatchers.IO) {
         val id = documentDao.insertPage(page)
         val pages = documentDao.getPagesListForDocument(page.documentId)
-        // computePagesSize returns (bytes, formatted): the previous code assigned the Pair to a Long and
-        // called an undefined formatBytes() — a compile error that broke every "Duplicate page" path.
         val (totalBytes, formattedSize) = computePagesSize(pages)
         documentDao.getDocumentById(page.documentId)?.let { doc ->
             documentDao.updateDocument(
@@ -362,6 +314,7 @@ class DocumentRepository(
 
     suspend fun deletePage(pageId: Long, docId: Long) = withContext(Dispatchers.IO) {
         var removedPage: PageEntity? = null
+        var remainingPages: List<PageEntity> = emptyList()
         val oldThumb = database.withTransaction {
             removedPage = documentDao.getPageById(pageId)
             documentDao.deletePageById(pageId)
@@ -369,6 +322,7 @@ class DocumentRepository(
             remaining.forEachIndexed { idx, p ->
                 if (p.pageIndex != idx) documentDao.updatePage(p.copy(pageIndex = idx))
             }
+            remainingPages = remaining
             val (totalBytes, formattedSize) = computePagesSize(remaining)
             val doc = documentDao.getDocumentById(docId)
             if (doc != null) {
@@ -383,7 +337,12 @@ class DocumentRepository(
             }
             doc?.thumbnailPath
         }
-        removedPage?.let { deletePageFiles(it) }
+        val activePaths = remainingPages.flatMap { listOf(it.rawImagePath, it.processedImagePath) }.toSet()
+        removedPage?.let { p ->
+            if (p.rawImagePath !in activePaths && p.processedImagePath !in activePaths) {
+                deletePageFiles(p)
+            }
+        }
         // Thumbnail regenerated outside the transaction.
         val first = documentDao.getPagesListForDocument(docId).firstOrNull()
         val newThumb = first?.processedImagePath?.let { com.example.engine.cv.ImageProcessor.createThumbnail(context, it) }
@@ -500,6 +459,8 @@ class DocumentRepository(
                             referenced.add(name)
                             referenced.add("$name.quad.json")
                             referenced.add("$name.detect")
+                            referenced.add("$name.nostraighten")
+                            referenced.add("$name.annot.png")
                             referenced.add("$name.ocr.json")
                         }
                     }
@@ -523,4 +484,3 @@ class DocumentRepository(
         return size
     }
 }
-

@@ -917,11 +917,15 @@ fun CameraScanScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                // Batch thumbnails: last pages, tap the last one to remove it (retake).
+                // Batch thumbnails: last pages, auto-scrolled to latest page; tap the last one to remove it (retake).
                 if (isMultiPage && batchPages.isNotEmpty()) {
+                    val batchScrollState = rememberScrollState()
+                    LaunchedEffect(batchPages.size) {
+                        batchScrollState.animateScrollTo(batchScrollState.maxValue)
+                    }
                     Row(
                         modifier = Modifier
-                            .horizontalScroll(rememberScrollState())
+                            .horizontalScroll(batchScrollState)
                             .padding(horizontal = 16.dp),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically

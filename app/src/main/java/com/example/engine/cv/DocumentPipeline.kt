@@ -1,4 +1,3 @@
-
 package com.example.engine.cv
 
 import android.content.Context
@@ -8,6 +7,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ImageDecoder
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.pdf.PdfRenderer
 import android.media.ExifInterface
 import android.net.Uri
@@ -15,9 +15,12 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
 import com.example.data.model.FilterType
+import com.example.data.repository.AppPreferences
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.roundToInt
 
@@ -70,7 +73,8 @@ class ImageImportException(message: String, cause: Throwable? = null) : Exceptio
  *    together with the [DetectionStatus], so a failed detection is never presented as a real crop.
  *  - Detection chain (one engine, DocumentDetector): guided pass -> relaxed-shape pass -> contrast-
  *    boosted pass. Only when all fail is the full image kept, marked NOT_FOUND for manual review.
- *  - Rendering order is ALWAYS: perspective warp (raw + quad) -> user rotation -> filter -> enhancements.
+ *  - Rendering order is ALWAYS: perspective warp (raw + quad) -> user rotation -> filter -> enhancements
+ *    -> persisted annotation overlay (if present).
  *  - All work runs on Dispatchers.Default / IO; callers never block the main thread.
  */
 object DocumentPipeline {
@@ -218,10 +222,13 @@ object DocumentPipeline {
             }
             QuadStore.save(rawPath, quad)
             QuadStore.saveStatus(rawPath, status)
-            val out = renderBitmap(
+            val allowDeskew = runCatching { AppPreferences(context).autoDeskew }.getOrDefault(true)
+            val baseOut = renderBitmap(
                 raw, quad, rotationDegrees, filter, 0f, 1f, false,
-                previousStatus != DetectionStatus.SKIPPED && !QuadStore.isNoStraighten(rawPath)
+                allowDeskew && previousStatus != DetectionStatus.SKIPPED && !QuadStore.isNoStraighten(rawPath)
             )
+            val out = applyPersistedAnnotationsIfPresent(rawPath, baseOut, rotationDegrees)
+            if (out !== baseOut && baseOut !== raw) baseOut.recycle()
             try {
                 val path = ImageProcessor.saveBitmapToFile(context, out, "${prefix}_")
                 ProcessedPage(rawPath, path, quad, detection != null, detection?.confidence ?: 0f, status)
@@ -256,8 +263,11 @@ object DocumentPipeline {
         try {
             val safeQuad = if (DocumentDetector.isPlausible(quad)) quad.clamped() else DocumentQuad.fullQuad()
             QuadStore.save(rawPath, safeQuad)
-            val straighten = QuadStore.loadStatus(rawPath) != DetectionStatus.SKIPPED && !QuadStore.isNoStraighten(rawPath)
-            val out = renderBitmap(raw, safeQuad, rotationDegrees, filter, brightness, contrast, sharpen, straighten)
+            val allowDeskew = runCatching { AppPreferences(context).autoDeskew }.getOrDefault(true)
+            val straighten = allowDeskew && QuadStore.loadStatus(rawPath) != DetectionStatus.SKIPPED && !QuadStore.isNoStraighten(rawPath)
+            val baseOut = renderBitmap(raw, safeQuad, rotationDegrees, filter, brightness, contrast, sharpen, straighten)
+            val out = applyPersistedAnnotationsIfPresent(rawPath, baseOut, rotationDegrees)
+            if (out !== baseOut && baseOut !== raw) baseOut.recycle()
             try {
                 ImageProcessor.saveBitmapToFile(context, out, "${prefix}_")
             } finally {
@@ -265,6 +275,32 @@ object DocumentPipeline {
             }
         } finally {
             raw.recycle()
+        }
+    }
+
+    /**
+     * Composites the page's persisted transparent annotation overlay (if any) on top of [rendered],
+     * rotated by [rotationDegrees] so signatures and annotations remain aligned after rotation or filter changes.
+     */
+    private fun applyPersistedAnnotationsIfPresent(
+        rawPath: String,
+        rendered: Bitmap,
+        rotationDegrees: Int
+    ): Bitmap {
+        val overlay = QuadStore.loadAnnotationOverlay(rawPath) ?: return rendered
+        try {
+            val rotatedOverlay = rotate(overlay, rotationDegrees)
+            try {
+                val out = if (rendered.isMutable) rendered else rendered.copy(Bitmap.Config.ARGB_8888, true)
+                val canvas = Canvas(out)
+                val dst = Rect(0, 0, out.width, out.height)
+                canvas.drawBitmap(rotatedOverlay, null, dst, Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG))
+                return out
+            } finally {
+                if (rotatedOverlay !== overlay) rotatedOverlay.recycle()
+            }
+        } finally {
+            overlay.recycle()
         }
     }
 
@@ -333,6 +369,39 @@ object DocumentPipeline {
     }
 
     /**
+     * Computes a compact 8x8 perceptual luminance signature (mean-normalized 64-byte array) for a page image.
+     * Used to warn the user when two nearly identical pages are added in the same scan/import batch.
+     */
+    fun computeLumaSignature(imagePath: String): IntArray? = runCatching {
+        val bmp = ImageProcessor.loadBitmapFromFile(imagePath, 64) ?: return null
+        try {
+            val small = Bitmap.createScaledBitmap(bmp, 8, 8, true)
+            try {
+                val px = IntArray(64)
+                small.getPixels(px, 0, 8, 0, 0, 8, 8)
+                IntArray(64) { i ->
+                    val c = px[i]
+                    (0.299f * ((c shr 16) and 0xFF) + 0.587f * ((c shr 8) and 0xFF) + 0.114f * (c and 0xFF)).roundToInt()
+                }
+            } finally {
+                if (small !== bmp) small.recycle()
+            }
+        } finally {
+            bmp.recycle()
+        }
+    }.getOrNull()
+
+    /** True when two 8x8 luma signatures differ by less than 4.5 gray levels on average. */
+    fun areLikelyDuplicates(sigA: IntArray?, sigB: IntArray?): Boolean {
+        if (sigA == null || sigB == null || sigA.size != 64 || sigB.size != 64) return false
+        var diffSum = 0
+        for (i in 0 until 64) {
+            diffSum += abs(sigA[i] - sigB[i])
+        }
+        return (diffSum / 64f) < 4.5f
+    }
+
+    /**
      * Book mode: splits a two-page spread (already cropped / corrected) into two pages at the spine.
      * The spine is searched in the middle 20% (darkest / most shadowed column = binding), then 1% gutter is
      * trimmed on each side. Each half becomes its own raw image (quad = full, status MANUAL) so it can be
@@ -384,8 +453,7 @@ object DocumentPipeline {
                     val p = px[y * w + x]
                     sum += 0.299f * ((p shr 16) and 0xFF) + 0.587f * ((p shr 8) and 0xFF) + 0.114f * (p and 0xFF)
                 }
-                // Slight preference for the exact centre when columns are equally dark (plain white pages).
-                val score = sum / h + kotlin.math.abs(x - w / 2f) * 0.15f
+                val score = sum / h + abs(x - w / 2f) * 0.15f
                 if (score < best) { best = score; bestX = x }
             }
             return (bestX / scale).roundToInt().coerceIn(1, src.width - 1)
@@ -396,13 +464,6 @@ object DocumentPipeline {
 
     // ------------------------------------------------------------------ detection chain
 
-    /**
-     * One engine (DocumentDetector), three passes:
-     *  1. guided by the live-preview quad when available (sub-pixel confirmation on the still);
-     *  2. without the ID-card / passport aspect constraint (user may have chosen the wrong mode);
-     *  3. on a down-scaled, contrast-boosted copy (white paper on light desk, soft shadows).
-     * Returns null only when every pass fails. Coordinates are normalized, so pass 3 is size-independent.
-     */
     private suspend fun detectWithFallback(
         upright: Bitmap,
         prior: DocumentQuad?,
@@ -457,12 +518,10 @@ object DocumentPipeline {
         }
         QuadStore.save(rawPath, quad)
         QuadStore.saveStatus(rawPath, status)
-        // ID card / passport: the detected card border IS the crop. Sliver trim + text deskew would cut the card
-        // frame or rotate a photo page, so they are disabled for these modes (persisted for later re-renders).
         val isCard = expectedAspectRatio != null
         if (isCard) QuadStore.markNoStraighten(rawPath)
-        // Google scanner / PDF pages (SKIPPED) are already straight: no second correction.
-        val out = renderBitmap(upright, quad, 0, filter, 0f, 1f, false, straighten = autoCrop && !isCard)
+        val allowDeskew = runCatching { AppPreferences(context).autoDeskew }.getOrDefault(true)
+        val out = renderBitmap(upright, quad, 0, filter, 0f, 1f, false, straighten = allowDeskew && autoCrop && !isCard)
         val procPath = try {
             ImageProcessor.saveBitmapToFile(context, out, "${prefix}_proc_")
         } finally {
@@ -488,21 +547,6 @@ object DocumentPipeline {
         return uprightAndBound(decoded, rotation, maxSide)
     }
 
-    /**
-     * Decodes a content:// / file:// image, upright (EXIF applied) and bounded to [maxSide].
-     *
-     * ROOT CAUSE of "Could not import images" (every gallery / files import AND every Google scanner page):
-     * the bounds pass was written as
-     *     openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
-     * A decode with inJustDecodeBounds = true ALWAYS returns null (only the options are filled), so the
-     * elvis operator returned null for every image. The camera path used decodeFile() without that elvis,
-     * which is why only camera capture worked.
-     *
-     * Now: Android 9+ uses ImageDecoder (content/file URIs, JPEG/PNG/WebP/HEIF, EXIF orientation applied
-     * by the decoder, power-of-two subsampling for large photos, software bitmap for pixel access). Older
-     * versions and decoder failures use a corrected BitmapFactory path. Failures throw
-     * [ImageImportException] with the real reason (no access, not an image, corrupt).
-     */
     fun decodeUprightUri(context: Context, uri: Uri, maxSide: Int): Bitmap {
         val resolver = context.contentResolver
         var imageDecoderError: Throwable? = null
@@ -510,7 +554,7 @@ object DocumentPipeline {
             try {
                 val source = ImageDecoder.createSource(resolver, uri)
                 val decoded = ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
-                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE // getPixels / Canvas need a software bitmap
+                    decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
                     decoder.isMutableRequired = false
                     val size = info.size
                     decoder.setTargetSampleSize(sampleSize(size.width, size.height, maxSide))
@@ -520,21 +564,20 @@ object DocumentPipeline {
                     decoded.recycle()
                     copy ?: throw ImageImportException("Unsupported pixel format")
                 }
-                // Orientation is already applied by ImageDecoder; only bound the size.
                 return uprightAndBound(argb, 0, maxSide)
             } catch (e: SecurityException) {
                 throw ImageImportException("No permission to read the selected image", e)
             } catch (e: OutOfMemoryError) {
                 imageDecoderError = e
             } catch (e: Exception) {
-                imageDecoderError = e // e.g. vendor-specific formats: try BitmapFactory below
+                imageDecoderError = e
             }
         }
         try {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             val stream = resolver.openInputStream(uri)
                 ?: throw ImageImportException("The selected image cannot be opened")
-            stream.use { BitmapFactory.decodeStream(it, null, bounds) } // returns null by design; fills bounds
+            stream.use { BitmapFactory.decodeStream(it, null, bounds) }
             if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
                 throw ImageImportException("The selected file is not a readable image (${bounds.outMimeType ?: "unknown type"})", imageDecoderError)
             }
@@ -590,14 +633,14 @@ object DocumentPipeline {
 }
 
 /**
- * Persists the crop quad ("<raw>.quad.json") and the detection status ("<raw>.detect") next to the
- * raw image, so every workflow that only passes (rawPath, processedPath) pairs (camera -> edit
- * session -> crop editor -> save) keeps the real quad AND knows whether it was really detected.
+ * Persists the crop quad ("<raw>.quad.json"), detection status ("<raw>.detect"), and non-destructive
+ * annotation overlay ("<raw>.annot.png") next to the raw image.
  */
 object QuadStore {
     private fun fileFor(rawPath: String) = File("$rawPath.quad.json")
     private fun statusFileFor(rawPath: String) = File("$rawPath.detect")
     private fun noStraightenFileFor(rawPath: String) = File("$rawPath.nostraighten")
+    private fun annotFileFor(rawPath: String) = File("$rawPath.annot.png")
 
     /** ID card / passport pages: no automatic trim / deskew on later re-renders. */
     fun markNoStraighten(rawPath: String) {
@@ -625,12 +668,36 @@ object QuadStore {
         if (f.exists()) DetectionStatus.valueOf(f.readText().trim()) else null
     } catch (_: Exception) { null }
 
+    fun saveAnnotationOverlay(rawPath: String, overlay: Bitmap) {
+        try {
+            FileOutputStream(annotFileFor(rawPath)).use { out ->
+                overlay.compress(Bitmap.CompressFormat.PNG, 100, out)
+            }
+        } catch (_: Exception) { }
+    }
+
+    fun loadAnnotationOverlay(rawPath: String): Bitmap? = try {
+        val f = annotFileFor(rawPath)
+        if (f.exists()) {
+            val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }
+            BitmapFactory.decodeFile(f.absolutePath, opts)
+        } else null
+    } catch (_: Exception) { null }
+
+    fun copySidecars(srcRawPath: String, dstRawPath: String) {
+        load(srcRawPath)?.let { save(dstRawPath, it) }
+        loadStatus(srcRawPath)?.let { saveStatus(dstRawPath, it) }
+        if (isNoStraighten(srcRawPath)) markNoStraighten(dstRawPath)
+        try {
+            val srcAnnot = annotFileFor(srcRawPath)
+            if (srcAnnot.exists()) srcAnnot.copyTo(annotFileFor(dstRawPath), overwrite = true)
+        } catch (_: Exception) { }
+    }
+
     fun delete(rawPath: String) {
         try { fileFor(rawPath).delete() } catch (_: Exception) { }
         try { statusFileFor(rawPath).delete() } catch (_: Exception) { }
         try { noStraightenFileFor(rawPath).delete() } catch (_: Exception) { }
+        try { annotFileFor(rawPath).delete() } catch (_: Exception) { }
     }
 }
-
-
-

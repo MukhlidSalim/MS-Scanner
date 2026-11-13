@@ -1,4 +1,3 @@
-
 package com.example.engine.pdf
 
 import android.content.ClipData
@@ -41,11 +40,6 @@ data class PdfExportConfig(
 
 /**
  * PDF generation + the single Save / Share / Print layer of the app.
- *
- * Storage model (no storage permission needed on any supported version, minSdk 24):
- *  - Working files: filesDir/exports (shared through the app FileProvider).
- *  - "Save as PDF": Android 10+ -> MediaStore Downloads/MS Scanner. Older -> caller uses SAF CreateDocument.
- *  - "Save as Images": Android 10+ -> MediaStore Pictures/MS Scanner. Older -> caller uses SAF folder picker.
  */
 object PdfEngine {
 
@@ -53,7 +47,7 @@ object PdfEngine {
     private const val EXPORT_DIR = "exports"
     private const val SHARE_IMAGES_DIR = "share_images"
 
-    /** File-system safe name that KEEPS Arabic / Unicode letters (the old regex turned Arabic titles into "____"). */
+    /** File-system safe name that KEEPS Arabic / Unicode letters. */
     fun safeFileName(title: String, fallback: String = "Document"): String =
         title.replace(Regex("[\\\\/:*?\"<>|\\p{Cntrl}]"), "_")
             .replace(Regex("\\s+"), " ")
@@ -70,7 +64,6 @@ object PdfEngine {
      */
     fun estimatePdfSizeBytes(pageCount: Int, preset: CompressionPreset): Long {
         val perPageBytes = when (preset) {
-            // Approximate JPEG page sizes for a text document at maxSideFor(preset) (heuristic, not measured).
             CompressionPreset.LOW -> 110_000L
             CompressionPreset.MEDIUM -> 200_000L
             CompressionPreset.HIGH -> 380_000L
@@ -125,8 +118,6 @@ object PdfEngine {
         val timeStamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
         val outputFile = File(exportDir(context), "${safeTitle}_${timeStamp}.pdf")
 
-        // The pixel size stored in the PDF is what drives file size, so the preset controls it directly.
-        // (The previous JPEG encode/decode round-trip only doubled memory: PdfDocument re-encodes pixels.)
         val maxDimension = maxSideFor(config.compression)
         var renderedPageCount = 0
         try {
@@ -214,31 +205,14 @@ object PdfEngine {
         } finally {
             pdfDocument.close()
         }
-        // Image re-encoding (JPEG). Android's PdfDocument stores page bitmaps losslessly (Flate), which made
-        // scanned PDFs several MB per page. Best effort: when it fails, the valid (larger) PDF is kept.
-        try {
-            optimizeImagesInPlace(context, outputFile, jpegQualityFor(config.compression))
-        } catch (e: Throwable) {
-            e.printStackTrace()
-        }
+
+        // Single-pass PdfBox post-processing: JPEG image optimization + optional AES-128 password encryption
+        // in one PDDocument load/save cycle instead of parsing and writing the PDF twice.
         val pwd = config.password?.takeIf { it.isNotBlank() }
-        if (pwd != null) {
-            try {
-                encryptInPlace(context, outputFile, pwd)
-            } catch (e: Throwable) {
-                // Never hand out an unprotected file when protection was requested.
-                outputFile.delete()
-                throw IllegalStateException("Could not password-protect the PDF", e)
-            }
-        }
+        postProcessPdfInPlace(context, outputFile, jpegQualityFor(config.compression), pwd)
         outputFile
     }
 
-    /**
-     * Longest pixel side of a page image per preset, expressed as print resolution on A4 (297 mm):
-     * LOW ~120 dpi, MEDIUM ~150 dpi, HIGH ~200 dpi, MAXIMUM ~300 dpi. 150-200 dpi is the usual range of
-     * professional mobile scanners for text documents; images are never upscaled beyond their source.
-     */
     fun maxSideFor(preset: CompressionPreset): Int = when (preset) {
         CompressionPreset.LOW -> 1404
         CompressionPreset.MEDIUM -> 1754
@@ -246,7 +220,6 @@ object PdfEngine {
         CompressionPreset.MAXIMUM -> 3508
     }
 
-    /** JPEG quality used when the page images are re-encoded inside the PDF. */
     fun jpegQualityFor(preset: CompressionPreset): Float = when (preset) {
         CompressionPreset.LOW -> 0.55f
         CompressionPreset.MEDIUM -> 0.68f
@@ -255,68 +228,69 @@ object PdfEngine {
     }
 
     /**
-     * Re-encodes every non-JPEG image XObject of [file] as JPEG at [quality] (text layer, watermark and page
-     * numbers are vector content and are not touched). Images with a soft mask (transparency) are skipped.
-     * The file is replaced only when the result is smaller.
+     * Single-pass PdfBox post-processor:
+     *  1. Re-encodes non-JPEG page images as JPEG at [quality] (best effort).
+     *  2. When [password] is provided, applies AES-128 standard encryption in the same pass.
      */
-    private fun optimizeImagesInPlace(context: Context, file: File, quality: Float) {
+    private fun postProcessPdfInPlace(context: Context, file: File, quality: Float, password: String?) {
         com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context.applicationContext)
-        val tmp = File(file.parentFile, file.name + ".opt")
+        val tmp = File(file.parentFile, file.name + ".post")
         try {
             var replaced = 0
-            com.tom_roush.pdfbox.pdmodel.PDDocument.load(file, com.tom_roush.pdfbox.io.MemoryUsageSetting.setupMixed(16L * 1024 * 1024)).use { doc ->
-                for (page in doc.pages) {
-                    val res = page.resources ?: continue
-                    for (name in res.xObjectNames.toList()) {
-                        val xo = res.getXObject(name)
-                        if (xo !is com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject) continue
-                        if (xo.suffix == "jpg" || xo.softMask != null) continue
-                        val bmp = xo.image ?: continue
-                        try {
-                            val jpeg = com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory.createFromImage(doc, bmp, quality)
-                            res.put(name, jpeg)
-                            replaced++
-                        } finally {
-                            bmp.recycle()
+            com.tom_roush.pdfbox.pdmodel.PDDocument.load(
+                file,
+                com.tom_roush.pdfbox.io.MemoryUsageSetting.setupMixed(16L * 1024 * 1024)
+            ).use { doc ->
+                runCatching {
+                    for (page in doc.pages) {
+                        val res = page.resources ?: continue
+                        for (name in res.xObjectNames.toList()) {
+                            val xo = res.getXObject(name)
+                            if (xo !is com.tom_roush.pdfbox.pdmodel.graphics.image.PDImageXObject) continue
+                            if (xo.suffix == "jpg" || xo.softMask != null) continue
+                            val bmp = xo.image ?: continue
+                            try {
+                                val jpeg = com.tom_roush.pdfbox.pdmodel.graphics.image.JPEGFactory.createFromImage(doc, bmp, quality)
+                                res.put(name, jpeg)
+                                replaced++
+                            } finally {
+                                bmp.recycle()
+                            }
                         }
                     }
                 }
-                if (replaced > 0) doc.save(tmp)
+                if (password != null) {
+                    val policy = com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy(
+                        password, password, com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission()
+                    ).apply { encryptionKeyLength = 128 }
+                    doc.protect(policy)
+                    doc.save(tmp)
+                } else if (replaced > 0) {
+                    doc.save(tmp)
+                }
             }
-            if (replaced > 0 && tmp.length() in 1 until file.length()) {
-                if (!file.delete() || !tmp.renameTo(file)) throw java.io.IOException("Could not replace the PDF")
+            if (password != null) {
+                if (!tmp.exists() || tmp.length() == 0L || !file.delete() || !tmp.renameTo(file)) {
+                    throw java.io.IOException("Could not replace the encrypted PDF")
+                }
+            } else if (replaced > 0 && tmp.length() in 1 until file.length()) {
+                if (!file.delete() || !tmp.renameTo(file)) {
+                    throw java.io.IOException("Could not replace the optimized PDF")
+                }
+            }
+        } catch (e: Throwable) {
+            if (password != null) {
+                // Never hand out an unprotected file when password protection was requested.
+                file.delete()
+                throw IllegalStateException("Could not password-protect the PDF", e)
+            } else {
+                e.printStackTrace()
             }
         } finally {
             tmp.delete()
         }
     }
 
-    /**
-     * AES-128 password protection with PdfBox-Android. The same password opens the document and
-     * grants all permissions (print / copy); a random owner password would lock the user out of editing.
-     */
-    private fun encryptInPlace(context: Context, file: File, password: String) {
-        com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context.applicationContext)
-        val tmp = File(file.parentFile, file.name + ".enc")
-        try {
-            com.tom_roush.pdfbox.pdmodel.PDDocument.load(file, com.tom_roush.pdfbox.io.MemoryUsageSetting.setupMixed(16L * 1024 * 1024)).use { doc ->
-                val policy = com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy(
-                    password, password, com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission()
-                ).apply { encryptionKeyLength = 128 }
-                doc.protect(policy)
-                doc.save(tmp)
-            }
-            if (!file.delete() || !tmp.renameTo(file)) throw java.io.IOException("Could not replace the PDF")
-        } finally {
-            tmp.delete()
-        }
-    }
-
-    /**
-     * Invisible text drawn exactly over each recognized line, so selecting / searching in any PDF reader
-     * highlights the right place. Alpha 1/255 (not 0): fully transparent drawing is skipped by the PDF
-     * backend, which is why the previous "searchable layer" was never actually written.
-     */
     private fun drawPositionedTextLayer(canvas: Canvas, lines: List<OcrLine>, image: Rect) {
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.argb(1, 0, 0, 0) }
         val iw = image.width().toFloat()
@@ -338,7 +312,6 @@ object PdfEngine {
         }
     }
 
-    /** Pages analysed before layouts existed: text is still searchable, just not positioned. */
     private fun drawFallbackTextLayer(canvas: Canvas, ocrText: String, image: Rect) {
         val paint = Paint().apply {
             color = android.graphics.Color.argb(1, 0, 0, 0)
@@ -374,9 +347,6 @@ object PdfEngine {
         context.startActivity(chooser)
     }
 
-    /**
-     * Share a PDF file via ACTION_SEND. Returns false if nothing could be started.
-     */
     fun sharePdf(context: Context, pdfFile: File, chooserTitle: String = "Share PDF via"): Boolean {
         return try {
             val uri = getFileProviderUri(context, pdfFile)
@@ -395,10 +365,6 @@ object PdfEngine {
         }
     }
 
-    /**
-     * Share one or many files (images, txt, doc…) in ONE chooser. Multiple URIs are also put in ClipData,
-     * otherwise the receiving app is only granted access to the first file.
-     */
     fun shareFiles(context: Context, files: List<File>, mimeType: String, chooserTitle: String = "Share"): Boolean {
         val existing = files.filter { it.exists() && it.length() > 0 }
         if (existing.isEmpty()) return false
@@ -422,10 +388,6 @@ object PdfEngine {
         }
     }
 
-    /**
-     * Copies page images to readable names ("<title>_p01.jpg") in the export folder for sharing.
-     * The folder is cleared first, so repeated shares never accumulate files.
-     */
     suspend fun prepareImagesForShare(context: Context, imagePaths: List<String>, title: String): List<File> =
         withContext(Dispatchers.IO) {
             val dir = File(exportDir(context), SHARE_IMAGES_DIR)
@@ -440,7 +402,6 @@ object PdfEngine {
             }
         }
 
-    /** Real PNG export of one page (the old code shared the JPEG with an image/png MIME type). */
     suspend fun exportPng(context: Context, imagePath: String, title: String): File? = withContext(Dispatchers.IO) {
         val bmp = ImageProcessor.loadBitmapFromFile(imagePath, 4096) ?: return@withContext null
         try {
@@ -459,10 +420,6 @@ object PdfEngine {
 
     // --------------------------------------------------------------------------- save to device
 
-    /**
-     * Android 10+: writes the PDF to Downloads/MS Scanner through MediaStore (no permission).
-     * Returns null on older versions or failure; the caller then falls back to SAF (CreateDocument).
-     */
     suspend fun savePdfToDownloads(context: Context, pdfFile: File, displayName: String): Uri? = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@withContext null
         val resolver = context.contentResolver
@@ -487,10 +444,6 @@ object PdfEngine {
         }
     }
 
-    /**
-     * Android 10+: saves page images to Pictures/MS Scanner (visible in the Gallery). Returns the number
-     * saved, or -1 when the platform needs the SAF folder picker instead (Android 7–9).
-     */
     suspend fun saveImagesToGallery(context: Context, imagePaths: List<String>, title: String): Int = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@withContext -1
         val resolver = context.contentResolver
@@ -521,7 +474,6 @@ object PdfEngine {
         saved
     }
 
-    /** Android 7–9 fallback: writes images into a folder the user picked (ACTION_OPEN_DOCUMENT_TREE). */
     suspend fun saveImagesToTree(context: Context, treeUri: Uri, imagePaths: List<String>, title: String): Int =
         withContext(Dispatchers.IO) {
             val resolver = context.contentResolver
@@ -547,7 +499,6 @@ object PdfEngine {
             saved
         }
 
-    /** Distinctly named PNG copies of several pages (exportPng alone reuses one name). */
     suspend fun exportPngs(context: Context, imagePaths: List<String>, baseTitle: String): List<File> =
         withContext(Dispatchers.IO) {
             val base = safeFileName(baseTitle)
@@ -564,18 +515,15 @@ object PdfEngine {
             }
         }
 
-    /** Real Word document (.docx, OOXML). Previously an HTML file with a .doc extension. */
     suspend fun exportDocx(context: Context, title: String, body: String): File = withContext(Dispatchers.IO) {
         val out = File(exportDir(context), "${safeFileName(title)}.docx")
         WordDocumentWriter.write(out, title, body)
         out
     }
 
-    /** Android 10+: copies ready files (any MIME) to Pictures/MS Scanner. -1 on older versions. */
     suspend fun saveFilesToGallery(context: Context, files: List<File>, mimeType: String): Int =
         saveFilesToMediaStore(context, files, mimeType, pictures = true)
 
-    /** Android 10+: copies ready files (any MIME) to Downloads/MS Scanner. -1 on older versions. */
     suspend fun saveFilesToDownloads(context: Context, files: List<File>, mimeType: String): Int =
         saveFilesToMediaStore(context, files, mimeType, pictures = false)
 
@@ -608,7 +556,6 @@ object PdfEngine {
             saved
         }
 
-    /** Prints an already generated PDF (the viewer's Print button used to open an external app instead). */
     fun printPdfFile(context: Context, pdfFile: File, documentTitle: String? = null) {
         if (!pdfFile.exists() || pdfFile.length() == 0L) return
         val printManager = context.getSystemService(Context.PRINT_SERVICE) as? android.print.PrintManager ?: return
@@ -624,9 +571,6 @@ object PdfEngine {
         }
     }
 
-    /**
-     * Open and view a PDF file in an external viewer using ACTION_VIEW with FileProvider
-     */
     fun openPdf(context: Context, pdfFile: File, chooserTitle: String = "Open PDF with") {
         try {
             val uri = getFileProviderUri(context, pdfFile)
@@ -640,10 +584,6 @@ object PdfEngine {
         }
     }
 
-    /**
-     * Legacy: save an exported PDF into app-managed external Documents storage.
-     * Kept for existing callers; new code uses [savePdfToDownloads] (visible to the user).
-     */
     fun savePdfToStorage(
         context: Context,
         pdfFile: File,
@@ -663,9 +603,6 @@ object PdfEngine {
         }
     }
 
-    /**
-     * Copy file content to an output URI chosen by the user via SAF (CreateDocument). Call off the main thread.
-     */
     fun copyPdfToUri(context: Context, pdfFile: File, targetUri: Uri): Boolean {
         return try {
             context.contentResolver.openOutputStream(targetUri)?.use { out ->
@@ -678,9 +615,6 @@ object PdfEngine {
         }
     }
 
-    /**
-     * Copies an incoming content/file URI to a persistent cache file and extracts its original display name.
-     */
     suspend fun copyUriToLocalPdf(context: Context, uri: Uri): File? = withContext(Dispatchers.IO) {
         try {
             var displayName = "document_${System.currentTimeMillis()}.pdf"
@@ -736,59 +670,4 @@ object PdfEngine {
             null
         }
     }
-
-    /**
-     * Converts each page of an existing PDF file into images.
-     * Returns List<Pair<rawImagePath, processedImagePath>>
-     */
-    suspend fun convertPdfToPages(
-        context: Context,
-        pdfFile: File,
-        maxPages: Int = 50,
-        onProgress: ((current: Int, total: Int) -> Unit)? = null
-    ): List<Pair<String, String>> = withContext(Dispatchers.IO) {
-        val result = mutableListOf<Pair<String, String>>()
-        if (!pdfFile.exists() || pdfFile.length() == 0L) return@withContext result
-        var pfd: android.os.ParcelFileDescriptor? = null
-        var renderer: android.graphics.pdf.PdfRenderer? = null
-        try {
-            pfd = android.os.ParcelFileDescriptor.open(pdfFile, android.os.ParcelFileDescriptor.MODE_READ_ONLY)
-            renderer = android.graphics.pdf.PdfRenderer(pfd)
-            val pageCount = minOf(renderer.pageCount, maxPages)
-            val targetWidth = 1600
-            for (i in 0 until pageCount) {
-                onProgress?.invoke(i + 1, pageCount)
-                val page = renderer.openPage(i)
-                val bitmap: Bitmap
-                try {
-                    val aspect = page.height.toFloat() / page.width.toFloat().coerceAtLeast(1f)
-                    val targetHeight = (targetWidth * aspect).toInt().coerceAtLeast(1)
-                    bitmap = try {
-                        Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888)
-                    } catch (oom: OutOfMemoryError) {
-                        Bitmap.createBitmap(targetWidth / 2, (targetHeight / 2).coerceAtLeast(1), Bitmap.Config.ARGB_8888)
-                    }
-                    bitmap.eraseColor(android.graphics.Color.WHITE)
-                    page.render(bitmap, null, null, android.graphics.pdf.PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                } finally {
-                    page.close()
-                }
-                try {
-                    val path = ImageProcessor.saveBitmapToFile(context, bitmap, "pdf_import_p${i + 1}_")
-                    result.add(Pair(path, path))
-                } finally {
-                    bitmap.recycle()
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        } finally {
-            try { renderer?.close() } catch (_: Exception) {}
-            try { pfd?.close() } catch (_: Exception) {}
-        }
-        result
-    }
 }
-
-
-
