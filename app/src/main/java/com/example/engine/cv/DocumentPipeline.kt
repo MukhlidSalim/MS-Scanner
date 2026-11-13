@@ -372,32 +372,32 @@ object DocumentPipeline {
      * Computes a compact 8x8 perceptual luminance signature (mean-normalized 64-byte array) for a page image.
      * Used to warn the user when two nearly identical pages are added in the same scan/import batch.
      */
-suspend fun computeLumaSignature(imagePath: String): IntArray? = withContext(Dispatchers.IO) {
-    val bmp = ImageProcessor.loadBitmapFromFile(imagePath, 64)
-        ?: return@withContext null
+suspend fun computeLumaSignature(imagePath: String): IntArray? =
+    withContext(Dispatchers.IO) {
+        val bmp = ImageProcessor.loadBitmapFromFile(imagePath, 64)
+            ?: return@withContext null
 
-    try {
-        val small = Bitmap.createScaledBitmap(bmp, 8, 8, true)
         try {
-            val px = IntArray(64)
-            small.getPixels(px, 0, 8, 0, 0, 8, 8)
-            IntArray(64) { i ->
-                val c = px[i]
-                (
-                    0.299f * ((c shr 16) and 0xFF) +
-                    0.587f * ((c shr 8) and 0xFF) +
-                    0.114f * (c and 0xFF)
-                ).roundToInt()
+            val small = Bitmap.createScaledBitmap(bmp, 8, 8, true)
+            try {
+                val px = IntArray(64)
+                small.getPixels(px, 0, 8, 0, 0, 8, 8)
+                IntArray(64) { i ->
+                    val c = px[i]
+                    (
+                        0.299f * ((c shr 16) and 0xFF) +
+                        0.587f * ((c shr 8) and 0xFF) +
+                        0.114f * (c and 0xFF)
+                    ).roundToInt()
+                }
+            } finally {
+                if (small !== bmp) small.recycle()
             }
         } finally {
-            if (small !== bmp) small.recycle()
+            bmp.recycle()
         }
-    } finally {
-        bmp.recycle()
-    }
-}
-        }
-    }.getOrNull()
+    }     
+    .getOrNull()
 
     /** True when two 8x8 luma signatures differ by less than 4.5 gray levels on average. */
     fun areLikelyDuplicates(sigA: IntArray?, sigB: IntArray?): Boolean {
