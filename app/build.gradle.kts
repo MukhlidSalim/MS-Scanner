@@ -19,17 +19,13 @@ val updateRepo: String = System.getenv("UPDATE_REPO")?.takeIf { it.isNotBlank() 
   ?: System.getenv("GITHUB_REPOSITORY")?.takeIf { it.isNotBlank() }
   ?: "MukhlidSalim/MS-Scanner"
 
-// Application ID (configurable via APP_ID env var if needed, defaults to com.msscanner.app).
-val resolvedAppId: String = System.getenv("APP_ID")?.takeIf { it.isNotBlank() } ?: "com.msscanner.app"
+// Optional Play Store mode (-PplayStore=true disables self-updater for Play Store compliance).
+val isPlayStoreBuild: Boolean = project.findProperty("playStore")?.toString()?.toBoolean() == true
+
+// Application ID (defaults to com.aistudio.docscan.pro to preserve in-place updates for existing installs).
+val resolvedAppId: String = System.getenv("APP_ID")?.takeIf { it.isNotBlank() } ?: "com.aistudio.docscan.pro"
 
 // ---------------------------------------------------------------------------- release signing
-// Values come from environment variables (CI) or from a local, git-ignored keystore.properties:
-//   storeFile=/absolute/path/release.jks
-//   storePassword=...
-//   keyAlias=...
-//   keyPassword=...
-// Without them the release APK is produced UNSIGNED (never silently debug-signed). The CI release
-// job refuses to publish in that case.
 val keystoreProperties = Properties().apply {
   val f = rootProject.file("keystore.properties")
   if (f.isFile) f.inputStream().use { load(it) }
@@ -54,24 +50,10 @@ android {
     versionCode = appVersionCode
     versionName = appVersionName
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
-    buildConfigField("boolean", "SELF_UPDATE_ENABLED", "true")
+    buildConfigField("String", "UPDATE_REPO", if (isPlayStoreBuild) "\"\"" else "\"$updateRepo\"")
+    buildConfigField("boolean", "SELF_UPDATE_ENABLED", if (isPlayStoreBuild) "false" else "true")
     // Real phones (arm) + x86_64 emulator. Drops 32-bit x86 native code (Tesseract, ML Kit) from the APK.
     ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
-  }
-  flavorDimensions += "distribution"
-  productFlavors {
-    create("github") {
-      dimension = "distribution"
-      isDefault = true
-      buildConfigField("boolean", "SELF_UPDATE_ENABLED", "true")
-      buildConfigField("String", "UPDATE_REPO", "\"$updateRepo\"")
-    }
-    create("play") {
-      dimension = "distribution"
-      buildConfigField("boolean", "SELF_UPDATE_ENABLED", "false")
-      buildConfigField("String", "UPDATE_REPO", "\"\"")
-    }
   }
   signingConfigs {
     if (hasReleaseSigning) {
